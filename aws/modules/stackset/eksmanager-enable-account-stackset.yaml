@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  EKSManager Enable Account StackSet — deploys EKSManagerAdminRole with an
+  inline region restriction policy to each explicitly enabled spoke account.
+  AllowedRegions are baked into the policy at deploy time; update the StackSet
+  to change them. Run by the agent when an account is enabled via Terraform or GUI.
+
+Parameters:
+  SharedServicesAccountId:
+    Type: String
+    Description: >
+      Account ID of the shared-services account where EKSManagerAgentRole
+      lives. Used to build the trust principal for EKSManagerAdminRole.
+
+  AllowedRegions:
+    Type: String
+    Default: ""
+    Description: >
+      Comma-separated list of AWS regions EKSManagerAdminRole is permitted
+      to operate in. Passed directly from OrgConfig by the bootstrap script.
+
+Resources:
+  EKSManagerAdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EKSManagerAdminRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              # Trusts EKSManagerAgentRole in the shared-services account,
+              # not the spoke account this stack is deployed into.
+              AWS: !Sub "arn:aws:iam::${SharedServicesAccountId}:role/EKSManagerAgentRole"
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EKSManagerAdminPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AllowEKS
+                Effect: Allow
+                Action: ["eks:*"]
+                Resource: "*"
+              - Sid: AllowEC2
+                Effect: Allow
+                Action: ["ec2:*"]
+                Resource: "*"
+              - Sid: AllowIAM
+                Effect: Allow
+                Action: ["iam:*"]
+                Resource: "*"
+              - Sid: AllowKMS
+                Effect: Allow
+                Action: ["kms:*"]
+                Resource: "*"
+              - Sid: AllowECR
+                Effect: Allow
+                Action: ["ecr:*"]
+                Resource: "*"
+              - Sid: AllowRoute53
+                Effect: Allow
+                Action: ["route53:*"]
+                Resource: "*"
+              - Sid: AllowSecretsManager
+                Effect: Allow
+                Action: ["secretsmanager:*"]
+                Resource: "*"
+              - Sid: AllowLogs
+                Effect: Allow
+                Action: ["logs:*"]
+                Resource: "*"
+              - Sid: AllowCloudWatch
+                Effect: Allow
+                Action: ["cloudwatch:*"]
+                Resource: "*"
+              - Sid: AllowAutoScaling
+                Effect: Allow
+                Action: ["autoscaling:*"]
+                Resource: "*"
+              - Sid: AllowSSMReadOnly
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:DescribeParameters
+                Resource: !Sub "arn:aws:ssm:*:*:parameter/EKSManager/*"
+              - Sid: AllowELB
+                Effect: Allow
+                Action: ["elasticloadbalancing:*"]
+                Resource: "*"
+              - Sid: AllowSTS
+                Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                  - sts:GetCallerIdentity
+                  - sts:TagSession
+                  - sts:DecodeAuthorizationMessage
+                Resource: "*"
+              - Sid: DenyEKSClusterDelete
+                Effect: Deny
+                Action: ["eks:DeleteCluster"]
+                Resource: "*"
+              - Sid: DenyDestructiveEC2
+                Effect: Deny
+                Action:
+                  - ec2:DeleteVpc
+                  - ec2:DeleteSubnet
+                  - ec2:DeleteInternetGateway
+                  - ec2:DeleteRouteTable
+                  - ec2:DeleteNatGateway
+                  - ec2:DeleteTransitGateway
+                  - ec2:DeleteVpcPeeringConnection
+                  - ec2:TerminateInstances
+                  - ec2:DeleteSnapshot
+                  - ec2:DeleteVolume
+                Resource: "*"
+              - Sid: DenyIAMOutsideEKSManagerPrefix
+                Effect: Deny
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                NotResource:
+                  - "arn:aws:iam::*:role/EKSManager-*"
+                  - "arn:aws:iam::*:instance-profile/EKSManager-*"
+                  - "arn:aws:iam::*:role/aws-service-role/*"
+              - Sid: DenyPersistentCredentials
+                Effect: Deny
+                Action:
+                  - iam:CreateUser
+                  - iam:CreateAccessKey
+                  - iam:CreatePolicyVersion
+                  - iam:SetDefaultPolicyVersion
+                  - iam:AttachUserPolicy
+                  - iam:CreateLoginProfile
+                  - iam:UpdateLoginProfile
+                Resource: "*"
+              - Sid: DenySecretsOutsideEKSManager
+                Effect: Deny
+                Action: ["secretsmanager:*"]
+                NotResource: !Sub "arn:aws:secretsmanager:*:*:secret:/EKSManager/*"
+              - Sid: DenyKMSDestructive
+                Effect: Deny
+                Action:
+                  - kms:ScheduleKeyDeletion
+                  - kms:DisableKey
+                  - kms:DeleteAlias
+                  - kms:DeleteImportedKeyMaterial
+                Resource: "*"
+              - Sid: DenyDestructiveECR
+                Effect: Deny
+                Action:
+                  - ecr:DeleteRepository
+                  - ecr:BatchDeleteImage
+                  - ecr:DeleteLifecyclePolicy
+                  - ecr:DeleteRegistryPolicy
+                  - ecr:DeleteRepositoryPolicy
+                Resource: "*"
+              - Sid: DenyOutsideAllowedRegions
+                Effect: Deny
+                NotAction:
+                  - "iam:*"
+                  - "sts:*"
+                  - "route53:*"
+                Resource: "*"
+                Condition:
+                  StringNotEquals:
+                    aws:RequestedRegion: !Split [",", !Ref AllowedRegions]
+      Tags:
+        - Key: ManagedBy
+          Value: EKSManager
+
+Outputs:
+  EKSManagerAdminRoleArn:
+    Value: !GetAtt EKSManagerAdminRole.Arn

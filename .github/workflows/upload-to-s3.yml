@@ -1,0 +1,40 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+name: Upload bootstrap zip to S3
+
+# Manually triggered — zips this repo and uploads it to the S3 bucket
+# setup-pipeline.sh/.ps1 created, which starts a CodeBuild run automatically
+# via EventBridge. Uses OIDC to assume an AWS role — no long-lived AWS
+# credential is stored in this repo.
+#
+# Must be run from the "main" branch — the AWS role's trust policy only
+# accepts an OIDC token whose ref is refs/heads/main, so dispatching this
+# from any other branch will fail at the "configure-aws-credentials" step.
+#
+# Requires these repository variables (Settings -> Secrets and variables ->
+# Actions -> Variables) — not secrets, none of these are sensitive:
+#   AWS_ROLE_ARN  - from the `github_actions_role_arn` Terraform output
+#   AWS_REGION    - the shared services region, e.g. eu-west-1
+#   S3_BUCKET     - from the `bootstrap_bucket` Terraform output
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Zip and upload
+        run: |
+          zip -qr /tmp/eksmanager-bootstrap.zip . -x ".git/*"
+          aws s3 cp /tmp/eksmanager-bootstrap.zip "s3://${{ vars.S3_BUCKET }}/eksmanager-bootstrap.zip"

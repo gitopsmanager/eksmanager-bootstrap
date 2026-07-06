@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "UpdateHeadlampApp",
+      "Effect": "Allow",
+      "Action": [
+        "sso-admin:UpdateApplication",
+        "sso-admin:DescribeApplication"
+      ],
+      "Resource": "{{HEADLAMP_APP_ARN}}"
+    },
+    {
+      "Sid": "ListIdentityCenterInstances",
+      "Effect": "Allow",
+      "Action": [
+        "sso-admin:ListInstances",
+        "sso-admin:ListApplications"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

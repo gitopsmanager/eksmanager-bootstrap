@@ -1,0 +1,141 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+version: 0.2
+
+# -----------------------------------------------------------------------------
+# EKS Manager Bootstrap — AWS CodeBuild buildspec
+# -----------------------------------------------------------------------------
+# Sourced from S3 (see iam/codebuild-pipeline-tf/main.tf) — setup-pipeline.sh/
+# .ps1 clones the fork with a GitHub App token, zips it, and uploads it here.
+# CodeBuild itself never touches GitHub. The server supplies presigned S3
+# URLs, SSO ARN and a bearer token via POST /bootstrap.
+#
+# Entra SAML SSO is set up separately, outside this pipeline — see
+# azure-saml/README.md in the repo root.
+#
+# pre_build also resolves which cross-account role aws/providers.tf's
+# aws.shared provider should assume in the shared services account — tries
+# AWSControlTowerExecution, then OrganizationAccountAccessRole, and fails
+# the build if neither works. Written to role-override.auto.tfvars.json,
+# which Terraform loads automatically.
+#
+# Environment variables (set on the CodeBuild project):
+#   APPROVED_VERSION  ← S3 object version ID approved for apply. Leave empty
+#                       on first run — build will print the version ID to
+#                       set after you review the plan.
+#   EKSMANAGER_CLIENT_ID    ← M2M client ID        (from Settings → Terraform tile)
+#   EKSMANAGER_COGNITO_URL  ← Cognito token endpoint
+#   EKSMANAGER_API_URL      ← EKS Manager API URL
+#
+# Secrets Manager (set once):
+#   /EKSManagerBootstrap/client-m2m-cognito-secret  ← M2M client secret
+# -----------------------------------------------------------------------------
+
+env:
+  secrets-manager:
+    EKSMANAGER_CLIENT_SECRET: "/EKSManagerBootstrap/client-m2m-cognito-secret"
+
+phases:
+  install:
+    commands:
+      - TERRAFORM_VERSION="1.9.0"
+      - |
+        wget -q -O terraform.zip \
+          "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+      - unzip -q terraform.zip && mv terraform /usr/local/bin/ && rm terraform.zip
+      - terraform version
+
+  pre_build:
+    commands:
+      # Confirm AWS runner identity
+      - aws sts get-caller-identity
+
+      # ── S3 source version (set by CodeBuild for the object it fetched) ────
+      - CURRENT_VERSION="${CODEBUILD_SOURCE_VERSION}"
+      - echo "Building eksmanager-bootstrap.zip version ${CURRENT_VERSION}"
+
+      # ── Get M2M bearer token ──────────────────────────────────────────────
+      - |
+        TOKEN=$(curl -fsSL -X POST "${EKSMANAGER_COGNITO_URL}/oauth2/token" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          -d "grant_type=client_credentials&client_id=${EKSMANAGER_CLIENT_ID}&client_secret=${EKSMANAGER_CLIENT_SECRET}" \
+          | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+        if [ -z "${TOKEN}" ] || [ "${TOKEN}" = "null" ]; then
+          echo "ERROR: Failed to obtain M2M bearer token"
+          exit 1
+        fi
+
+        echo "TOKEN=${TOKEN}" >> $CODEBUILD_ENV_FILE
+
+      # ── Validate topology and fetch server-supplied tfvars ────────────────
+      - |
+        HTTP_STATUS=$(curl -fsSL -X POST "${EKSMANAGER_API_URL}/bootstrap" \
+          -H "Authorization: Bearer ${TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d @topology.json \
+          -o terraform.tfvars.json \
+          -w "%{http_code}")
+
+        if [ "${HTTP_STATUS}" != "200" ]; then
+          echo "ERROR: topology.json validation failed (HTTP ${HTTP_STATUS})"
+          cat terraform.tfvars.json
+          exit 1
+        fi
+
+      # ── Resolve shared services cross-account role ────────────────────────
+      # Terraform's aws.shared provider (aws/providers.tf) needs a single,
+      # static role_arn — it can't itself try multiple candidates. So resolve
+      # it here in bash before terraform runs: try AWSControlTowerExecution,
+      # then OrganizationAccountAccessRole, and fail the build outright if
+      # neither is assumable (no interactive fallback is possible mid-build).
+      - |
+        SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('terraform.tfvars.json'))['shared_services_account_id'])")
+        RESOLVED_ROLE=""
+        for CANDIDATE_ROLE in "AWSControlTowerExecution" "OrganizationAccountAccessRole"; do
+          ROLE_ARN="arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${CANDIDATE_ROLE}"
+          if aws sts assume-role --role-arn "${ROLE_ARN}" --role-session-name "eksmanager-bootstrap-buildspec" >/dev/null 2>/tmp/role-err.log; then
+            RESOLVED_ROLE="${CANDIDATE_ROLE}"
+            echo "Resolved shared services role: ${RESOLVED_ROLE}"
+            break
+          fi
+        done
+
+        if [ -z "${RESOLVED_ROLE}" ]; then
+          echo "ERROR: could not assume AWSControlTowerExecution or OrganizationAccountAccessRole in account ${SHARED_SERVICES_ACCOUNT_ID}:"
+          cat /tmp/role-err.log
+          exit 1
+        fi
+
+        echo "{\"shared_services_role_name\": \"${RESOLVED_ROLE}\"}" > role-override.auto.tfvars.json
+
+      - terraform init
+
+  build:
+    commands:
+      # ── Plan ─────────────────────────────────────────────────────────────
+      - terraform plan -out=tfplan
+
+      # ── Verify approved version before applying ───────────────────────────
+      - |
+        if [ "${APPROVED_VERSION}" != "${CURRENT_VERSION}" ]; then
+          echo "================================================================"
+          echo "APPROVAL REQUIRED — review the plan output above, then:"
+          echo "  1. Update APPROVED_VERSION on this CodeBuild project to:"
+          echo "       ${CURRENT_VERSION}"
+          echo "  2. Re-run the build to apply"
+          echo "================================================================"
+          exit 1
+        fi
+        echo "Version approved — applying."
+
+      # ── Apply ─────────────────────────────────────────────────────────────
+      - terraform apply tfplan
+
+  post_build:
+    commands:
+      - echo "Bootstrap complete."
+
+artifacts:
+  files:
+    - terraform.tfstate
+  discard-paths: yes

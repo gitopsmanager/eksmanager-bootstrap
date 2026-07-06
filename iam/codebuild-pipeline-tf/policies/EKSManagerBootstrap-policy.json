@@ -1,0 +1,83 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CallerIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "OrganizationsStackSetTrustedAccess",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:EnableAWSServiceAccess",
+        "organizations:DisableAWSServiceAccess",
+        "organizations:RegisterDelegatedAdministrator",
+        "organizations:DeregisterDelegatedAdministrator",
+        "organizations:ListDelegatedAdministrators",
+        "organizations:ListAWSServiceAccessForOrganization",
+        "organizations:DescribeOrganization"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IdentityCenterHeadlampApp",
+      "Effect": "Allow",
+      "Action": [
+        "sso:ListInstances",
+        "sso:CreateApplication",
+        "sso:DeleteApplication",
+        "sso:UpdateApplication",
+        "sso:DescribeApplication",
+        "sso:PutApplicationAuthenticationMethod",
+        "sso:DeleteApplicationAuthenticationMethod",
+        "sso:ListApplicationAuthenticationMethods",
+        "sso:PutApplicationGrant",
+        "sso:DeleteApplicationGrant",
+        "sso:ListApplicationGrants",
+        "sso:PutApplicationAccessScope",
+        "sso:DeleteApplicationAccessScope",
+        "sso:ListApplicationAccessScopes"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EKSManagerHeadlampRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies"
+      ],
+      "Resource": "arn:aws:iam::*:role/EKSManagerHeadlampRole"
+    },
+    {
+      "Sid": "EKSManagerProtectionSCP",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:CreatePolicy",
+        "organizations:UpdatePolicy",
+        "organizations:DeletePolicy",
+        "organizations:DescribePolicy",
+        "organizations:ListPolicies",
+        "organizations:AttachPolicy",
+        "organizations:DetachPolicy",
+        "organizations:ListPoliciesForTarget",
+        "organizations:ListTargetsForPolicy",
+        "organizations:ListRoots",
+        "organizations:ListOrganizationalUnitsForParent",
+        "organizations:ListAccountsForParent"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

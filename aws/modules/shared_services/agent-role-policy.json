@@ -1,0 +1,105 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeManagementRoles",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::{{MGMT_ACCOUNT_ID}}:role/EKSManagerHeadlampRole"
+      ]
+    },
+    {
+      "Sid": "AssumeAdminRoleInSpokeAccounts",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::*:role/EKSManagerAdminRole"
+    },
+    {
+      "Sid": "SecretsManager",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:CreateSecret",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:DeleteSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:{{SHARED_SERVICES_ACCOUNT_ID}}:secret:/EKSManager/*"
+    },
+    {
+      "Sid": "ParameterStoreReadConfig",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": [
+        "arn:aws:ssm:*:{{SHARED_SERVICES_ACCOUNT_ID}}:parameter/EKSManager/config/*",
+        "arn:aws:ssm:*:*:parameter/EKSManager/*/AllowedRegions"
+      ]
+    },
+    {
+      "Sid": "ParameterStoreDenyAllWrites",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:DeleteParameters",
+        "ssm:LabelParameterVersion"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/EKSManager/*"
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:PutRetentionPolicy"
+      ],
+      "Resource": "arn:aws:logs:*:{{SHARED_SERVICES_ACCOUNT_ID}}:log-group:/eksmanager/*"
+    },
+    {
+      "Sid": "ECRCrossAccountPolicyManagement",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetRepositoryPolicy",
+        "ecr:SetRepositoryPolicy",
+        "ecr:DeleteRepositoryPolicy",
+        "ecr:DescribeRepositories",
+        "ecr:CreateRepository",
+        "ecr:PutLifecyclePolicy",
+        "ecr:GetAuthorizationToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "OrganizationsRead",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:ListOrganizationalUnitsForParent",
+        "organizations:ListAccountsForParent",
+        "organizations:ListChildren",
+        "organizations:DescribeAccount",
+        "organizations:ListTagsForResource",
+        "organizations:DescribeOrganizationalUnit"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "STSCallerIdentity",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "sts:TagSession"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
