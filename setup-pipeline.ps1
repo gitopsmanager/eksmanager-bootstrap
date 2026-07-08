@@ -46,6 +46,14 @@
         not PowerShell 7.0 either. RSA.ImportFromPem (used to sign the
         GitHub App JWT) needs .NET 5, which PowerShell 7.1 is the first
         version built on
+      - aws CLI (optional) — if present, this script auto-detects a
+        pre-existing GitHub Actions OIDC provider in the shared services
+        account (so you don't have to look up and set
+        GITHUB_OIDC_PROVIDER_ARN yourself) and cleans up AdministratorAccess
+        left over from the standalone Python bootstrap script, if you ran
+        it. Without aws CLI, both steps are silently skipped — everything
+        still works, just with the same manual steps as before if either
+        collision occurs.
 
 .EXAMPLE
     Every input is an environment variable — no parameters. Set these,
@@ -129,6 +137,71 @@ $subnetList = ($VpcSubnetIds | ForEach-Object { "`"$_`"" }) -join ","
 
 Push-Location (Join-Path $ScriptDir "iam\codebuild-pipeline-tf")
 terraform init
+
+# ── Reconcile a pre-existing EKSManagerBootstrap role ───────────────────────
+# The standalone Python bootstrap script (if you ran it) creates a role with
+# this exact name and attaches AdministratorAccess, printing its own
+# instruction to delete it after apply. Terraform wants to create/manage a
+# role of the same name with a much narrower scoped policy instead -- these
+# collide if the temp role still exists. Both steps are best-effort and
+# silently no-op if there's nothing to do, so this is always safe to re-run:
+#   - detach-role-policy fails harmlessly if AdministratorAccess was never
+#     attached, or if aws CLI isn't installed
+#   - import fails harmlessly if the role doesn't exist yet (nothing to
+#     import -- Terraform will just create it fresh) or is already in state
+# Native exe exit codes don't trigger $ErrorActionPreference, so no try/catch
+# needed here -- a non-zero exit just leaves $LASTEXITCODE set and unused.
+$awsCli = Get-Command aws -ErrorAction SilentlyContinue
+if ($awsCli) {
+    Write-Host "Removing any leftover AdministratorAccess from a prior manual bootstrap role, if present..."
+    aws iam detach-role-policy --role-name EKSManagerBootstrap `
+        --policy-arn arn:aws:iam::aws:policy/AdministratorAccess 2>$null | Out-Null
+}
+terraform import aws_iam_role.management_bootstrap EKSManagerBootstrap 2>$null | Out-Null
+
+# ── Auto-detect an existing GitHub Actions OIDC provider ────────────────────
+# token.actions.githubusercontent.com is an account-wide singleton in the
+# SHARED SERVICES account (not the management account your ambient
+# credentials are for) -- so checking for one means assuming
+# SHARED_SERVICES_ROLE_NAME first, same as Terraform's aws.shared provider
+# does internally. The temporary credentials are removed in the finally
+# block below so they never leak into anything that runs after this (like
+# terraform apply, further down). Best-effort: if aws CLI isn't installed,
+# or the assume-role/list call fails for any reason, this silently falls
+# through to the existing behavior -- leave GITHUB_OIDC_PROVIDER_ARN empty,
+# let Terraform try to create one, and if that fails with
+# EntityAlreadyExists, set the env var manually and re-run.
+if (-not $env:GITHUB_OIDC_PROVIDER_ARN -and $awsCli) {
+    Write-Host "Checking for an existing GitHub Actions OIDC provider in $SharedServicesAccountId..."
+    $existingOidcArn = $null
+    $credsRaw = aws sts assume-role `
+        --role-arn "arn:aws:iam::${SharedServicesAccountId}:role/${SharedServicesRoleName}" `
+        --role-session-name "eksmanager-bootstrap-preflight" --output json 2>$null
+    if ($LASTEXITCODE -eq 0 -and $credsRaw) {
+        try {
+            $credsJson = $credsRaw | ConvertFrom-Json
+            $env:AWS_ACCESS_KEY_ID     = $credsJson.Credentials.AccessKeyId
+            $env:AWS_SECRET_ACCESS_KEY = $credsJson.Credentials.SecretAccessKey
+            $env:AWS_SESSION_TOKEN     = $credsJson.Credentials.SessionToken
+            $existingOidcArn = aws iam list-open-id-connect-providers `
+                --query "OpenIDConnectProviderList[?ends_with(Arn, 'token.actions.githubusercontent.com')].Arn" `
+                --output text 2>$null
+            if ($LASTEXITCODE -ne 0) { $existingOidcArn = $null }
+        } catch {
+            $existingOidcArn = $null
+        } finally {
+            Remove-Item Env:\AWS_ACCESS_KEY_ID -ErrorAction SilentlyContinue
+            Remove-Item Env:\AWS_SECRET_ACCESS_KEY -ErrorAction SilentlyContinue
+            Remove-Item Env:\AWS_SESSION_TOKEN -ErrorAction SilentlyContinue
+        }
+    }
+    if ($existingOidcArn -and $existingOidcArn.Trim() -and $existingOidcArn.Trim() -ne "None") {
+        Write-Host "Found existing provider: $($existingOidcArn.Trim()) -- reusing it instead of creating a new one."
+        $env:GITHUB_OIDC_PROVIDER_ARN = $existingOidcArn.Trim()
+    } else {
+        Write-Host "No existing provider found (or couldn't check) -- Terraform will create one."
+    }
+}
 
 $tfVars = @(
     "-var=management_account_id=$ManagementAccountId"

@@ -401,11 +401,11 @@ resource "aws_iam_role_policy" "codebuild" {
 resource "aws_security_group" "codebuild" {
   provider    = aws.shared
   name        = "eksmanager-bootstrap-codebuild-sg"
-  description = "Network perimeter for the EKS Manager bootstrap CodeBuild container — no inbound, egress via VPC routing"
+  description = "Network perimeter for the EKS Manager bootstrap CodeBuild container - no inbound, egress via VPC routing"
   vpc_id      = var.vpc_id
 
   egress {
-    description = "All outbound — restrict further via VPC route tables / NACLs if needed"
+    description = "All outbound - restrict further via VPC route tables / NACLs if needed"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

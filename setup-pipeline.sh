@@ -41,6 +41,14 @@
 # PREREQUISITES
 #   - terraform >= 1.5.0
 #   - Credentials for the MANAGEMENT account already active in your shell
+#   - aws CLI (optional) -- if present, this script auto-detects a
+#     pre-existing GitHub Actions OIDC provider in the shared services
+#     account (so you don't have to look up and set
+#     GITHUB_OIDC_PROVIDER_ARN yourself) and cleans up AdministratorAccess
+#     left over from the standalone Python bootstrap script, if you ran it.
+#     Without aws CLI, both steps are silently skipped -- everything still
+#     works, just with the same manual steps as before if either collision
+#     occurs.
 #
 # USAGE
 #   Every input is an environment variable — no flags. Export these, then
@@ -112,6 +120,57 @@ SUBNET_LIST=$(echo "$SUBNET_IDS" | sed 's/,/","/g')
 
 cd "${SCRIPT_DIR}/iam/codebuild-pipeline-tf"
 terraform init
+
+# ── Reconcile a pre-existing EKSManagerBootstrap role ───────────────────────
+# The standalone Python bootstrap script (if you ran it) creates a role with
+# this exact name and attaches AdministratorAccess, printing its own
+# instruction to delete it after apply. Terraform wants to create/manage a
+# role of the same name with a much narrower scoped policy instead -- these
+# collide if the temp role still exists. Both steps are best-effort and
+# silently no-op if there's nothing to do, so this is always safe to re-run:
+#   - detach-role-policy fails harmlessly if AdministratorAccess was never
+#     attached, or if aws CLI isn't installed
+#   - import fails harmlessly if the role doesn't exist yet (nothing to
+#     import -- Terraform will just create it fresh) or is already in state
+if command -v aws >/dev/null 2>&1; then
+  echo "Removing any leftover AdministratorAccess from a prior manual bootstrap role, if present..."
+  aws iam detach-role-policy --role-name EKSManagerBootstrap \
+    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess 2>/dev/null || true
+fi
+terraform import aws_iam_role.management_bootstrap EKSManagerBootstrap 2>/dev/null || true
+
+# ── Auto-detect an existing GitHub Actions OIDC provider ────────────────────
+# token.actions.githubusercontent.com is an account-wide singleton in the
+# SHARED SERVICES account (not the management account your ambient
+# credentials are for) -- so checking for one means assuming
+# SHARED_SERVICES_ROLE_NAME first, same as Terraform's aws.shared provider
+# does internally. Run in a subshell so these temporary credentials never
+# leak into the env terraform apply runs with below. Best-effort: if aws
+# CLI isn't installed, or the assume-role/list call fails for any reason,
+# this silently falls through to the existing behavior -- leave
+# GITHUB_OIDC_PROVIDER_ARN empty, let Terraform try to create one, and if
+# that fails with EntityAlreadyExists, set the ARN manually and re-run.
+if [ -z "${GITHUB_OIDC_PROVIDER_ARN:-}" ] && command -v aws >/dev/null 2>&1; then
+  echo "Checking for an existing GitHub Actions OIDC provider in ${SHARED_SERVICES_ACCOUNT_ID}..."
+  EXISTING_OIDC_ARN=$(
+    set -e
+    CREDS_JSON=$(aws sts assume-role \
+      --role-arn "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${SHARED_SERVICES_ROLE_NAME}" \
+      --role-session-name "eksmanager-bootstrap-preflight" --output json)
+    export AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["AccessKeyId"])')
+    export AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["SecretAccessKey"])')
+    export AWS_SESSION_TOKEN=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["SessionToken"])')
+    aws iam list-open-id-connect-providers \
+      --query "OpenIDConnectProviderList[?ends_with(Arn, 'token.actions.githubusercontent.com')].Arn" \
+      --output text
+  2>/dev/null) || EXISTING_OIDC_ARN=""
+  if [ -n "${EXISTING_OIDC_ARN:-}" ] && [ "${EXISTING_OIDC_ARN}" != "None" ]; then
+    echo "Found existing provider: ${EXISTING_OIDC_ARN} -- reusing it instead of creating a new one."
+    GITHUB_OIDC_PROVIDER_ARN="$EXISTING_OIDC_ARN"
+  else
+    echo "No existing provider found (or couldn't check) -- Terraform will create one."
+  fi
+fi
 
 TF_VARS=(
   -var="management_account_id=${MANAGEMENT_ACCOUNT_ID}"
