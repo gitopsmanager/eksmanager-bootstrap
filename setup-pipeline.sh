@@ -121,24 +121,6 @@ SUBNET_LIST=$(echo "$SUBNET_IDS" | sed 's/,/","/g')
 cd "${SCRIPT_DIR}/iam/codebuild-pipeline-tf"
 terraform init
 
-# ── Reconcile a pre-existing EKSManagerBootstrap role ───────────────────────
-# The standalone Python bootstrap script (if you ran it) creates a role with
-# this exact name and attaches AdministratorAccess, printing its own
-# instruction to delete it after apply. Terraform wants to create/manage a
-# role of the same name with a much narrower scoped policy instead -- these
-# collide if the temp role still exists. Both steps are best-effort and
-# silently no-op if there's nothing to do, so this is always safe to re-run:
-#   - detach-role-policy fails harmlessly if AdministratorAccess was never
-#     attached, or if aws CLI isn't installed
-#   - import fails harmlessly if the role doesn't exist yet (nothing to
-#     import -- Terraform will just create it fresh) or is already in state
-if command -v aws >/dev/null 2>&1; then
-  echo "Removing any leftover AdministratorAccess from a prior manual bootstrap role, if present..."
-  aws iam detach-role-policy --role-name EKSManagerBootstrap \
-    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess 2>/dev/null || true
-fi
-terraform import aws_iam_role.management_bootstrap EKSManagerBootstrap 2>/dev/null || true
-
 # ── Auto-detect an existing GitHub Actions OIDC provider ────────────────────
 # token.actions.githubusercontent.com is an account-wide singleton in the
 # SHARED SERVICES account (not the management account your ambient
@@ -150,6 +132,8 @@ terraform import aws_iam_role.management_bootstrap EKSManagerBootstrap 2>/dev/nu
 # this silently falls through to the existing behavior -- leave
 # GITHUB_OIDC_PROVIDER_ARN empty, let Terraform try to create one, and if
 # that fails with EntityAlreadyExists, set the ARN manually and re-run.
+# Runs before TF_VARS is built below so the detected ARN (if any) actually
+# gets captured in it.
 if [ -z "${GITHUB_OIDC_PROVIDER_ARN:-}" ] && command -v aws >/dev/null 2>&1; then
   echo "Checking for an existing GitHub Actions OIDC provider in ${SHARED_SERVICES_ACCOUNT_ID}..."
   EXISTING_OIDC_ARN=$(
@@ -190,6 +174,28 @@ TF_VARS=(
   -var="github_app_install_id=${GITHUB_APP_INSTALL_ID}"
   -var="github_app_private_key=${GITHUB_APP_PRIVATE_KEY}"
 )
+
+# ── Reconcile a pre-existing EKSManagerBootstrap role ───────────────────────
+# The standalone Python bootstrap script (if you ran it) creates a role with
+# this exact name and attaches AdministratorAccess, printing its own
+# instruction to delete it after apply. Terraform wants to create/manage a
+# role of the same name with a much narrower scoped policy instead -- these
+# collide if the temp role still exists. Both steps are best-effort and
+# silently no-op if there's nothing to do, so this is always safe to re-run:
+#   - detach-role-policy fails harmlessly if AdministratorAccess was never
+#     attached, or if aws CLI isn't installed
+#   - import fails harmlessly if the role doesn't exist yet (nothing to
+#     import -- Terraform will just create it fresh) or is already in state
+# terraform import validates the full variable set just like plan/apply do,
+# so it needs "${TF_VARS[@]}" passed too -- without it, Terraform falls back
+# to prompting interactively for every variable one at a time.
+if command -v aws >/dev/null 2>&1; then
+  echo "Removing any leftover AdministratorAccess from a prior manual bootstrap role, if present..."
+  aws iam detach-role-policy --role-name EKSManagerBootstrap \
+    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess 2>/dev/null || true
+fi
+terraform import "${TF_VARS[@]}" aws_iam_role.management_bootstrap EKSManagerBootstrap 2>/dev/null || true
+
 terraform apply "${TF_VARS[@]}"
 
 echo ""
