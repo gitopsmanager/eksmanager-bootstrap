@@ -57,6 +57,7 @@
 #   export MANAGEMENT_ACCOUNT_ID="..."
 #   export MANAGEMENT_ACCOUNT_REGION="..."
 #   export AGENT_NAME="aws-eksmanager-agent"        # optional, default shown
+#   export AGENT_AMI="ami-..."                      # from Settings -> Terraform tile
 #   export SHARED_SERVICES_ACCOUNT_ID="..."
 #   export SHARED_SERVICES_ROLE_NAME="AWSControlTowerExecution"  # optional, default shown
 #   export GITHUB_REPO="your-org/eksmanager-bootstrap"
@@ -129,13 +130,14 @@ SUBNET_IDS="${SUBNET_IDS:-}"
 REGION="${REGION:-eu-west-1}"
 MANAGEMENT_ACCOUNT_REGION="${MANAGEMENT_ACCOUNT_REGION:-}"
 AGENT_NAME="${AGENT_NAME:-aws-eksmanager-agent}"
+AGENT_AMI="${AGENT_AMI:-}"
 APPROVED_VERSION="${APPROVED_VERSION:-}"
 EKSMANAGER_CLIENT_ID="${EKSMANAGER_CLIENT_ID:-}"
 EKSMANAGER_CLIENT_SECRET="${EKSMANAGER_CLIENT_SECRET:-}"
 COGNITO_URL="${EKSMANAGER_COGNITO_URL:-}"
 API_URL="${EKSMANAGER_API_URL:-}"
 
-for required in MANAGEMENT_ACCOUNT_ID MANAGEMENT_ACCOUNT_REGION SHARED_SERVICES_ACCOUNT_ID VPC_ID SUBNET_IDS \
+for required in MANAGEMENT_ACCOUNT_ID MANAGEMENT_ACCOUNT_REGION SHARED_SERVICES_ACCOUNT_ID VPC_ID SUBNET_IDS AGENT_AMI \
                 EKSMANAGER_CLIENT_ID EKSMANAGER_CLIENT_SECRET COGNITO_URL API_URL \
                 GITHUB_REPO GITHUB_APP_ID GITHUB_APP_INSTALL_ID GITHUB_APP_PRIVATE_KEY; do
   if [ -z "${!required:-}" ]; then
@@ -225,7 +227,6 @@ fi
 TF_VARS=(
   -var="management_account_id=${MANAGEMENT_ACCOUNT_ID}"
   -var="management_account_region=${MANAGEMENT_ACCOUNT_REGION}"
-  -var="agent_name=${AGENT_NAME}"
   -var="shared_services_account_id=${SHARED_SERVICES_ACCOUNT_ID}"
   -var="shared_services_role_name=${SHARED_SERVICES_ROLE_NAME}"
   -var="shared_services_region=${REGION}"
@@ -382,6 +383,69 @@ set_github_variable() {
 set_github_variable "AWS_ROLE_ARN" "$ROLE_ARN"
 set_github_variable "AWS_REGION" "$REGION"
 set_github_variable "S3_BUCKET" "$OUTPUT_BUCKET"
+
+# ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
+# Values the aws/ Terraform module needs but that must never come from
+# topology.json/POST /bootstrap/aws -- changing them means re-running this
+# script, not editing a request or clicking Generate in the GUI. Committed
+# directly into the private repo (Contents API, different from the repo
+# *variables* API used above) so it's present the next time
+# upload-to-s3.yml bundles eksmanager-bootstrap.zip. Terraform auto-loads
+# any *.auto.tfvars.json file in its working directory, same mechanism
+# buildspec.yml already relies on for role-override.auto.tfvars.json.
+echo ""
+echo "Writing pinned.auto.tfvars.json to ${GITHUB_REPO}..."
+
+AGENT_SUBNET_ID="${SUBNET_IDS%%,*}"
+
+PINNED_JSON=$(cat <<EOF
+{
+  "management_account_id": "${MANAGEMENT_ACCOUNT_ID}",
+  "management_account_region": "${MANAGEMENT_ACCOUNT_REGION}",
+  "shared_services_region": "${REGION}",
+  "agent_name": "${AGENT_NAME}",
+  "agent_subnet_id": "${AGENT_SUBNET_ID}",
+  "agent_ami": "${AGENT_AMI}"
+}
+EOF
+)
+
+write_github_file() {
+  local path="$1" content="$2" message="$3" b64 existing_sha status body
+  b64=$(printf '%s' "$content" | base64 | tr -d '\n')
+
+  # GitHub's Contents API requires the current file's sha to update it --
+  # a 404 here just means the file doesn't exist yet (first run), which is
+  # fine; existing_sha stays empty and the PUT below creates it instead.
+  existing_sha=$(curl -s \
+    "https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO_NAME}/contents/${path}" \
+    -H "Authorization: Bearer ${INSTALL_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    | grep -o '"sha": *"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  if [ -n "$existing_sha" ]; then
+    body=$(printf '{"message":"%s","content":"%s","sha":"%s"}' "$message" "$b64" "$existing_sha")
+  else
+    body=$(printf '{"message":"%s","content":"%s"}' "$message" "$b64")
+  fi
+
+  status=$(curl -s -o /tmp/gh-file-resp.log -w "%{http_code}" -X PUT \
+    "https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO_NAME}/contents/${path}" \
+    -H "Authorization: Bearer ${INSTALL_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    -d "$body")
+
+  if [ "$status" = "200" ] || [ "$status" = "201" ]; then
+    if [ -n "$existing_sha" ]; then echo "  ${path} updated."; else echo "  ${path} created."; fi
+  else
+    echo "ERROR: failed to write ${path} (HTTP ${status})" >&2
+    cat /tmp/gh-file-resp.log >&2
+    exit 1
+  fi
+}
+
+write_github_file "pinned.auto.tfvars.json" "$PINNED_JSON" "Update pinned.auto.tfvars.json via setup-pipeline.sh"
+
 unset INSTALL_TOKEN
 echo "Done."
 

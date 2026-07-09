@@ -62,6 +62,7 @@
     $env:MANAGEMENT_ACCOUNT_ID = "..."
     $env:MANAGEMENT_ACCOUNT_REGION = "..."
     $env:AGENT_NAME = "aws-eksmanager-agent"       # optional, default shown
+    $env:AGENT_AMI = "ami-..."                     # from Settings -> Terraform tile
     $env:SHARED_SERVICES_ACCOUNT_ID = "..."
     $env:SHARED_SERVICES_ROLE_NAME = "AWSControlTowerExecution"  # optional, default shown
     $env:GITHUB_REPO = "your-org/eksmanager-bootstrap"
@@ -130,6 +131,7 @@ $ApiUrl                  = $env:EKSMANAGER_API_URL
 $ManagementAccountId     = $env:MANAGEMENT_ACCOUNT_ID
 $ManagementAccountRegion = $env:MANAGEMENT_ACCOUNT_REGION
 $AgentName               = if ($env:AGENT_NAME) { $env:AGENT_NAME } else { "aws-eksmanager-agent" }
+$AgentAmi                = $env:AGENT_AMI
 
 foreach ($pair in @(
     @{ Name = "MANAGEMENT_ACCOUNT_ID";       Value = $ManagementAccountId }
@@ -137,6 +139,7 @@ foreach ($pair in @(
     @{ Name = "SHARED_SERVICES_ACCOUNT_ID";  Value = $SharedServicesAccountId }
     @{ Name = "VPC_ID";                      Value = $VpcId }
     @{ Name = "SUBNET_IDS";              Value = $env:SUBNET_IDS }
+    @{ Name = "AGENT_AMI";                   Value = $AgentAmi }
     @{ Name = "GITHUB_REPO";                 Value = $GithubRepo }
     @{ Name = "EKSMANAGER_CLIENT_ID";        Value = $EksManagerClientId }
     @{ Name = "EKSMANAGER_CLIENT_SECRET";    Value = $EksManagerClientSecret }
@@ -244,7 +247,6 @@ if (-not $env:GITHUB_OIDC_PROVIDER_ARN -and -not $alreadyManagedOidc -and $awsCl
 $tfVars = @(
     "-var=management_account_id=$ManagementAccountId"
     "-var=management_account_region=$ManagementAccountRegion"
-    "-var=agent_name=$AgentName"
     "-var=shared_services_account_id=$SharedServicesAccountId"
     "-var=shared_services_role_name=$SharedServicesRoleName"
     "-var=shared_services_region=$Region"
@@ -405,6 +407,67 @@ function Set-GithubVariable {
 Set-GithubVariable -Name "AWS_ROLE_ARN" -Value $roleArn
 Set-GithubVariable -Name "AWS_REGION" -Value $Region
 Set-GithubVariable -Name "S3_BUCKET" -Value $outputBucket
+
+# ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
+# Values the aws/ Terraform module needs but that must never come from
+# topology.json/POST /bootstrap/aws -- changing them means re-running this
+# script, not editing a request or clicking Generate in the GUI. Committed
+# directly into the private repo (Contents API, different from the repo
+# *variables* API used above) so it's present the next time
+# upload-to-s3.yml bundles eksmanager-bootstrap.zip. Terraform auto-loads
+# any *.auto.tfvars.json file in its working directory, same mechanism
+# buildspec.yml already relies on for role-override.auto.tfvars.json.
+Write-Host ""
+Write-Host "Writing pinned.auto.tfvars.json to $GithubRepo..."
+
+$agentSubnetId = ($env:SUBNET_IDS -split ',')[0]
+
+$pinnedObject = [ordered]@{
+    management_account_id     = $ManagementAccountId
+    management_account_region = $ManagementAccountRegion
+    shared_services_region    = $Region
+    agent_name                = $AgentName
+    agent_subnet_id           = $agentSubnetId
+    agent_ami                 = $AgentAmi
+}
+$pinnedJson = $pinnedObject | ConvertTo-Json
+
+function Write-GithubFile {
+    param([string]$Path, [string]$Content, [string]$Message)
+    $contentBytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+    $contentB64 = [Convert]::ToBase64String($contentBytes)
+
+    # GitHub's Contents API requires the current file's sha to update it --
+    # a 404 here just means the file doesn't exist yet (first run), which is
+    # fine; $existingSha stays empty and the PUT below creates it instead.
+    $existingSha = $null
+    try {
+        $existing = Invoke-RestMethod -Method Get `
+            -Uri "https://api.github.com/repos/$githubOrg/$githubRepoName/contents/$Path" `
+            -Headers @{ Authorization = "Bearer $installToken"; Accept = "application/vnd.github+json" }
+        $existingSha = $existing.sha
+    } catch {
+        # 404 = file doesn't exist yet, fine -- anything else, let the PUT below surface it
+    }
+
+    $bodyObject = [ordered]@{ message = $Message; content = $contentB64 }
+    if ($existingSha) { $bodyObject.sha = $existingSha }
+    $body = $bodyObject | ConvertTo-Json
+
+    try {
+        Invoke-RestMethod -Method Put `
+            -Uri "https://api.github.com/repos/$githubOrg/$githubRepoName/contents/$Path" `
+            -Headers @{ Authorization = "Bearer $installToken"; Accept = "application/vnd.github+json" } `
+            -Body $body -ContentType "application/json" | Out-Null
+        if ($existingSha) { Write-Host "  $Path updated." } else { Write-Host "  $Path created." }
+    } catch {
+        Write-Error "ERROR: failed to write $Path — $_"
+        exit 1
+    }
+}
+
+Write-GithubFile -Path "pinned.auto.tfvars.json" -Content $pinnedJson -Message "Update pinned.auto.tfvars.json via setup-pipeline.ps1"
+
 Remove-Variable installToken -ErrorAction SilentlyContinue
 Write-Host "Done."
 
