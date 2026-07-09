@@ -53,7 +53,11 @@ phases:
       - CURRENT_VERSION="${CODEBUILD_SOURCE_VERSION}"
       - echo "Building eksmanager-bootstrap.zip version ${CURRENT_VERSION}"
 
-      # ── Get M2M bearer token ──────────────────────────────────────────────
+      # ── Get M2M bearer token and validate topology ────────────────────────
+      # Combined into one script so TOKEN is set and used in the same shell
+      # process -- CODEBUILD_ENV_FILE isn't populated in every CodeBuild
+      # environment, so it can't be relied on to pass it to a separate
+      # commands: list item.
       - |
         TOKEN=$(curl -fsSL -X POST "${EKSMANAGER_COGNITO_URL}/oauth2/token" \
           -H "Content-Type: application/x-www-form-urlencoded" \
@@ -65,10 +69,6 @@ phases:
           exit 1
         fi
 
-        echo "TOKEN=${TOKEN}" >> $CODEBUILD_ENV_FILE
-
-      # ── Validate topology and fetch server-supplied tfvars ────────────────
-      - |
         HTTP_STATUS=$(curl -fsSL -X POST "${EKSMANAGER_API_URL}/bootstrap" \
           -H "Authorization: Bearer ${TOKEN}" \
           -H "Content-Type: application/json" \
