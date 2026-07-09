@@ -62,7 +62,7 @@ phases:
     commands:
       # Confirm AWS runner identity
       - aws sts get-caller-identity
-      - echo "OK: AWS identity confirmed"
+      - "echo 'OK: AWS identity confirmed'"
 
       # ── S3 source version (set by CodeBuild for the object it fetched) ────
       - CURRENT_VERSION="${CODEBUILD_SOURCE_VERSION}"
@@ -166,13 +166,13 @@ phases:
         echo "OK: Wrote role-override.auto.tfvars.json (role: ${RESOLVED_ROLE})"
 
       - terraform init
-      - echo "OK: terraform init complete"
+      - "echo 'OK: terraform init complete'"
 
   build:
     commands:
       # ── Plan ─────────────────────────────────────────────────────────────
       - terraform plan -out=tfplan
-      - echo "OK: terraform plan complete"
+      - "echo 'OK: terraform plan complete'"
 
       # ── Verify approved version before applying ───────────────────────────
       - |
@@ -189,7 +189,7 @@ phases:
 
       # ── Apply ─────────────────────────────────────────────────────────────
       - terraform apply tfplan
-      - echo "OK: terraform apply complete"
+      - "echo 'OK: terraform apply complete'"
 
   post_build:
     commands:
