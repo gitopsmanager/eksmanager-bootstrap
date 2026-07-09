@@ -1,5 +1,4 @@
 {
-  "aws": {
     "manageSCPAutomatically": true,
     "secretsEditing": false,
     "orgConfig": {
@@ -8,5 +7,4 @@
         "222222222222": ["eu-west-1", "eu-central-1"]
       }
     }
-  }
 }
