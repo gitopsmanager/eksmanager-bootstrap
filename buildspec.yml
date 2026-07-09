@@ -62,6 +62,7 @@ phases:
     commands:
       # Confirm AWS runner identity
       - aws sts get-caller-identity
+      - echo "OK: AWS identity confirmed"
 
       # ── S3 source version (set by CodeBuild for the object it fetched) ────
       - CURRENT_VERSION="${CODEBUILD_SOURCE_VERSION}"
@@ -82,6 +83,7 @@ phases:
           echo "ERROR: Failed to obtain M2M bearer token"
           exit 1
         fi
+        echo "OK: M2M bearer token obtained"
 
         # AMI is looked up fresh every run rather than pinned, so the agent
         # always launches on the current Ubuntu 22.04 image in whichever
@@ -95,8 +97,9 @@ phases:
           echo "ERROR: Failed to look up current Ubuntu 22.04 AMI in ${SHARED_SERVICES_REGION}"
           exit 1
         fi
+        echo "OK: Resolved current Ubuntu 22.04 AMI: ${AGENT_AMI}"
 
-        jq \
+        if jq \
           --arg mid    "${MANAGEMENT_ACCOUNT_ID}" \
           --arg mreg   "${MANAGEMENT_ACCOUNT_REGION}" \
           --arg sid    "${SHARED_SERVICES_ACCOUNT_ID}" \
@@ -113,7 +116,13 @@ phases:
          | .agent.subnetId          = $subnet
          | .agent.securityGroupId   = $sg
          | .agent.ami               = $ami' \
-          topology.json > topology.tmp.json && mv topology.tmp.json topology.json
+          topology.json > topology.tmp.json; then
+          mv topology.tmp.json topology.json
+          echo "OK: Merged CodeBuild-supplied values into topology.json"
+        else
+          echo "ERROR: jq failed to merge CodeBuild-supplied values into topology.json"
+          exit 1
+        fi
 
         HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap/aws" \
           -H "Authorization: Bearer ${TOKEN}" \
@@ -127,6 +136,7 @@ phases:
           cat terraform.tfvars.json
           exit 1
         fi
+        echo "OK: topology.json validated (HTTP 200) — terraform.tfvars.json received"
 
       # ── Resolve shared services cross-account role ────────────────────────
       # Terraform's aws.shared provider (aws/providers.tf) needs a single,
@@ -141,7 +151,7 @@ phases:
           ROLE_ARN="arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${CANDIDATE_ROLE}"
           if aws sts assume-role --role-arn "${ROLE_ARN}" --role-session-name "eksmanager-bootstrap-buildspec" >/dev/null 2>/tmp/role-err.log; then
             RESOLVED_ROLE="${CANDIDATE_ROLE}"
-            echo "Resolved shared services role: ${RESOLVED_ROLE}"
+            echo "OK: Resolved shared services role: ${RESOLVED_ROLE}"
             break
           fi
         done
@@ -153,13 +163,16 @@ phases:
         fi
 
         echo "{\"shared_services_role_name\": \"${RESOLVED_ROLE}\"}" > role-override.auto.tfvars.json
+        echo "OK: Wrote role-override.auto.tfvars.json (role: ${RESOLVED_ROLE})"
 
       - terraform init
+      - echo "OK: terraform init complete"
 
   build:
     commands:
       # ── Plan ─────────────────────────────────────────────────────────────
       - terraform plan -out=tfplan
+      - echo "OK: terraform plan complete"
 
       # ── Verify approved version before applying ───────────────────────────
       - |
@@ -172,10 +185,11 @@ phases:
           echo "================================================================"
           exit 1
         fi
-        echo "Version approved — applying."
+        echo "OK: Version approved — applying."
 
       # ── Apply ─────────────────────────────────────────────────────────────
       - terraform apply tfplan
+      - echo "OK: terraform apply complete"
 
   post_build:
     commands:
