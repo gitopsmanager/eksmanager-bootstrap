@@ -14,8 +14,7 @@
     },
     "agent": {
       "name": "eks-manager-agent",
-      "subnetId": "subnet-xxxxxxxxxxxxxxxxx",
-      "securityGroupId": "sg-xxxxxxxxxxxxxxxxx"
+      "subnetId": "subnet-xxxxxxxxxxxxxxxxx"
     }
   }
 }
