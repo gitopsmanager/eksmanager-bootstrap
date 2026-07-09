@@ -77,7 +77,40 @@
     $env:GITHUB_APP_PRIVATE_KEY = [Convert]::ToBase64String((Get-Content app-private-key.pem -AsByteStream -Raw))
 
     .\setup-pipeline.ps1
+
+    To tear down everything this script created (same account, same env
+    vars still set), run instead:
+
+    .\setup-pipeline.ps1 -Destroy
+
+    If your shell's ambient AWS credentials aren't in the default profile/
+    region (e.g. you use named SSO profiles), pass them explicitly -- an
+    `aws sso login` only refreshes the profile you logged into; it doesn't
+    change what "ambient" means for a shell that isn't pointed at that
+    profile, so both the aws CLI calls and Terraform itself below would
+    otherwise still fail to find credentials:
+
+    .\setup-pipeline.ps1 -Region eu-west-1 -Profile AdministratorAccess-...
+
+    -Region here only affects this script's OWN direct aws CLI calls (OIDC
+    provider detection, role reconciliation, bucket emptying on -Destroy)
+    and credential resolution for Terraform -- it does NOT change which
+    region your infrastructure gets created in. That's controlled entirely
+    by $env:REGION above (-> shared_services_region).
 #>
+
+param(
+    [switch]$Destroy,
+    [string]$Region,
+    [string]$Profile   # shadows PowerShell's automatic $PROFILE var within this script -- harmless, that variable (path to your PS profile script) isn't used here
+)
+
+if ($Region) {
+    $env:AWS_DEFAULT_REGION = $Region
+}
+if ($Profile) {
+    $env:AWS_PROFILE = $Profile
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -127,7 +160,11 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BucketName = "eksmanager-bootstrap-$SharedServicesAccountId"
 
 Write-Host "================================================================"
-Write-Host "Running terraform apply (iam/codebuild-pipeline-tf)..."
+if ($Destroy) {
+    Write-Host "Running terraform destroy (iam/codebuild-pipeline-tf)..."
+} else {
+    Write-Host "Running terraform apply (iam/codebuild-pipeline-tf)..."
+}
 Write-Host "================================================================"
 Write-Host "Default provider: management account (your ambient credentials)."
 Write-Host "aws.shared provider: assumes $SharedServicesRoleName in $SharedServicesAccountId."
@@ -217,15 +254,62 @@ $tfVars = @(
 #     import -- Terraform will just create it fresh) or is already in state
 # terraform import validates the full variable set just like plan/apply do,
 # so it needs @tfVars passed too -- without it, Terraform falls back to
-# prompting interactively for every variable one at a time.
+# prompting interactively for every variable one at a time. Skipped
+# entirely for -Destroy -- nothing to reconcile when tearing down.
 # Native exe exit codes don't trigger $ErrorActionPreference, so no try/catch
 # needed here -- a non-zero exit just leaves $LASTEXITCODE set and unused.
-if ($awsCli) {
-    Write-Host "Removing any leftover AdministratorAccess from a prior manual bootstrap role, if present..."
-    aws iam detach-role-policy --role-name EKSManagerBootstrap `
-        --policy-arn arn:aws:iam::aws:policy/AdministratorAccess 2>$null | Out-Null
+if (-not $Destroy) {
+    if ($awsCli) {
+        Write-Host "Removing any leftover AdministratorAccess from a prior manual bootstrap role, if present..."
+        aws iam detach-role-policy --role-name EKSManagerBootstrap `
+            --policy-arn arn:aws:iam::aws:policy/AdministratorAccess 2>$null | Out-Null
+    }
+    terraform import @tfVars aws_iam_role.management_bootstrap EKSManagerBootstrap 2>$null | Out-Null
 }
-terraform import @tfVars aws_iam_role.management_bootstrap EKSManagerBootstrap 2>$null | Out-Null
+
+if ($Destroy) {
+    # ── Empty the bootstrap bucket before destroying it ─────────────────────
+    # Versioning is enabled on this bucket, so terraform destroy fails on it
+    # unless every object AND every version/delete-marker is gone first --
+    # not just the current versions Remove-S3Bucket-style cleanup would
+    # remove. aws CLI is a hard requirement here (unlike everywhere else in
+    # this script) since there's no other reasonable way to do this.
+    if (-not $awsCli) {
+        Write-Error "ERROR: aws CLI is required for -Destroy (to empty $BucketName first)."
+        exit 1
+    }
+    Write-Host "Emptying $BucketName (all object versions and delete markers)..."
+    $versionsJson = aws s3api list-object-versions --bucket $BucketName `
+        --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>$null
+    if ($versionsJson) {
+        $versions = $versionsJson | ConvertFrom-Json
+        if ($versions.Objects -and $versions.Objects.Count -gt 0) {
+            aws s3api delete-objects --bucket $BucketName --delete $versionsJson | Out-Null
+        }
+    }
+    $markersJson = aws s3api list-object-versions --bucket $BucketName `
+        --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>$null
+    if ($markersJson) {
+        $markers = $markersJson | ConvertFrom-Json
+        if ($markers.Objects -and $markers.Objects.Count -gt 0) {
+            aws s3api delete-objects --bucket $BucketName --delete $markersJson | Out-Null
+        }
+    }
+    Write-Host "Bucket emptied."
+    Write-Host ""
+
+    terraform destroy @tfVars
+
+    Write-Host ""
+    Write-Host "================================================================"
+    Write-Host "Pipeline infrastructure destroyed."
+    Write-Host "Any pre-existing GitHub Actions OIDC provider was left untouched"
+    Write-Host "(it was never created or tracked by this Terraform in the first"
+    Write-Host "place -- see main.tf's github_oidc_provider_arn variable)."
+    Write-Host "================================================================"
+    Pop-Location
+    exit 0
+}
 
 terraform apply @tfVars
 

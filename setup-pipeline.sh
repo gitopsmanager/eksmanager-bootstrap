@@ -72,9 +72,52 @@
 #   export GITHUB_APP_PRIVATE_KEY="$(base64 -w0 app-private-key.pem)"
 #
 #   ./setup-pipeline.sh
+#
+#   To tear down everything this script created (same account, same env
+#   vars still set), run instead:
+#   ./setup-pipeline.sh --destroy
+#
+#   If your shell's ambient AWS credentials aren't in the default profile/
+#   region (e.g. you use named SSO profiles), pass them explicitly -- an
+#   `aws sso login` only refreshes the profile you logged into; it doesn't
+#   change what "ambient" means for a shell that isn't pointed at that
+#   profile, so both the aws CLI calls and Terraform itself below would
+#   otherwise still fail to find credentials:
+#   ./setup-pipeline.sh --region eu-west-1 --profile AdministratorAccess-...
+#
+#   --region here only affects this script's OWN direct aws CLI calls
+#   (OIDC provider detection, role reconciliation, bucket emptying on
+#   --destroy) and credential resolution for Terraform -- it does NOT
+#   change which region your infrastructure gets created in. That's
+#   controlled entirely by REGION above (-> shared_services_region).
 # ==============================================================================
 
 set -euo pipefail
+
+DESTROY=false
+ARGS=("$@")
+i=0
+while [ $i -lt ${#ARGS[@]} ]; do
+  case "${ARGS[$i]}" in
+    --destroy)
+      DESTROY=true
+      i=$((i + 1))
+      ;;
+    --region)
+      export AWS_DEFAULT_REGION="${ARGS[$((i + 1))]}"
+      i=$((i + 2))
+      ;;
+    --profile)
+      export AWS_PROFILE="${ARGS[$((i + 1))]}"
+      i=$((i + 2))
+      ;;
+    *)
+      echo "ERROR: unrecognized argument '${ARGS[$i]}'" >&2
+      echo "USAGE: $0 [--destroy] [--region <region>] [--profile <profile>]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 SHARED_SERVICES_ACCOUNT_ID="${SHARED_SERVICES_ACCOUNT_ID:-}"
 SHARED_SERVICES_ROLE_NAME="${SHARED_SERVICES_ROLE_NAME:-AWSControlTowerExecution}"
@@ -110,7 +153,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUCKET_NAME="eksmanager-bootstrap-${SHARED_SERVICES_ACCOUNT_ID}"
 
 echo "================================================================"
-echo "Running terraform apply (iam/codebuild-pipeline-tf)..."
+if $DESTROY; then
+  echo "Running terraform destroy (iam/codebuild-pipeline-tf)..."
+else
+  echo "Running terraform apply (iam/codebuild-pipeline-tf)..."
+fi
 echo "================================================================"
 echo "Default provider: management account (your ambient credentials)."
 echo "aws.shared provider: assumes ${SHARED_SERVICES_ROLE_NAME} in ${SHARED_SERVICES_ACCOUNT_ID}."
@@ -188,13 +235,53 @@ TF_VARS=(
 #     import -- Terraform will just create it fresh) or is already in state
 # terraform import validates the full variable set just like plan/apply do,
 # so it needs "${TF_VARS[@]}" passed too -- without it, Terraform falls back
-# to prompting interactively for every variable one at a time.
-if command -v aws >/dev/null 2>&1; then
-  echo "Removing any leftover AdministratorAccess from a prior manual bootstrap role, if present..."
-  aws iam detach-role-policy --role-name EKSManagerBootstrap \
-    --policy-arn arn:aws:iam::aws:policy/AdministratorAccess 2>/dev/null || true
+# to prompting interactively for every variable one at a time. Skipped
+# entirely for --destroy -- nothing to reconcile when tearing down.
+if ! $DESTROY; then
+  if command -v aws >/dev/null 2>&1; then
+    echo "Removing any leftover AdministratorAccess from a prior manual bootstrap role, if present..."
+    aws iam detach-role-policy --role-name EKSManagerBootstrap \
+      --policy-arn arn:aws:iam::aws:policy/AdministratorAccess 2>/dev/null || true
+  fi
+  terraform import "${TF_VARS[@]}" aws_iam_role.management_bootstrap EKSManagerBootstrap 2>/dev/null || true
 fi
-terraform import "${TF_VARS[@]}" aws_iam_role.management_bootstrap EKSManagerBootstrap 2>/dev/null || true
+
+if $DESTROY; then
+  # ── Empty the bootstrap bucket before destroying it ────────────────────────
+  # Versioning is enabled on this bucket, so terraform destroy fails on it
+  # unless every object AND every version/delete-marker is gone first -- not
+  # just the current versions a plain `aws s3 rm --recursive` would remove.
+  # aws CLI is a hard requirement here (unlike everywhere else in this
+  # script) since there's no other reasonable way to do this.
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "ERROR: aws CLI is required for --destroy (to empty ${BUCKET_NAME} first)." >&2
+    exit 1
+  fi
+  echo "Emptying ${BUCKET_NAME} (all object versions and delete markers)..."
+  VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${BUCKET_NAME}" \
+    --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
+  if [ "$(echo "$VERSIONS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+    aws s3api delete-objects --bucket "${BUCKET_NAME}" --delete "$VERSIONS_JSON" >/dev/null
+  fi
+  MARKERS_JSON=$(aws s3api list-object-versions --bucket "${BUCKET_NAME}" \
+    --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
+  if [ "$(echo "$MARKERS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+    aws s3api delete-objects --bucket "${BUCKET_NAME}" --delete "$MARKERS_JSON" >/dev/null
+  fi
+  echo "Bucket emptied."
+  echo ""
+
+  terraform destroy "${TF_VARS[@]}"
+
+  echo ""
+  echo "================================================================"
+  echo "Pipeline infrastructure destroyed."
+  echo "Any pre-existing GitHub Actions OIDC provider was left untouched"
+  echo "(it was never created or tracked by this Terraform in the first"
+  echo "place -- see main.tf's github_oidc_provider_arn variable)."
+  echo "================================================================"
+  exit 0
+fi
 
 terraform apply "${TF_VARS[@]}"
 
@@ -215,7 +302,19 @@ NOW=$(date +%s)
 JWT_HEADER=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
 JWT_PAYLOAD=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((NOW - 60))" "$((NOW + 540))" "$GITHUB_APP_ID" | b64url)
 JWT_UNSIGNED="${JWT_HEADER}.${JWT_PAYLOAD}"
-JWT_SIGNATURE=$(printf '%s' "$JWT_UNSIGNED" | openssl dgst -sha256 -sign <(printf '%s' "$GITHUB_APP_PRIVATE_KEY" | base64 -d) | b64url)
+# Process substitution (<(...)) produces a /proc/<pid>/fd/<n> path that
+# only resolves inside the POSIX/MSYS2 world Git Bash emulates -- a native
+# Windows openssl.exe on PATH (common when it ships bundled with Git for
+# Windows) can't open it: "Could not open file or uri for loading private
+# key". A real temp file works identically everywhere. GITHUB_APP_PRIVATE_KEY
+# is base64-encoded PEM, decoded here; the file is removed on any exit path,
+# not just normal completion, since it briefly holds the actual private key.
+KEY_FILE=$(mktemp)
+trap 'rm -f "$KEY_FILE"' EXIT
+printf '%s' "$GITHUB_APP_PRIVATE_KEY" | base64 -d > "$KEY_FILE"
+JWT_SIGNATURE=$(printf '%s' "$JWT_UNSIGNED" | openssl dgst -sha256 -sign "$KEY_FILE" | b64url)
+rm -f "$KEY_FILE"
+trap - EXIT
 APP_JWT="${JWT_UNSIGNED}.${JWT_SIGNATURE}"
 
 INSTALL_TOKEN=$(curl -fsSL -X POST \
