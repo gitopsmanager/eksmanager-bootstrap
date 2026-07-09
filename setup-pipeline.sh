@@ -181,7 +181,22 @@ terraform init
 # that fails with EntityAlreadyExists, set the ARN manually and re-run.
 # Runs before TF_VARS is built below so the detected ARN (if any) actually
 # gets captured in it.
-if [ -z "${GITHUB_OIDC_PROVIDER_ARN:-}" ] && command -v aws >/dev/null 2>&1; then
+#
+# Skipped entirely if Terraform's own state already owns this resource
+# (aws_iam_openid_connect_provider.github_actions[0]) -- otherwise, on a
+# second run, auto-detection finds the provider Terraform itself created on
+# the FIRST run, sets GITHUB_OIDC_PROVIDER_ARN to its ARN, which flips the
+# resource's count from 1 to 0 -- Terraform then destroys the very provider
+# it's meant to be managing, even though the role's trust policy still
+# references the same (now-dangling) ARN string. Once Terraform owns it,
+# it should keep owning it, full stop.
+ALREADY_MANAGED_OIDC=false
+if terraform state list 2>/dev/null | grep -qx 'aws_iam_openid_connect_provider.github_actions\[0\]'; then
+  ALREADY_MANAGED_OIDC=true
+  echo "OIDC provider already managed by this Terraform state -- skipping auto-detection."
+fi
+
+if [ -z "${GITHUB_OIDC_PROVIDER_ARN:-}" ] && ! $ALREADY_MANAGED_OIDC && command -v aws >/dev/null 2>&1; then
   echo "Checking for an existing GitHub Actions OIDC provider in ${SHARED_SERVICES_ACCOUNT_ID}..."
   EXISTING_OIDC_ARN=$(
     set -e
