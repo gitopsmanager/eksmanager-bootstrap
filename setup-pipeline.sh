@@ -55,6 +55,7 @@
 #   run with no arguments:
 #
 #   export MANAGEMENT_ACCOUNT_ID="..."
+#   export MANAGEMENT_ACCOUNT_REGION="..."
 #   export SHARED_SERVICES_ACCOUNT_ID="..."
 #   export SHARED_SERVICES_ROLE_NAME="AWSControlTowerExecution"  # optional, default shown
 #   export GITHUB_REPO="your-org/eksmanager-bootstrap"
@@ -125,13 +126,14 @@ GITHUB_REPO="${GITHUB_REPO:-}"
 VPC_ID="${VPC_ID:-}"
 SUBNET_IDS="${SUBNET_IDS:-}"
 REGION="${REGION:-eu-west-1}"
+MANAGEMENT_ACCOUNT_REGION="${MANAGEMENT_ACCOUNT_REGION:-}"
 APPROVED_VERSION="${APPROVED_VERSION:-}"
 EKSMANAGER_CLIENT_ID="${EKSMANAGER_CLIENT_ID:-}"
 EKSMANAGER_CLIENT_SECRET="${EKSMANAGER_CLIENT_SECRET:-}"
 COGNITO_URL="${EKSMANAGER_COGNITO_URL:-}"
 API_URL="${EKSMANAGER_API_URL:-}"
 
-for required in MANAGEMENT_ACCOUNT_ID SHARED_SERVICES_ACCOUNT_ID VPC_ID SUBNET_IDS \
+for required in MANAGEMENT_ACCOUNT_ID MANAGEMENT_ACCOUNT_REGION SHARED_SERVICES_ACCOUNT_ID VPC_ID SUBNET_IDS \
                 EKSMANAGER_CLIENT_ID EKSMANAGER_CLIENT_SECRET COGNITO_URL API_URL \
                 GITHUB_REPO GITHUB_APP_ID GITHUB_APP_INSTALL_ID GITHUB_APP_PRIVATE_KEY; do
   if [ -z "${!required:-}" ]; then
@@ -220,6 +222,7 @@ fi
 
 TF_VARS=(
   -var="management_account_id=${MANAGEMENT_ACCOUNT_ID}"
+  -var="management_account_region=${MANAGEMENT_ACCOUNT_REGION}"
   -var="shared_services_account_id=${SHARED_SERVICES_ACCOUNT_ID}"
   -var="shared_services_role_name=${SHARED_SERVICES_ROLE_NAME}"
   -var="shared_services_region=${REGION}"

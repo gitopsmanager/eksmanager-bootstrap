@@ -25,6 +25,17 @@ version: 0.2
 #   EKSMANAGER_CLIENT_ID    ← M2M client ID        (from Settings → Terraform tile)
 #   EKSMANAGER_COGNITO_URL  ← Cognito token endpoint
 #   EKSMANAGER_API_URL      ← EKS Manager API URL
+#   MANAGEMENT_ACCOUNT_ID       ← 12-digit AWS account ID
+#   MANAGEMENT_ACCOUNT_REGION   ← e.g. eu-west-1
+#   SHARED_SERVICES_ACCOUNT_ID  ← 12-digit AWS account ID
+#   SHARED_SERVICES_REGION      ← e.g. eu-west-1
+#
+# Set automatically by iam/codebuild-pipeline-tf's own Terraform (not by
+# you) — listed here only so it's clear where these values in topology.json
+# come from:
+#   AGENT_SUBNET_ID          ← first of vpc_subnet_ids
+#   AGENT_SECURITY_GROUP_ID  ← aws_security_group.agent (no inbound, created
+#                              alongside the CodeBuild project itself)
 #
 # Secrets Manager (set once):
 #   /EKSManagerBootstrap/client-m2m-cognito-secret  ← M2M client secret
@@ -43,6 +54,7 @@ phases:
           "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
       - unzip -q terraform.zip && mv terraform /usr/local/bin/ && rm terraform.zip
       - terraform version
+      - command -v jq >/dev/null 2>&1 || (apt-get update -y && apt-get install -y jq)
 
   pre_build:
     commands:
@@ -68,6 +80,37 @@ phases:
           echo "ERROR: Failed to obtain M2M bearer token"
           exit 1
         fi
+
+        # AMI is looked up fresh every run rather than pinned, so the agent
+        # always launches on the current Ubuntu 22.04 image in whichever
+        # region the shared services account/agent actually run in.
+        AGENT_AMI=$(aws ssm get-parameter \
+          --name "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id" \
+          --region "${SHARED_SERVICES_REGION}" \
+          --query "Parameter.Value" --output text)
+
+        if [ -z "${AGENT_AMI}" ] || [ "${AGENT_AMI}" = "None" ]; then
+          echo "ERROR: Failed to look up current Ubuntu 22.04 AMI in ${SHARED_SERVICES_REGION}"
+          exit 1
+        fi
+
+        jq \
+          --arg mid    "${MANAGEMENT_ACCOUNT_ID}" \
+          --arg mreg   "${MANAGEMENT_ACCOUNT_REGION}" \
+          --arg sid    "${SHARED_SERVICES_ACCOUNT_ID}" \
+          --arg sreg   "${SHARED_SERVICES_REGION}" \
+          --arg subnet "${AGENT_SUBNET_ID}" \
+          --arg sg     "${AGENT_SECURITY_GROUP_ID}" \
+          --arg ami    "${AGENT_AMI}" \
+          '.aws.managementAccountId     = $mid
+         | .aws.managementAccountRegion = $mreg
+         | .aws.sharedServicesAccountId = $sid
+         | .aws.sharedServicesRegion    = $sreg
+         | .aws.agent.name              = "aws-eksmanager-agent"
+         | .aws.agent.subnetId          = $subnet
+         | .aws.agent.securityGroupId   = $sg
+         | .aws.agent.ami               = $ami' \
+          topology.json > topology.tmp.json && mv topology.tmp.json topology.json
 
         HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap" \
           -H "Authorization: Bearer ${TOKEN}" \

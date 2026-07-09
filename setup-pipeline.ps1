@@ -60,6 +60,7 @@
     then run with no arguments:
 
     $env:MANAGEMENT_ACCOUNT_ID = "..."
+    $env:MANAGEMENT_ACCOUNT_REGION = "..."
     $env:SHARED_SERVICES_ACCOUNT_ID = "..."
     $env:SHARED_SERVICES_ROLE_NAME = "AWSControlTowerExecution"  # optional, default shown
     $env:GITHUB_REPO = "your-org/eksmanager-bootstrap"
@@ -126,9 +127,11 @@ $EksManagerClientSecret  = $env:EKSMANAGER_CLIENT_SECRET
 $CognitoUrl              = $env:EKSMANAGER_COGNITO_URL
 $ApiUrl                  = $env:EKSMANAGER_API_URL
 $ManagementAccountId     = $env:MANAGEMENT_ACCOUNT_ID
+$ManagementAccountRegion = $env:MANAGEMENT_ACCOUNT_REGION
 
 foreach ($pair in @(
     @{ Name = "MANAGEMENT_ACCOUNT_ID";       Value = $ManagementAccountId }
+    @{ Name = "MANAGEMENT_ACCOUNT_REGION";   Value = $ManagementAccountRegion }
     @{ Name = "SHARED_SERVICES_ACCOUNT_ID";  Value = $SharedServicesAccountId }
     @{ Name = "VPC_ID";                      Value = $VpcId }
     @{ Name = "SUBNET_IDS";              Value = $env:SUBNET_IDS }
@@ -238,6 +241,7 @@ if (-not $env:GITHUB_OIDC_PROVIDER_ARN -and -not $alreadyManagedOidc -and $awsCl
 
 $tfVars = @(
     "-var=management_account_id=$ManagementAccountId"
+    "-var=management_account_region=$ManagementAccountRegion"
     "-var=shared_services_account_id=$SharedServicesAccountId"
     "-var=shared_services_role_name=$SharedServicesRoleName"
     "-var=shared_services_region=$Region"
