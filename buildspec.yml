@@ -25,19 +25,13 @@ version: 0.2
 #   EKSMANAGER_CLIENT_ID    ← M2M client ID        (from Settings → Terraform tile)
 #   EKSMANAGER_COGNITO_URL  ← Cognito token endpoint
 #   EKSMANAGER_API_URL      ← EKS Manager API URL
-#   MANAGEMENT_ACCOUNT_ID       ← 12-digit AWS account ID
-#   MANAGEMENT_ACCOUNT_REGION   ← e.g. eu-west-1
-#   SHARED_SERVICES_ACCOUNT_ID  ← 12-digit AWS account ID
-#   SHARED_SERVICES_REGION      ← e.g. eu-west-1
 #
-# Set automatically by iam/codebuild-pipeline-tf's own Terraform (not by
-# you) — listed here only so it's clear where these values in topology.json
-# come from:
-#   AGENT_SUBNET_ID          ← first of vpc_subnet_ids
-#   AGENT_SECURITY_GROUP_ID  ← aws_security_group.agent (no inbound, created
-#                              alongside the CodeBuild project itself)
-#   AGENT_NAME               ← defaults to aws-eksmanager-agent, overridable
-#                              via AGENT_NAME on setup-pipeline.sh/.ps1
+# Management/shared-services account+region and the agent's name/subnet/
+# security group/AMI are NOT CodeBuild env vars and are not in topology.json --
+# they're pinned once via setup-pipeline.sh (Settings → Terraform tile's
+# Generate button), written to pinned.auto.tfvars.json, and committed straight
+# into this repo. Terraform loads that file automatically. To change any of
+# them, re-run setup-pipeline.sh -- not this buildspec, not a GUI edit.
 #
 # Secrets Manager (set once):
 #   /EKSManagerBootstrap/client-m2m-cognito-secret  ← M2M client secret
@@ -56,7 +50,6 @@ phases:
           "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
       - unzip -q terraform.zip && mv terraform /usr/local/bin/ && rm terraform.zip
       - terraform version
-      - command -v jq >/dev/null 2>&1 || (apt-get update -y && apt-get install -y jq)
 
   pre_build:
     commands:
@@ -85,45 +78,6 @@ phases:
         fi
         echo "OK: M2M bearer token obtained"
 
-        # AMI is looked up fresh every run rather than pinned, so the agent
-        # always launches on the current Ubuntu 22.04 image in whichever
-        # region the shared services account/agent actually run in.
-        AGENT_AMI=$(aws ssm get-parameter \
-          --name "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id" \
-          --region "${SHARED_SERVICES_REGION}" \
-          --query "Parameter.Value" --output text)
-
-        if [ -z "${AGENT_AMI}" ] || [ "${AGENT_AMI}" = "None" ]; then
-          echo "ERROR: Failed to look up current Ubuntu 22.04 AMI in ${SHARED_SERVICES_REGION}"
-          exit 1
-        fi
-        echo "OK: Resolved current Ubuntu 22.04 AMI: ${AGENT_AMI}"
-
-        if jq \
-          --arg mid    "${MANAGEMENT_ACCOUNT_ID}" \
-          --arg mreg   "${MANAGEMENT_ACCOUNT_REGION}" \
-          --arg sid    "${SHARED_SERVICES_ACCOUNT_ID}" \
-          --arg sreg   "${SHARED_SERVICES_REGION}" \
-          --arg name   "${AGENT_NAME}" \
-          --arg subnet "${AGENT_SUBNET_ID}" \
-          --arg sg     "${AGENT_SECURITY_GROUP_ID}" \
-          --arg ami    "${AGENT_AMI}" \
-          '.managementAccountId     = $mid
-         | .managementAccountRegion = $mreg
-         | .sharedServicesAccountId = $sid
-         | .sharedServicesRegion    = $sreg
-         | .agent.name              = $name
-         | .agent.subnetId          = $subnet
-         | .agent.securityGroupId   = $sg
-         | .agent.ami               = $ami' \
-          topology.json > topology.tmp.json; then
-          mv topology.tmp.json topology.json
-          echo "OK: Merged CodeBuild-supplied values into topology.json"
-        else
-          echo "ERROR: jq failed to merge CodeBuild-supplied values into topology.json"
-          exit 1
-        fi
-
         HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap/aws" \
           -H "Authorization: Bearer ${TOKEN}" \
           -H "Content-Type: application/json" \
@@ -145,7 +99,7 @@ phases:
       # then OrganizationAccountAccessRole, and fail the build outright if
       # neither is assumable (no interactive fallback is possible mid-build).
       - |
-        SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('terraform.tfvars.json'))['shared_services_account_id'])")
+        SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('pinned.auto.tfvars.json'))['shared_services_account_id'])")
         RESOLVED_ROLE=""
         for CANDIDATE_ROLE in "AWSControlTowerExecution" "OrganizationAccountAccessRole"; do
           ROLE_ARN="arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${CANDIDATE_ROLE}"
