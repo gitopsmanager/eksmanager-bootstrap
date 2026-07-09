@@ -447,7 +447,11 @@ function Write-GithubFile {
             -Headers @{ Authorization = "Bearer $installToken"; Accept = "application/vnd.github+json" }
         $existingSha = $existing.sha
     } catch {
-        # 404 = file doesn't exist yet, fine -- anything else, let the PUT below surface it
+        if ($_.Exception.Response.StatusCode.value__ -ne 404) {
+            Write-Error "ERROR: failed to check existing $Path — $_"
+            exit 1
+        }
+        # 404 = file doesn't exist yet, fine -- $existingSha stays $null, PUT below creates it
     }
 
     $bodyObject = [ordered]@{ message = $Message; content = $contentB64 }

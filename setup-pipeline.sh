@@ -421,7 +421,7 @@ write_github_file() {
     "https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO_NAME}/contents/${path}" \
     -H "Authorization: Bearer ${INSTALL_TOKEN}" \
     -H "Accept: application/vnd.github+json" \
-    | grep -o '"sha": *"[^"]*"' | head -1 | cut -d'"' -f4)
+    | grep -o '"sha": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 
   if [ -n "$existing_sha" ]; then
     body=$(printf '{"message":"%s","content":"%s","sha":"%s"}' "$message" "$b64" "$existing_sha")
