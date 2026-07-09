@@ -56,6 +56,7 @@
 #
 #   export MANAGEMENT_ACCOUNT_ID="..."
 #   export MANAGEMENT_ACCOUNT_REGION="..."
+#   export AGENT_NAME="aws-eksmanager-agent"        # optional, default shown
 #   export SHARED_SERVICES_ACCOUNT_ID="..."
 #   export SHARED_SERVICES_ROLE_NAME="AWSControlTowerExecution"  # optional, default shown
 #   export GITHUB_REPO="your-org/eksmanager-bootstrap"
@@ -127,6 +128,7 @@ VPC_ID="${VPC_ID:-}"
 SUBNET_IDS="${SUBNET_IDS:-}"
 REGION="${REGION:-eu-west-1}"
 MANAGEMENT_ACCOUNT_REGION="${MANAGEMENT_ACCOUNT_REGION:-}"
+AGENT_NAME="${AGENT_NAME:-aws-eksmanager-agent}"
 APPROVED_VERSION="${APPROVED_VERSION:-}"
 EKSMANAGER_CLIENT_ID="${EKSMANAGER_CLIENT_ID:-}"
 EKSMANAGER_CLIENT_SECRET="${EKSMANAGER_CLIENT_SECRET:-}"
@@ -223,6 +225,7 @@ fi
 TF_VARS=(
   -var="management_account_id=${MANAGEMENT_ACCOUNT_ID}"
   -var="management_account_region=${MANAGEMENT_ACCOUNT_REGION}"
+  -var="agent_name=${AGENT_NAME}"
   -var="shared_services_account_id=${SHARED_SERVICES_ACCOUNT_ID}"
   -var="shared_services_role_name=${SHARED_SERVICES_ROLE_NAME}"
   -var="shared_services_region=${REGION}"

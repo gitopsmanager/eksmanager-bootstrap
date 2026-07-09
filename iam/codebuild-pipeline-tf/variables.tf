@@ -88,6 +88,12 @@ variable "vpc_subnet_ids" {
   }
 }
 
+variable "agent_name" {
+  description = "EC2 Name tag for the agent VM. Passed through to topology.json via the AGENT_NAME environment variable on the CodeBuild project."
+  type        = string
+  default     = "aws-eksmanager-agent"
+}
+
 variable "github_oidc_provider_arn" {
   description = "ARN of an existing GitHub Actions OIDC provider (arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com), if the shared services account already has one. Leave empty (default) to have Terraform create it — an AWS account can only have one per URL, so if apply fails with EntityAlreadyExists on aws_iam_openid_connect_provider.github_actions, set this to the existing one's ARN and re-run."
   type        = string

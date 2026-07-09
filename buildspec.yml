@@ -36,6 +36,8 @@ version: 0.2
 #   AGENT_SUBNET_ID          ← first of vpc_subnet_ids
 #   AGENT_SECURITY_GROUP_ID  ← aws_security_group.agent (no inbound, created
 #                              alongside the CodeBuild project itself)
+#   AGENT_NAME               ← defaults to aws-eksmanager-agent, overridable
+#                              via AGENT_NAME on setup-pipeline.sh/.ps1
 #
 # Secrets Manager (set once):
 #   /EKSManagerBootstrap/client-m2m-cognito-secret  ← M2M client secret
@@ -99,6 +101,7 @@ phases:
           --arg mreg   "${MANAGEMENT_ACCOUNT_REGION}" \
           --arg sid    "${SHARED_SERVICES_ACCOUNT_ID}" \
           --arg sreg   "${SHARED_SERVICES_REGION}" \
+          --arg name   "${AGENT_NAME}" \
           --arg subnet "${AGENT_SUBNET_ID}" \
           --arg sg     "${AGENT_SECURITY_GROUP_ID}" \
           --arg ami    "${AGENT_AMI}" \
@@ -106,7 +109,7 @@ phases:
          | .aws.managementAccountRegion = $mreg
          | .aws.sharedServicesAccountId = $sid
          | .aws.sharedServicesRegion    = $sreg
-         | .aws.agent.name              = "aws-eksmanager-agent"
+         | .aws.agent.name              = $name
          | .aws.agent.subnetId          = $subnet
          | .aws.agent.securityGroupId   = $sg
          | .aws.agent.ami               = $ami' \

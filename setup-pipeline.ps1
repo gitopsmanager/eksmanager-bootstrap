@@ -61,6 +61,7 @@
 
     $env:MANAGEMENT_ACCOUNT_ID = "..."
     $env:MANAGEMENT_ACCOUNT_REGION = "..."
+    $env:AGENT_NAME = "aws-eksmanager-agent"       # optional, default shown
     $env:SHARED_SERVICES_ACCOUNT_ID = "..."
     $env:SHARED_SERVICES_ROLE_NAME = "AWSControlTowerExecution"  # optional, default shown
     $env:GITHUB_REPO = "your-org/eksmanager-bootstrap"
@@ -128,6 +129,7 @@ $CognitoUrl              = $env:EKSMANAGER_COGNITO_URL
 $ApiUrl                  = $env:EKSMANAGER_API_URL
 $ManagementAccountId     = $env:MANAGEMENT_ACCOUNT_ID
 $ManagementAccountRegion = $env:MANAGEMENT_ACCOUNT_REGION
+$AgentName               = if ($env:AGENT_NAME) { $env:AGENT_NAME } else { "aws-eksmanager-agent" }
 
 foreach ($pair in @(
     @{ Name = "MANAGEMENT_ACCOUNT_ID";       Value = $ManagementAccountId }
@@ -242,6 +244,7 @@ if (-not $env:GITHUB_OIDC_PROVIDER_ARN -and -not $alreadyManagedOidc -and $awsCl
 $tfVars = @(
     "-var=management_account_id=$ManagementAccountId"
     "-var=management_account_region=$ManagementAccountRegion"
+    "-var=agent_name=$AgentName"
     "-var=shared_services_account_id=$SharedServicesAccountId"
     "-var=shared_services_role_name=$SharedServicesRoleName"
     "-var=shared_services_region=$Region"

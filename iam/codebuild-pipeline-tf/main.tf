@@ -386,6 +386,16 @@ resource "aws_iam_role_policy" "codebuild" {
             "ec2:AuthorizedService" = "codebuild.amazonaws.com"
           }
         }
+      },
+      {
+        # Public parameters published by Canonical/AWS — no account ID in
+        # the ARN. Used by buildspec.yml to resolve the current Ubuntu
+        # 22.04 AMI for the agent VM at build time, per shared services
+        # region.
+        Sid      = "PublicAmiLookup"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:*::parameter/aws/service/canonical/ubuntu/*"
       }
     ]
   })
@@ -402,6 +412,21 @@ resource "aws_security_group" "codebuild" {
   provider    = aws.shared
   name        = "eksmanager-bootstrap-codebuild-sg"
   description = "Network perimeter for the EKS Manager bootstrap CodeBuild container - no inbound, egress via VPC routing"
+  vpc_id      = var.vpc_id
+
+  egress {
+    description = "All outbound - restrict further via VPC route tables / NACLs if needed"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "agent" {
+  provider    = aws.shared
+  name        = "eksmanager-bootstrap-agent-sg"
+  description = "EKS Manager agent VM - no inbound, egress only. Agent polls out; nothing connects in."
   vpc_id      = var.vpc_id
 
   egress {
@@ -457,6 +482,34 @@ resource "aws_codebuild_project" "eksmanager_bootstrap" {
     environment_variable {
       name  = "EKSMANAGER_API_URL"
       value = var.eksmanager_api_url
+    }
+    environment_variable {
+      name  = "MANAGEMENT_ACCOUNT_ID"
+      value = var.management_account_id
+    }
+    environment_variable {
+      name  = "MANAGEMENT_ACCOUNT_REGION"
+      value = var.management_account_region
+    }
+    environment_variable {
+      name  = "SHARED_SERVICES_ACCOUNT_ID"
+      value = var.shared_services_account_id
+    }
+    environment_variable {
+      name  = "SHARED_SERVICES_REGION"
+      value = var.shared_services_region
+    }
+    environment_variable {
+      name  = "AGENT_SUBNET_ID"
+      value = var.vpc_subnet_ids[0]
+    }
+    environment_variable {
+      name  = "AGENT_SECURITY_GROUP_ID"
+      value = aws_security_group.agent.id
+    }
+    environment_variable {
+      name  = "AGENT_NAME"
+      value = var.agent_name
     }
   }
 
