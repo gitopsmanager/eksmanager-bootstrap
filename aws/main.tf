@@ -142,7 +142,6 @@ module "agent" {
   agent_instance_type     = var.agent_instance_type
   agent_ami               = var.agent_ami
   agent_subnet_id         = var.agent_subnet_id
-  agent_security_group_id = var.agent_security_group_id
   agent_role_name         = module.shared_services.agent_role_name
   af7_bundle_download_url = var.af7_bundle_download_url
   agent_upgrade_download_url = var.agent_upgrade_download_url

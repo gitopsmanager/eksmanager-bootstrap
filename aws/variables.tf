@@ -87,10 +87,9 @@ variable "agent_subnet_id" {
   type        = string
 }
 
-variable "agent_security_group_id" {
-  description = "Security group ID for the agent VM."
-  type        = string
-}
+# agent_security_group_id intentionally removed -- looked up via a data
+# source in aws/modules/agent/main.tf (fixed name
+# eksmanager-bootstrap-agent-sg, created by iam/codebuild-pipeline-tf).
 
 variable "agent_ami" {
   description = "Override AMI ID. Leave empty to use the latest Ubuntu 22.04 build automatically."

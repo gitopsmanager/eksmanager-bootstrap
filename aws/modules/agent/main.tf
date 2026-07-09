@@ -28,11 +28,24 @@ data "aws_ami" "ubuntu_jammy" {
   }
 }
 
+data "aws_subnet" "agent" {
+  id = var.agent_subnet_id
+}
+
+# Created by iam/codebuild-pipeline-tf/main.tf alongside the CodeBuild
+# project itself -- fixed name, looked up rather than passed in, since it's
+# never known until that Terraform run creates it and there's no reason for
+# its ID to travel through topology.json/POST /bootstrap/aws to get here.
+data "aws_security_group" "agent" {
+  name   = "eksmanager-bootstrap-agent-sg"
+  vpc_id = data.aws_subnet.agent.vpc_id
+}
+
 resource "aws_instance" "agent" {
   ami                    = coalesce(var.agent_ami, data.aws_ami.ubuntu_jammy.id)
   instance_type          = var.agent_instance_type
   subnet_id              = var.agent_subnet_id
-  vpc_security_group_ids = [var.agent_security_group_id]
+  vpc_security_group_ids = [data.aws_security_group.agent.id]
   iam_instance_profile   = var.agent_role_name
 
   root_block_device {
