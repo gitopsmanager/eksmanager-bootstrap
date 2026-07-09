@@ -7,7 +7,7 @@ version: 0.2
 # Sourced from S3 (see iam/codebuild-pipeline-tf/main.tf) — setup-pipeline.sh/
 # .ps1 clones the fork with a GitHub App token, zips it, and uploads it here.
 # CodeBuild itself never touches GitHub. The server supplies presigned S3
-# URLs, SSO ARN and a bearer token via POST /bootstrap.
+# URLs, SSO ARN and a bearer token via POST /bootstrap/aws.
 #
 # Entra SAML SSO is set up separately, outside this pipeline — see
 # azure-saml/README.md in the repo root.
@@ -105,17 +105,17 @@ phases:
           --arg subnet "${AGENT_SUBNET_ID}" \
           --arg sg     "${AGENT_SECURITY_GROUP_ID}" \
           --arg ami    "${AGENT_AMI}" \
-          '.aws.managementAccountId     = $mid
-         | .aws.managementAccountRegion = $mreg
-         | .aws.sharedServicesAccountId = $sid
-         | .aws.sharedServicesRegion    = $sreg
-         | .aws.agent.name              = $name
-         | .aws.agent.subnetId          = $subnet
-         | .aws.agent.securityGroupId   = $sg
-         | .aws.agent.ami               = $ami' \
+          '.managementAccountId     = $mid
+         | .managementAccountRegion = $mreg
+         | .sharedServicesAccountId = $sid
+         | .sharedServicesRegion    = $sreg
+         | .agent.name              = $name
+         | .agent.subnetId          = $subnet
+         | .agent.securityGroupId   = $sg
+         | .agent.ami               = $ami' \
           topology.json > topology.tmp.json && mv topology.tmp.json topology.json
 
-        HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap" \
+        HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap/aws" \
           -H "Authorization: Bearer ${TOKEN}" \
           -H "Content-Type: application/json" \
           -d @topology.json \
