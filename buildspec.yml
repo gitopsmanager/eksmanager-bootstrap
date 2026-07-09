@@ -69,7 +69,7 @@ phases:
           exit 1
         fi
 
-        HTTP_STATUS=$(curl -fsSL -X POST "${EKSMANAGER_API_URL}/bootstrap" \
+        HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap" \
           -H "Authorization: Bearer ${TOKEN}" \
           -H "Content-Type: application/json" \
           -d @topology.json \
