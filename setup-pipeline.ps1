@@ -425,6 +425,7 @@ $agentSubnetId = ($env:SUBNET_IDS -split ',')[0]
 $pinnedObject = [ordered]@{
     management_account_id     = $ManagementAccountId
     management_account_region = $ManagementAccountRegion
+    shared_services_account_id = $SharedServicesAccountId
     shared_services_region    = $Region
     agent_name                = $AgentName
     agent_subnet_id           = $agentSubnetId

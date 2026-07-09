@@ -402,6 +402,7 @@ PINNED_JSON=$(cat <<EOF
 {
   "management_account_id": "${MANAGEMENT_ACCOUNT_ID}",
   "management_account_region": "${MANAGEMENT_ACCOUNT_REGION}",
+  "shared_services_account_id": "${SHARED_SERVICES_ACCOUNT_ID}",
   "shared_services_region": "${REGION}",
   "agent_name": "${AGENT_NAME}",
   "agent_subnet_id": "${AGENT_SUBNET_ID}",
