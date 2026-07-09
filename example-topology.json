@@ -1,9 +1,5 @@
 {
   "aws": {
-    "managementAccountId": "098765432109",
-    "managementAccountRegion": "eu-west-1",
-    "sharedServicesAccountId": "123456789012",
-    "sharedServicesRegion": "eu-west-1",
     "manageSCPAutomatically": true,
     "secretsEditing": false,
     "orgConfig": {
@@ -11,10 +7,6 @@
         "111111111111": ["eu-west-1"],
         "222222222222": ["eu-west-1", "eu-central-1"]
       }
-    },
-    "agent": {
-      "name": "eks-manager-agent",
-      "subnetId": "subnet-xxxxxxxxxxxxxxxxx"
     }
   }
 }
