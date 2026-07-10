@@ -423,6 +423,16 @@ resource "aws_iam_role_policy" "codebuild" {
         Resource = "arn:aws:ssm:*::parameter/aws/service/canonical/ubuntu/*"
       },
       {
+        # aws/modules/ssm creates 10 parameters under /EKSManager/config/*.
+        # The SCP's ProtectEKSManagerParameters exemption only removes the
+        # guardrail's deny -- it was never a grant on its own, so this is
+        # still needed as the actual identity-policy allow underneath it.
+        Sid      = "SsmConfigParameters"
+        Effect   = "Allow"
+        Action   = "ssm:*"
+        Resource = "arn:aws:ssm:*:${var.shared_services_account_id}:parameter/EKSManager/config/*"
+      },
+      {
         # aws/modules/agent's data "aws_ami" "ubuntu_jammy" lookup.
         # DescribeSubnets/DescribeSecurityGroups for that module's other two
         # data sources are already covered by AllowVPCAttachment above.
@@ -448,7 +458,8 @@ resource "aws_iam_role_policy" "codebuild" {
           "ec2:ModifyInstanceAttribute",
           "ec2:CreateTags",
           "ec2:DeleteTags",
-          "ec2:DescribeVolumes"
+          "ec2:DescribeVolumes",
+          "ec2:DescribeInstanceTypes"
         ]
         Resource = "*"
       },
