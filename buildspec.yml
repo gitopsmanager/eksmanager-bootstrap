@@ -141,6 +141,10 @@ phases:
           module.stackset.aws_cloudformation_stack_set.enable_account \
           "EKSManagerEnableAccountStackSet,DELEGATED_ADMIN" \
           || echo "OK (or already imported): cloudformation_stack_set enable_account"
+
+        terraform -chdir=aws untaint \
+          module.shared_services.aws_secretsmanager_secret.app \
+          || echo "OK (not tainted, or already untainted): secretsmanager_secret app"
       - "echo 'OK: one-time import block complete -- remove it from buildspec.yml now'"
 
   build:

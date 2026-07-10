@@ -334,7 +334,10 @@ resource "aws_iam_role_policy" "codebuild" {
           "cloudformation:DescribeStackInstance",
           "cloudformation:TagResource"
         ]
-        Resource = "arn:aws:cloudformation:*:*:stackset/EKSManagerEnableAccountStackSet:*"
+        Resource = [
+          "arn:aws:cloudformation:*:*:stackset/EKSManagerEnableAccountStackSet:*",
+          "arn:aws:cloudformation::${var.management_account_id}:stackset-target/EKSManagerEnableAccountStackSet:*"
+        ]
       },
       {
         # ListStackSets does not support resource-level scoping.
