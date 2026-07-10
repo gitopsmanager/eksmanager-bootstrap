@@ -86,13 +86,14 @@ phases:
         fi
         echo "OK: topology.json validated (HTTP 200) — terraform.tfvars.json received"
 
-      - terraform init
+      - cp terraform.tfvars.json pinned.auto.tfvars.json aws/
+      - terraform -chdir=aws init
       - "echo 'OK: terraform init complete'"
 
   build:
     commands:
       # ── Plan ─────────────────────────────────────────────────────────────
-      - terraform plan -out=tfplan
+      - terraform -chdir=aws plan -out=tfplan
       - "echo 'OK: terraform plan complete'"
 
       # ── Verify approved version before applying ───────────────────────────
@@ -109,7 +110,7 @@ phases:
         echo "OK: Version approved — applying."
 
       # ── Apply ─────────────────────────────────────────────────────────────
-      - terraform apply tfplan
+      - terraform -chdir=aws apply tfplan
       - "echo 'OK: terraform apply complete'"
 
   post_build:
@@ -118,5 +119,5 @@ phases:
 
 artifacts:
   files:
-    - terraform.tfstate
+    - aws/terraform.tfstate
   discard-paths: yes
