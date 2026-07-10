@@ -344,6 +344,18 @@ resource "aws_iam_role_policy" "codebuild" {
         Resource = "*"
       },
       {
+        # CloudFormation checks authorization against a pseudo-resource ARN
+        # for every AWS resource type referenced in a StackSet's template --
+        # separate from the stackset resource ARN itself (DelegatedStackSetOperations
+        # above). EKSManagerEnableAccountStackSet's template creates exactly
+        # one resource type, AWS::IAM::Role, so only that one type ARN is
+        # needed.
+        Sid      = "StackSetTemplateResourceTypeIamRole"
+        Effect   = "Allow"
+        Action   = ["cloudformation:CreateStackSet", "cloudformation:UpdateStackSet"]
+        Resource = "arn:aws:cloudformation:*::type/resource/AWS-IAM-Role"
+      },
+      {
         # Read-only — needed to resolve OU and account structure when
         # deploying StackSet instances. No write/mutate permissions.
         Sid    = "OrganizationsReadOnly"
@@ -514,7 +526,8 @@ resource "aws_iam_role_policy" "codebuild" {
           "secretsmanager:DescribeSecret",
           "secretsmanager:UpdateSecret",
           "secretsmanager:TagResource",
-          "secretsmanager:UntagResource"
+          "secretsmanager:UntagResource",
+          "secretsmanager:Get*"
         ]
         Resource = "arn:aws:secretsmanager:*:${var.shared_services_account_id}:secret:/EKSManager/config-??????"
       },

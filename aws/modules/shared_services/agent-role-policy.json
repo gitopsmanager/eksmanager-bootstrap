@@ -18,7 +18,7 @@
         "secretsmanager:DescribeSecret",
         "secretsmanager:DeleteSecret"
       ],
-      "Resource": "arn:aws:secretsmanager:*:{{SHARED_SERVICES_ACCOUNT_ID}}:secret:/EKSManager/*"
+      "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManager/*"
     },
     {
       "Sid": "ParameterStoreReadConfig",
@@ -29,7 +29,7 @@
         "ssm:GetParametersByPath"
       ],
       "Resource": [
-        "arn:aws:ssm:*:{{SHARED_SERVICES_ACCOUNT_ID}}:parameter/EKSManager/config/*",
+        "arn:aws:ssm:*:${SHARED_SERVICES_ACCOUNT_ID}:parameter/EKSManager/config/*",
         "arn:aws:ssm:*:*:parameter/EKSManager/*/AllowedRegions"
       ]
     },
@@ -55,7 +55,7 @@
         "logs:DescribeLogStreams",
         "logs:PutRetentionPolicy"
       ],
-      "Resource": "arn:aws:logs:*:{{SHARED_SERVICES_ACCOUNT_ID}}:log-group:/eksmanager/*"
+      "Resource": "arn:aws:logs:*:${SHARED_SERVICES_ACCOUNT_ID}:log-group:/eksmanager/*"
     },
     {
       "Sid": "ECRCrossAccountPolicyManagement",
