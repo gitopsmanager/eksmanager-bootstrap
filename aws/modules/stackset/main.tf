@@ -47,6 +47,7 @@ resource "aws_cloudformation_stack_set_instance" "accounts" {
   deployment_targets {
     organizational_unit_ids = [each.value.ou_id]
     accounts                = [each.key]
+    account_filter_type     = "INTERSECTION"
   }
 
   parameter_overrides = {
