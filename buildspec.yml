@@ -12,12 +12,6 @@ version: 0.2
 # Entra SAML SSO is set up separately, outside this pipeline — see
 # azure-saml/README.md in the repo root.
 #
-# pre_build also resolves which cross-account role aws/providers.tf's
-# aws.shared provider should assume in the shared services account — tries
-# AWSControlTowerExecution, then OrganizationAccountAccessRole, and fails
-# the build if neither works. Written to role-override.auto.tfvars.json,
-# which Terraform loads automatically.
-#
 # Environment variables (set on the CodeBuild project):
 #   APPROVED_VERSION  ← S3 object version ID approved for apply. Leave empty
 #                       on first run — build will print the version ID to
@@ -91,33 +85,6 @@ phases:
           exit 1
         fi
         echo "OK: topology.json validated (HTTP 200) — terraform.tfvars.json received"
-
-      # ── Resolve shared services cross-account role ────────────────────────
-      # Terraform's aws.shared provider (aws/providers.tf) needs a single,
-      # static role_arn — it can't itself try multiple candidates. So resolve
-      # it here in bash before terraform runs: try AWSControlTowerExecution,
-      # then OrganizationAccountAccessRole, and fail the build outright if
-      # neither is assumable (no interactive fallback is possible mid-build).
-      - |
-        SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('pinned.auto.tfvars.json'))['shared_services_account_id'])")
-        RESOLVED_ROLE=""
-        for CANDIDATE_ROLE in "AWSControlTowerExecution" "OrganizationAccountAccessRole"; do
-          ROLE_ARN="arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${CANDIDATE_ROLE}"
-          if aws sts assume-role --role-arn "${ROLE_ARN}" --role-session-name "eksmanager-bootstrap-buildspec" >/dev/null 2>/tmp/role-err.log; then
-            RESOLVED_ROLE="${CANDIDATE_ROLE}"
-            echo "OK: Resolved shared services role: ${RESOLVED_ROLE}"
-            break
-          fi
-        done
-
-        if [ -z "${RESOLVED_ROLE}" ]; then
-          echo "ERROR: could not assume AWSControlTowerExecution or OrganizationAccountAccessRole in account ${SHARED_SERVICES_ACCOUNT_ID}:"
-          cat /tmp/role-err.log
-          exit 1
-        fi
-
-        echo "{\"shared_services_role_name\": \"${RESOLVED_ROLE}\"}" > role-override.auto.tfvars.json
-        echo "OK: Wrote role-override.auto.tfvars.json (role: ${RESOLVED_ROLE})"
 
       - terraform init
       - "echo 'OK: terraform init complete'"

@@ -34,12 +34,6 @@ variable "shared_services_region" {
   type        = string
 }
 
-variable "shared_services_role_name" {
-  description = "IAM role in shared services account to assume. Default suits accounts vended via Control Tower's Account Factory. If created via plain AWS Organizations without Control Tower, set this to OrganizationAccountAccessRole instead."
-  type        = string
-  default     = "AWSControlTowerExecution"
-}
-
 variable "manage_scp_automatically" {
   description = "If true, the module creates and attaches the EKSManager SCP to the OUs in org_config."
   type        = bool

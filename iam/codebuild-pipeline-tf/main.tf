@@ -301,24 +301,6 @@ resource "aws_iam_role_policy" "codebuild" {
         Resource = aws_iam_role.management_bootstrap.arn
       },
       {
-        # Lets the root aws/ Terraform module's aws.shared provider assume
-        # an elevated role WITHIN this same (shared services) account --
-        # EKSManagerBootstrapSharedRole itself is deliberately narrow (see
-        # header comment), so provisioning the actual bootstrap
-        # infrastructure (agent EC2, ECR, Secrets Manager writes, etc.)
-        # needs this explicit elevation, same reasoning as the
-        # management-account grant above. buildspec.yml resolves at
-        # runtime which of these two actually exists in the account and
-        # writes it to role-override.auto.tfvars.json.
-        Sid    = "AssumeSharedServicesElevatedRole"
-        Effect = "Allow"
-        Action = "sts:AssumeRole"
-        Resource = [
-          "arn:aws:iam::${var.shared_services_account_id}:role/AWSControlTowerExecution",
-          "arn:aws:iam::${var.shared_services_account_id}:role/OrganizationAccountAccessRole"
-        ]
-      },
-      {
         Sid      = "CloudWatchLogs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
@@ -414,6 +396,138 @@ resource "aws_iam_role_policy" "codebuild" {
         Effect   = "Allow"
         Action   = "ssm:GetParameter"
         Resource = "arn:aws:ssm:*::parameter/aws/service/canonical/ubuntu/*"
+      },
+      {
+        # aws/modules/agent's data "aws_ami" "ubuntu_jammy" lookup.
+        # DescribeSubnets/DescribeSecurityGroups for that module's other two
+        # data sources are already covered by AllowVPCAttachment above.
+        Sid      = "Ec2AmiLookup"
+        Effect   = "Allow"
+        Action   = "ec2:DescribeImages"
+        Resource = "*"
+      },
+      {
+        # aws/modules/agent's aws_instance.agent. RunInstances' resource-level
+        # authorization spans multiple implicit resource types (instance,
+        # volume, network-interface, security-group) in a way that's fragile
+        # to scope narrowly without risking another AccessDenied on some
+        # combination AWS evaluates but this policy didn't anticipate --
+        # Resource "*" is deliberate here, not an oversight.
+        Sid    = "Ec2AgentInstanceLifecycle"
+        Effect = "Allow"
+        Action = [
+          "ec2:RunInstances",
+          "ec2:TerminateInstances",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceAttribute",
+          "ec2:ModifyInstanceAttribute",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:DescribeVolumes"
+        ]
+        Resource = "*"
+      },
+      {
+        # ec2:RunInstances with iam_instance_profile set requires PassRole
+        # on that specific role -- without this, RunInstances fails even
+        # with the grant above.
+        Sid      = "PassRoleForAgentInstanceProfile"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = "arn:aws:iam::${var.shared_services_account_id}:role/EKSManagerAgentRole"
+      },
+      {
+        # aws/modules/shared_services' aws_iam_role.agent +
+        # aws_iam_role_policy.agent + aws_iam_role_policy_attachment.agent_ssm_core.
+        # Scoped to the exact role name, same pattern previously used for
+        # EKSManagerHeadlampRole before that was removed.
+        Sid    = "EKSManagerAgentRole"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:GetRole",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:ListAttachedRolePolicies"
+        ]
+        Resource = "arn:aws:iam::*:role/EKSManagerAgentRole"
+      },
+      {
+        # aws/modules/shared_services' aws_iam_instance_profile.agent.
+        Sid    = "EKSManagerAgentInstanceProfile"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateInstanceProfile",
+          "iam:DeleteInstanceProfile",
+          "iam:GetInstanceProfile",
+          "iam:AddRoleToInstanceProfile",
+          "iam:RemoveRoleFromInstanceProfile",
+          "iam:TagInstanceProfile"
+        ]
+        Resource = "arn:aws:iam::*:instance-profile/EKSManagerAgentRole"
+      },
+      {
+        # aws/modules/shared_services' aws_ecr_repository.app -- fixed name.
+        Sid    = "EcrRepository"
+        Effect = "Allow"
+        Action = [
+          "ecr:CreateRepository",
+          "ecr:DeleteRepository",
+          "ecr:DescribeRepositories",
+          "ecr:PutImageScanningConfiguration",
+          "ecr:TagResource",
+          "ecr:UntagResource",
+          "ecr:ListTagsForResource"
+        ]
+        Resource = "arn:aws:ecr:*:${var.shared_services_account_id}:repository/eksmanager"
+      },
+      {
+        # aws/modules/shared_services' aws_secretsmanager_secret.app
+        # (/EKSManager/config -- distinct from the "SecretsManager" statement
+        # above, which is read-only on a different secret, the M2M client
+        # secret). Secrets Manager appends a random 6-char suffix to the ARN
+        # at creation time, so CreateSecret itself can't target an exact ARN
+        # -- the wildcard suffix is the standard AWS-documented pattern for
+        # scoping this, not a broad grant.
+        Sid    = "SecretsManagerConfigStore"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:TagResource",
+          "secretsmanager:UntagResource"
+        ]
+        Resource = "arn:aws:secretsmanager:*:${var.shared_services_account_id}:secret:/EKSManager/config-??????"
+      },
+      {
+        # aws/modules/shared_services' aws_s3_bucket.config + versioning +
+        # public_access_block. Bucket name is deterministic
+        # (aws/locals.tf: eks-manager-config-store-${shared_services_account_id}),
+        # so this can be scoped to the exact bucket rather than a wildcard.
+        Sid    = "S3ConfigBucket"
+        Effect = "Allow"
+        Action = [
+          "s3:CreateBucket",
+          "s3:DeleteBucket",
+          "s3:ListBucket",
+          "s3:GetBucketLocation",
+          "s3:GetBucketVersioning",
+          "s3:PutBucketVersioning",
+          "s3:GetBucketPublicAccessBlock",
+          "s3:PutBucketPublicAccessBlock",
+          "s3:GetBucketTagging",
+          "s3:PutBucketTagging"
+        ]
+        Resource = "arn:aws:s3:::eks-manager-config-store-${var.shared_services_account_id}"
       }
     ]
   })
