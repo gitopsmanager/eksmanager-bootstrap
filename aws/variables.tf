@@ -102,11 +102,6 @@ variable "agent_instance_type" {
 # module "identity_center" (aws/main.tf), which is no longer called. See the
 # TODO note there for what replaces Headlamp's login mechanism.
 
-variable "headlamp_redirect_domain" {
-  description = "Domain for Headlamp wildcard redirect URI. Subdomains must be on a private network. Currently unused pending the Cognito+SAML replacement noted in aws/main.tf -- kept because that replacement needs the identical concept."
-  type        = string
-}
-
 # --- Round-trip convenience (not consumed by any resource) ------------------
 # Terraform never needs this directly -- agent_subnet_id already carries the
 # subnet actually used, and AWS infers the VPC from it. Declared here only
