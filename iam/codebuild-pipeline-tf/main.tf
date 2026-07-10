@@ -405,7 +405,7 @@ resource "aws_iam_role_policy" "codebuild" {
 # The CodeBuild container runs inside the client's VPC with no inbound access.
 # Egress goes via the VPC's NAT Gateway, whose Elastic IP must be the address
 # allowlisted on the client's API/GitHub/AWS endpoint firewalls — this is why
-# vpc_id and vpc_subnet_ids are required, not optional. AWS-managed networking
+# vpc_id and vpc_subnet_id are required, not optional. AWS-managed networking
 # would give CodeBuild a different, unpredictable IP on every run.
 
 resource "aws_security_group" "codebuild" {
@@ -483,39 +483,11 @@ resource "aws_codebuild_project" "eksmanager_bootstrap" {
       name  = "EKSMANAGER_API_URL"
       value = var.eksmanager_api_url
     }
-    environment_variable {
-      name  = "MANAGEMENT_ACCOUNT_ID"
-      value = var.management_account_id
-    }
-    environment_variable {
-      name  = "MANAGEMENT_ACCOUNT_REGION"
-      value = var.management_account_region
-    }
-    environment_variable {
-      name  = "SHARED_SERVICES_ACCOUNT_ID"
-      value = var.shared_services_account_id
-    }
-    environment_variable {
-      name  = "SHARED_SERVICES_REGION"
-      value = var.shared_services_region
-    }
-    environment_variable {
-      name  = "AGENT_SUBNET_ID"
-      value = var.vpc_subnet_ids[0]
-    }
-    environment_variable {
-      name  = "AGENT_SECURITY_GROUP_ID"
-      value = aws_security_group.agent.id
-    }
-    environment_variable {
-      name  = "AGENT_NAME"
-      value = var.agent_name
-    }
   }
 
   vpc_config {
     vpc_id             = var.vpc_id
-    subnets            = var.vpc_subnet_ids
+    subnets            = [var.vpc_subnet_id]
     security_group_ids = [aws_security_group.codebuild.id]
   }
 

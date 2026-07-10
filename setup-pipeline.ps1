@@ -68,7 +68,7 @@
     $env:GITHUB_REPO = "your-org/eksmanager-bootstrap"
     $env:GITHUB_OIDC_PROVIDER_ARN = ""             # optional — see main.tf's github_oidc_provider_arn
     $env:VPC_ID = "vpc-..."
-    $env:SUBNET_IDS = "subnet-...,subnet-..."
+    $env:SUBNET_ID = "subnet-..."
     $env:REGION = "eu-west-1"                     # optional, default shown
     $env:APPROVED_VERSION = ""                     # optional
     $env:EKSMANAGER_CLIENT_ID = "..."
@@ -121,7 +121,7 @@ $SharedServicesAccountId = $env:SHARED_SERVICES_ACCOUNT_ID
 $SharedServicesRoleName  = if ($env:SHARED_SERVICES_ROLE_NAME) { $env:SHARED_SERVICES_ROLE_NAME } else { "AWSControlTowerExecution" }
 $GithubRepo              = $env:GITHUB_REPO
 $VpcId                   = $env:VPC_ID
-$VpcSubnetIds            = if ($env:SUBNET_IDS) { $env:SUBNET_IDS -split ',' } else { $null }
+$VpcSubnetId             = $env:SUBNET_ID
 $Region                  = if ($env:REGION) { $env:REGION } else { "eu-west-1" }
 $ApprovedVersion         = $env:APPROVED_VERSION
 $EksManagerClientId      = $env:EKSMANAGER_CLIENT_ID
@@ -138,7 +138,7 @@ foreach ($pair in @(
     @{ Name = "MANAGEMENT_ACCOUNT_REGION";   Value = $ManagementAccountRegion }
     @{ Name = "SHARED_SERVICES_ACCOUNT_ID";  Value = $SharedServicesAccountId }
     @{ Name = "VPC_ID";                      Value = $VpcId }
-    @{ Name = "SUBNET_IDS";              Value = $env:SUBNET_IDS }
+    @{ Name = "SUBNET_ID";                Value = $env:SUBNET_ID }
     @{ Name = "AGENT_AMI";                   Value = $AgentAmi }
     @{ Name = "GITHUB_REPO";                 Value = $GithubRepo }
     @{ Name = "EKSMANAGER_CLIENT_ID";        Value = $EksManagerClientId }
@@ -177,8 +177,6 @@ Write-Host "================================================================"
 Write-Host "Default provider: management account (your ambient credentials)."
 Write-Host "aws.shared provider: assumes $SharedServicesRoleName in $SharedServicesAccountId."
 Write-Host ""
-
-$subnetList = ($VpcSubnetIds | ForEach-Object { "`"$_`"" }) -join ","
 
 Push-Location (Join-Path $ScriptDir "iam\codebuild-pipeline-tf")
 terraform init
@@ -256,7 +254,7 @@ $tfVars = @(
     "-var=eksmanager_cognito_url=$CognitoUrl"
     "-var=eksmanager_api_url=$ApiUrl"
     "-var=vpc_id=$VpcId"
-    "-var=vpc_subnet_ids=[$subnetList]"
+    "-var=vpc_subnet_id=$VpcSubnetId"
     "-var=github_oidc_provider_arn=$($env:GITHUB_OIDC_PROVIDER_ARN)"
     "-var=github_repo=$GithubRepo"
     "-var=github_app_id=$($env:GITHUB_APP_ID)"
@@ -420,16 +418,15 @@ Set-GithubVariable -Name "S3_BUCKET" -Value $outputBucket
 Write-Host ""
 Write-Host "Writing pinned.auto.tfvars.json to $GithubRepo..."
 
-$agentSubnetId = ($env:SUBNET_IDS -split ',')[0]
-
 $pinnedObject = [ordered]@{
     management_account_id     = $ManagementAccountId
     management_account_region = $ManagementAccountRegion
     shared_services_account_id = $SharedServicesAccountId
     shared_services_region    = $Region
     agent_name                = $AgentName
-    agent_subnet_id           = $agentSubnetId
+    agent_subnet_id           = $VpcSubnetId
     agent_ami                 = $AgentAmi
+    vpc_id                    = $VpcId
 }
 $pinnedJson = $pinnedObject | ConvertTo-Json
 

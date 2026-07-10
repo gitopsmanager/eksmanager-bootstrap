@@ -78,20 +78,14 @@ variable "vpc_id" {
   }
 }
 
-variable "vpc_subnet_ids" {
-  description = "Private subnet IDs for the CodeBuild project, routed through the NAT Gateway whose Elastic IP is allowlisted on the client's side. Required."
-  type        = list(string)
+variable "vpc_subnet_id" {
+  description = "Private subnet ID for the CodeBuild project, routed through the NAT Gateway whose Elastic IP is allowlisted on the client's side. Required. Also where the agent VM lives -- single subnet is fine, this pipeline doesn't need CodeBuild's own multi-AZ redundancy."
+  type        = string
 
   validation {
-    condition     = length(var.vpc_subnet_ids) > 0
-    error_message = "vpc_subnet_ids is required — at least one private subnet routed through the allowlisted NAT Gateway."
+    condition     = length(var.vpc_subnet_id) > 0
+    error_message = "vpc_subnet_id is required -- a private subnet routed through the allowlisted NAT Gateway."
   }
-}
-
-variable "agent_name" {
-  description = "EC2 Name tag for the agent VM. Passed through to topology.json via the AGENT_NAME environment variable on the CodeBuild project."
-  type        = string
-  default     = "aws-eksmanager-agent"
 }
 
 variable "github_oidc_provider_arn" {

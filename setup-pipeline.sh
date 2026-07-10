@@ -63,7 +63,7 @@
 #   export GITHUB_REPO="your-org/eksmanager-bootstrap"
 #   export GITHUB_OIDC_PROVIDER_ARN=""             # optional — see main.tf's github_oidc_provider_arn
 #   export VPC_ID="vpc-..."
-#   export SUBNET_IDS="subnet-...,subnet-..."
+#   export SUBNET_ID="subnet-..."
 #   export REGION="eu-west-1"                    # optional, default shown
 #   export APPROVED_VERSION=""                    # optional — leave empty until you've reviewed a plan
 #   export EKSMANAGER_CLIENT_ID="..."
@@ -126,7 +126,7 @@ SHARED_SERVICES_ACCOUNT_ID="${SHARED_SERVICES_ACCOUNT_ID:-}"
 SHARED_SERVICES_ROLE_NAME="${SHARED_SERVICES_ROLE_NAME:-AWSControlTowerExecution}"
 GITHUB_REPO="${GITHUB_REPO:-}"
 VPC_ID="${VPC_ID:-}"
-SUBNET_IDS="${SUBNET_IDS:-}"
+SUBNET_ID="${SUBNET_ID:-}"
 REGION="${REGION:-eu-west-1}"
 MANAGEMENT_ACCOUNT_REGION="${MANAGEMENT_ACCOUNT_REGION:-}"
 AGENT_NAME="${AGENT_NAME:-aws-eksmanager-agent}"
@@ -137,7 +137,7 @@ EKSMANAGER_CLIENT_SECRET="${EKSMANAGER_CLIENT_SECRET:-}"
 COGNITO_URL="${EKSMANAGER_COGNITO_URL:-}"
 API_URL="${EKSMANAGER_API_URL:-}"
 
-for required in MANAGEMENT_ACCOUNT_ID MANAGEMENT_ACCOUNT_REGION SHARED_SERVICES_ACCOUNT_ID VPC_ID SUBNET_IDS AGENT_AMI \
+for required in MANAGEMENT_ACCOUNT_ID MANAGEMENT_ACCOUNT_REGION SHARED_SERVICES_ACCOUNT_ID VPC_ID SUBNET_ID AGENT_AMI \
                 EKSMANAGER_CLIENT_ID EKSMANAGER_CLIENT_SECRET COGNITO_URL API_URL \
                 GITHUB_REPO GITHUB_APP_ID GITHUB_APP_INSTALL_ID GITHUB_APP_PRIVATE_KEY; do
   if [ -z "${!required:-}" ]; then
@@ -168,8 +168,6 @@ echo "================================================================"
 echo "Default provider: management account (your ambient credentials)."
 echo "aws.shared provider: assumes ${SHARED_SERVICES_ROLE_NAME} in ${SHARED_SERVICES_ACCOUNT_ID}."
 echo ""
-
-SUBNET_LIST=$(echo "$SUBNET_IDS" | sed 's/,/","/g')
 
 cd "${SCRIPT_DIR}/iam/codebuild-pipeline-tf"
 terraform init
@@ -236,7 +234,7 @@ TF_VARS=(
   -var="eksmanager_cognito_url=${COGNITO_URL}"
   -var="eksmanager_api_url=${API_URL}"
   -var="vpc_id=${VPC_ID}"
-  -var="vpc_subnet_ids=[\"${SUBNET_LIST}\"]"
+  -var="vpc_subnet_id=${SUBNET_ID}"
   -var="github_oidc_provider_arn=${GITHUB_OIDC_PROVIDER_ARN:-}"
   -var="github_repo=${GITHUB_REPO}"
   -var="github_app_id=${GITHUB_APP_ID}"
@@ -396,8 +394,6 @@ set_github_variable "S3_BUCKET" "$OUTPUT_BUCKET"
 echo ""
 echo "Writing pinned.auto.tfvars.json to ${GITHUB_REPO}..."
 
-AGENT_SUBNET_ID="${SUBNET_IDS%%,*}"
-
 PINNED_JSON=$(cat <<EOF
 {
   "management_account_id": "${MANAGEMENT_ACCOUNT_ID}",
@@ -405,8 +401,9 @@ PINNED_JSON=$(cat <<EOF
   "shared_services_account_id": "${SHARED_SERVICES_ACCOUNT_ID}",
   "shared_services_region": "${REGION}",
   "agent_name": "${AGENT_NAME}",
-  "agent_subnet_id": "${AGENT_SUBNET_ID}",
-  "agent_ami": "${AGENT_AMI}"
+  "agent_subnet_id": "${SUBNET_ID}",
+  "agent_ami": "${AGENT_AMI}",
+  "vpc_id": "${VPC_ID}"
 }
 EOF
 )

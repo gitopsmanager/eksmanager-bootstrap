@@ -113,6 +113,18 @@ variable "headlamp_redirect_domain" {
   type        = string
 }
 
+# --- Round-trip convenience (not consumed by any resource) ------------------
+# Terraform never needs this directly -- agent_subnet_id already carries the
+# subnet actually used, and AWS infers the VPC from it. Declared here only
+# so pinned.auto.tfvars.json can carry it and Settings.razor's Load Pinned
+# Vars can fully restore the VPC ID field, instead of losing it silently.
+
+variable "vpc_id" {
+  description = "VPC ID the agent subnet lives in. Round-trip convenience only -- see note above."
+  type        = string
+  default     = ""
+}
+
 # --- Agent install presigned URLs --------------------------------------------
 
 variable "af7_bundle_download_url"    { type = string; sensitive = true }
