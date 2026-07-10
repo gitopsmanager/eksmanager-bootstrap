@@ -331,7 +331,8 @@ resource "aws_iam_role_policy" "codebuild" {
           "cloudformation:CreateStackInstances",
           "cloudformation:UpdateStackInstances",
           "cloudformation:DeleteStackInstances",
-          "cloudformation:DescribeStackInstance"
+          "cloudformation:DescribeStackInstance",
+          "cloudformation:TagResource"
         ]
         Resource = "arn:aws:cloudformation:*:*:stackset/EKSManagerEnableAccountStackSet:*"
       },

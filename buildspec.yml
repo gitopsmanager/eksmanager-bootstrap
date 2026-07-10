@@ -126,6 +126,11 @@ phases:
           module.shared_services.aws_iam_role.agent \
           EKSManagerAgentRole \
           || echo "OK (or already imported): iam_role agent"
+
+        terraform -chdir=aws import \
+          module.shared_services.aws_iam_instance_profile.agent \
+          EKSManagerAgentRole \
+          || echo "OK (or already imported): iam_instance_profile agent"
       - "echo 'OK: one-time import block complete -- remove it from buildspec.yml now'"
 
   build:
