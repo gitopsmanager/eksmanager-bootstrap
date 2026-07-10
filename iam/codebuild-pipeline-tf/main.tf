@@ -301,6 +301,24 @@ resource "aws_iam_role_policy" "codebuild" {
         Resource = aws_iam_role.management_bootstrap.arn
       },
       {
+        # Lets the root aws/ Terraform module's aws.shared provider assume
+        # an elevated role WITHIN this same (shared services) account --
+        # EKSManagerBootstrapSharedRole itself is deliberately narrow (see
+        # header comment), so provisioning the actual bootstrap
+        # infrastructure (agent EC2, ECR, Secrets Manager writes, etc.)
+        # needs this explicit elevation, same reasoning as the
+        # management-account grant above. buildspec.yml resolves at
+        # runtime which of these two actually exists in the account and
+        # writes it to role-override.auto.tfvars.json.
+        Sid    = "AssumeSharedServicesElevatedRole"
+        Effect = "Allow"
+        Action = "sts:AssumeRole"
+        Resource = [
+          "arn:aws:iam::${var.shared_services_account_id}:role/AWSControlTowerExecution",
+          "arn:aws:iam::${var.shared_services_account_id}:role/OrganizationAccountAccessRole"
+        ]
+      },
+      {
         Sid      = "CloudWatchLogs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
