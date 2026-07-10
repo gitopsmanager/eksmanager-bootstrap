@@ -8,7 +8,19 @@ variable "agent_ami" {
 }
 variable "agent_subnet_id"            { type = string }
 variable "agent_role_name"            { type = string }
-variable "af7_bundle_download_url"    { type = string; sensitive = true }
-variable "agent_upgrade_download_url" { type = string; sensitive = true }
-variable "agent_download_url"         { type = string; sensitive = true }
-variable "agent_upload_url"           { type = string; sensitive = true }
+variable "af7_bundle_download_url" {
+  type      = string
+  sensitive = true
+}
+variable "agent_upgrade_download_url" {
+  type      = string
+  sensitive = true
+}
+variable "agent_download_url" {
+  type      = string
+  sensitive = true
+}
+variable "agent_upload_url" {
+  type      = string
+  sensitive = true
+}

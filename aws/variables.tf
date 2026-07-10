@@ -121,10 +121,22 @@ variable "vpc_id" {
 
 # --- Agent install presigned URLs --------------------------------------------
 
-variable "af7_bundle_download_url"    { type = string; sensitive = true }
-variable "agent_upgrade_download_url" { type = string; sensitive = true }
-variable "agent_download_url"         { type = string; sensitive = true }
-variable "agent_upload_url"           { type = string; sensitive = true }
+variable "af7_bundle_download_url" {
+  type      = string
+  sensitive = true
+}
+variable "agent_upgrade_download_url" {
+  type      = string
+  sensitive = true
+}
+variable "agent_download_url" {
+  type      = string
+  sensitive = true
+}
+variable "agent_upload_url" {
+  type      = string
+  sensitive = true
+}
 
 # --- EKS Manager ----------------------------------------------------------
 
