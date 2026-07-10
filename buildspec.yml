@@ -131,6 +131,16 @@ phases:
           module.shared_services.aws_iam_instance_profile.agent \
           EKSManagerAgentRole \
           || echo "OK (or already imported): iam_instance_profile agent"
+
+        terraform -chdir=aws import \
+          module.shared_services.aws_secretsmanager_secret.app \
+          "arn:aws:secretsmanager:eu-west-1:905418220450:secret:/EKSManager/config-Lo7V0p" \
+          || echo "OK (or already imported): secretsmanager_secret app"
+
+        terraform -chdir=aws import \
+          module.stackset.aws_cloudformation_stack_set.enable_account \
+          "EKSManagerEnableAccountStackSet,DELEGATED_ADMIN" \
+          || echo "OK (or already imported): cloudformation_stack_set enable_account"
       - "echo 'OK: one-time import block complete -- remove it from buildspec.yml now'"
 
   build:
