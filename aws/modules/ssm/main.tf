@@ -28,22 +28,10 @@ resource "aws_ssm_parameter" "mgmt_account_region" {
   value = var.management_account_region
 }
 
-resource "aws_ssm_parameter" "headlamp_app_arn" {
-  name  = "/EKSManager/config/headlamp-app-arn"
-  type  = "String"
-  value = var.headlamp_app_arn
-}
-
 resource "aws_ssm_parameter" "agent_role_arn" {
   name  = "/EKSManager/config/agent-role-arn"
   type  = "String"
   value = var.agent_role_arn
-}
-
-resource "aws_ssm_parameter" "headlamp_role_arn" {
-  name  = "/EKSManager/config/headlamp-role-arn"
-  type  = "String"
-  value = var.headlamp_role_arn
 }
 
 resource "aws_ssm_parameter" "stackset_name" {
@@ -56,12 +44,6 @@ resource "aws_ssm_parameter" "secrets_editing" {
   name  = "/EKSManager/config/secrets-editing"
   type  = "String"
   value = var.secrets_editing ? "true" : "false"
-}
-
-resource "aws_ssm_parameter" "headlamp_oidc_secret_arn" {
-  name  = "/EKSManager/config/headlamp-oidc-secret-arn"
-  type  = "String"
-  value = var.headlamp_oidc_secret_arn
 }
 
 resource "aws_ssm_parameter" "app_url" {

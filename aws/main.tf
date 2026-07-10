@@ -51,19 +51,6 @@ module "org" {
 # just no longer called here.
 
 # -----------------------------------------------------------------------------
-# Step 4 — IAM roles in the management account
-# -----------------------------------------------------------------------------
-module "iam" {
-  source = "./modules/iam"
-
-  management_account_id      = var.management_account_id
-  shared_services_account_id = var.shared_services_account_id
-  headlamp_app_arn           = module.identity_center.headlamp_app_arn
-
-  depends_on = [module.identity_center]
-}
-
-# -----------------------------------------------------------------------------
 # Step 5 — Shared services: ECR, Secrets Manager, S3, IAM roles
 # -----------------------------------------------------------------------------
 module "shared_services" {
@@ -75,7 +62,6 @@ module "shared_services" {
 
   shared_services_account_id = var.shared_services_account_id
   shared_services_region     = var.shared_services_region
-  management_account_id      = var.management_account_id
   config_bucket_name         = local.config_bucket_name
   secrets_editing            = var.secrets_editing
 }
@@ -95,16 +81,13 @@ module "ssm" {
   shared_services_region     = var.shared_services_region
   management_account_id      = var.management_account_id
   management_account_region  = var.management_account_region
-  headlamp_app_arn           = module.identity_center.headlamp_app_arn
-  headlamp_role_arn          = module.iam.headlamp_role_arn
   agent_role_arn             = module.shared_services.agent_role_arn
   secrets_editing            = var.secrets_editing
-  headlamp_oidc_secret_arn   = module.identity_center.headlamp_oidc_secret_arn
   app_url                    = var.app_url
   client_id                  = var.client_id
   cognito_url                = var.cognito_url
 
-  depends_on = [module.shared_services, module.identity_center, module.iam]
+  depends_on = [module.shared_services]
 }
 
 # -----------------------------------------------------------------------------

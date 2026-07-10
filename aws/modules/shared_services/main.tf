@@ -69,7 +69,6 @@ resource "aws_iam_role_policy" "agent" {
   role = aws_iam_role.agent.id
 
   policy = templatefile("${path.module}/agent-role-policy.json", {
-    MGMT_ACCOUNT_ID            = var.management_account_id
     SHARED_SERVICES_ACCOUNT_ID = data.aws_caller_identity.shared.account_id
   })
 }

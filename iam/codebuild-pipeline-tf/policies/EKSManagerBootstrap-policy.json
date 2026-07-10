@@ -22,45 +22,6 @@
       "Resource": "*"
     },
     {
-      "Sid": "IdentityCenterHeadlampApp",
-      "Effect": "Allow",
-      "Action": [
-        "sso:ListInstances",
-        "sso:CreateApplication",
-        "sso:DeleteApplication",
-        "sso:UpdateApplication",
-        "sso:DescribeApplication",
-        "sso:PutApplicationAuthenticationMethod",
-        "sso:DeleteApplicationAuthenticationMethod",
-        "sso:ListApplicationAuthenticationMethods",
-        "sso:PutApplicationGrant",
-        "sso:DeleteApplicationGrant",
-        "sso:ListApplicationGrants",
-        "sso:PutApplicationAccessScope",
-        "sso:DeleteApplicationAccessScope",
-        "sso:ListApplicationAccessScopes"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "EKSManagerHeadlampRole",
-      "Effect": "Allow",
-      "Action": [
-        "iam:CreateRole",
-        "iam:DeleteRole",
-        "iam:GetRole",
-        "iam:UpdateAssumeRolePolicy",
-        "iam:TagRole",
-        "iam:UntagRole",
-        "iam:PutRolePolicy",
-        "iam:DeleteRolePolicy",
-        "iam:GetRolePolicy",
-        "iam:ListRolePolicies",
-        "iam:ListAttachedRolePolicies"
-      ],
-      "Resource": "arn:aws:iam::*:role/EKSManagerHeadlampRole"
-    },
-    {
       "Sid": "EKSManagerProtectionSCP",
       "Effect": "Allow",
       "Action": [
