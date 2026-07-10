@@ -27,21 +27,28 @@ module "org" {
 }
 
 # -----------------------------------------------------------------------------
-# Step 3 — Identity Center: Headlamp OIDC application
+# Step 3 — Headlamp login
 # -----------------------------------------------------------------------------
-module "identity_center" {
-  source = "./modules/identity_center"
-
-  providers = {
-    aws        = aws
-    aws.shared = aws.shared
-  }
-
-  sso_instance_arn         = var.sso_instance_arn
-  organization_id          = var.organization_id
-  headlamp_redirect_domain = var.headlamp_redirect_domain
-  app_url                  = var.app_url
-}
+# module "identity_center" removed. It registered Headlamp as an OIDC app
+# against AWS IAM Identity Center (sso_instance_arn/organization_id), giving
+# every AWS-hosted cluster's Headlamp login its own AWS-native identity
+# mechanism, separate from the Cognito+Entra SAML federation already used
+# for M2M auth and for Azure's Headlamp login.
+#
+# TODO: replace with Cognito as the OIDC provider Headlamp authenticates
+# against, with Cognito terminating Entra SAML federation -- same mechanism
+# already built (but not yet tested) for Azure. This makes AWS and Azure
+# Headlamp login identical, and consolidates onto the Cognito User Pool
+# already used for M2M auth and for the ALB-level auth already protecting
+# these AWS clients. Needs: a Cognito App Client for Headlamp's
+# authorization-code/human-login flow (distinct from the M2M client), and
+# the Entra SAML "groups" assertion mapped into a Cognito-exposed OIDC
+# "groups" claim for Kubernetes RBAC. See aws/modules/identity_center for
+# the previous mechanism's shape (OIDC scopes, redirect URI, groups claim)
+# as a reference for what the Cognito App Client needs to replicate.
+#
+# The module's source is left in aws/modules/identity_center/ for reference,
+# just no longer called here.
 
 # -----------------------------------------------------------------------------
 # Step 4 — IAM roles in the management account

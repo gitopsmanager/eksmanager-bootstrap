@@ -104,19 +104,12 @@ variable "agent_instance_type" {
 }
 
 # --- Identity Center ---------------------------------------------------------
-
-variable "sso_instance_arn" {
-  description = "ARN of the AWS IAM Identity Center instance."
-  type        = string
-}
-
-variable "organization_id" {
-  description = "AWS Organizations ID (o-xxxxxxxxxx)."
-  type        = string
-}
+# sso_instance_arn / organization_id removed -- only ever consumed by
+# module "identity_center" (aws/main.tf), which is no longer called. See the
+# TODO note there for what replaces Headlamp's login mechanism.
 
 variable "headlamp_redirect_domain" {
-  description = "Domain for Headlamp wildcard redirect URI. Subdomains must be on a private network."
+  description = "Domain for Headlamp wildcard redirect URI. Subdomains must be on a private network. Currently unused pending the Cognito+SAML replacement noted in aws/main.tf -- kept because that replacement needs the identical concept."
   type        = string
 }
 
@@ -144,8 +137,7 @@ variable "cognito_url" {
   type        = string
 }
 
-variable "bearer_token" {
-  description = "M2M bearer token for the EKS Manager API."
-  type        = string
-  sensitive   = true
-}
+# bearer_token removed -- was declared but never referenced by any resource
+# (confirmed via grep across aws/). The server-side fetch that populated it
+# was itself removed for the same reason plus being architecturally wrong
+# (see BootstrapApi.cs history).
