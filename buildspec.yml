@@ -145,6 +145,22 @@ phases:
         terraform -chdir=aws untaint \
           module.shared_services.aws_secretsmanager_secret.app \
           || echo "OK (not tainted, or already untainted): secretsmanager_secret app"
+
+        for PAIR in \
+          "shared_services_account:/EKSManager/config/shared-services-account" \
+          "shared_services_region:/EKSManager/config/shared-services-region" \
+          "mgmt_account:/EKSManager/config/mgmt-account" \
+          "mgmt_account_region:/EKSManager/config/mgmt-account-region" \
+          "agent_role_arn:/EKSManager/config/agent-role-arn" \
+          "stackset_name:/EKSManager/config/account-stackset-name" \
+          "secrets_editing:/EKSManager/config/secrets-editing"; do
+          RESOURCE_NAME="${PAIR%%:*}"
+          PARAM_NAME="${PAIR#*:}"
+          terraform -chdir=aws import \
+            "module.ssm.aws_ssm_parameter.${RESOURCE_NAME}" \
+            "${PARAM_NAME}" \
+            || echo "OK (or already imported): ssm_parameter ${RESOURCE_NAME}"
+        done
       - "echo 'OK: one-time import block complete -- remove it from buildspec.yml now'"
 
   build:

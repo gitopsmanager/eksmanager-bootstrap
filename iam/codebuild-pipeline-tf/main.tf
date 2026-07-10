@@ -353,9 +353,15 @@ resource "aws_iam_role_policy" "codebuild" {
         # above). EKSManagerEnableAccountStackSet's template creates exactly
         # one resource type, AWS::IAM::Role, so only that one type ARN is
         # needed.
-        Sid      = "StackSetTemplateResourceTypeIamRole"
-        Effect   = "Allow"
-        Action   = ["cloudformation:CreateStackSet", "cloudformation:UpdateStackSet"]
+        Sid    = "StackSetTemplateResourceTypeIamRole"
+        Effect = "Allow"
+        Action = [
+          "cloudformation:CreateStackSet",
+          "cloudformation:UpdateStackSet",
+          "cloudformation:CreateStackInstances",
+          "cloudformation:UpdateStackInstances",
+          "cloudformation:DeleteStackInstances"
+        ]
         Resource = "arn:aws:cloudformation:*::type/resource/AWS-IAM-Role"
       },
       {
@@ -431,6 +437,15 @@ resource "aws_iam_role_policy" "codebuild" {
         Effect   = "Allow"
         Action   = "ssm:*"
         Resource = "arn:aws:ssm:*:${var.shared_services_account_id}:parameter/EKSManager/config/*"
+      },
+      {
+        # ssm:DescribeParameters doesn't support resource-level scoping to a
+        # specific parameter path -- confirmed by the actual denied resource
+        # ARN having no parameter/ prefix at all, just the bare account/region.
+        Sid      = "SsmDescribeParameters"
+        Effect   = "Allow"
+        Action   = "ssm:DescribeParameters"
+        Resource = "*"
       },
       {
         # aws/modules/agent's data "aws_ami" "ubuntu_jammy" lookup.
