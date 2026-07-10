@@ -14,13 +14,29 @@
 # -----------------------------------------------------------------------------
 
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.11.0" # use_lockfile (S3 native locking) is GA from 1.11; experimental-only in 1.10
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
       version = ">= 5.0.0"
     }
+  }
+
+  # State lives in the same S3 bucket already used to store the
+  # eksmanager-bootstrap.zip source (versioned, see
+  # iam/codebuild-pipeline-tf/main.tf's aws_s3_bucket.bootstrap) under a
+  # separate state/ prefix -- one less bucket to create and manage.
+  # bucket/region can't be set here: backend blocks are evaluated before
+  # any variable is available, so both are supplied via -backend-config at
+  # `terraform init` time (buildspec.yml), computed from the same
+  # shared_services_account_id/region already in pinned.auto.tfvars.json.
+  # use_lockfile replaces the traditional DynamoDB lock table entirely --
+  # no separate table to create or grant permissions on.
+  backend "s3" {
+    key          = "state/terraform.tfstate"
+    encrypt      = true
+    use_lockfile = true
   }
 }
 

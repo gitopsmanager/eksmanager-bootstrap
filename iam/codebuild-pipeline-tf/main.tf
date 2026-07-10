@@ -285,6 +285,15 @@ resource "aws_iam_role_policy" "codebuild" {
         ]
       },
       {
+        # Terraform S3 backend (aws/providers.tf) -- state + native lock
+        # file (use_lockfile), same bucket as the zip source above, scoped
+        # to state/* only so CodeBuild can never overwrite the zip itself.
+        Sid      = "TerraformStateBackend"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = "${aws_s3_bucket.bootstrap.arn}/state/*"
+      },
+      {
         Sid      = "SecretsManager"
         Effect   = "Allow"
         Action   = "secretsmanager:GetSecretValue"

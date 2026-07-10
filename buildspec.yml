@@ -38,7 +38,7 @@ env:
 phases:
   install:
     commands:
-      - TERRAFORM_VERSION="1.9.0"
+      - TERRAFORM_VERSION="1.11.0"
       - |
         wget -q -O terraform.zip \
           "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
@@ -87,13 +87,20 @@ phases:
         echo "OK: topology.json validated (HTTP 200) — terraform.tfvars.json received"
 
       - cp terraform.tfvars.json pinned.auto.tfvars.json aws/
-      - terraform -chdir=aws init
+      - |
+        SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('pinned.auto.tfvars.json'))['shared_services_account_id'])")
+        SHARED_SERVICES_REGION=$(python3 -c "import json; print(json.load(open('pinned.auto.tfvars.json'))['shared_services_region'])")
+        STATE_BUCKET="eksmanager-bootstrap-${SHARED_SERVICES_ACCOUNT_ID}"
+
+        terraform -chdir=aws init -input=false \
+          -backend-config="bucket=${STATE_BUCKET}" \
+          -backend-config="region=${SHARED_SERVICES_REGION}"
       - "echo 'OK: terraform init complete'"
 
   build:
     commands:
       # ── Plan ─────────────────────────────────────────────────────────────
-      - terraform -chdir=aws plan -out=tfplan
+      - terraform -chdir=aws plan -input=false -out=tfplan
       - "echo 'OK: terraform plan complete'"
 
       # ── Verify approved version before applying ───────────────────────────
@@ -110,14 +117,9 @@ phases:
         echo "OK: Version approved — applying."
 
       # ── Apply ─────────────────────────────────────────────────────────────
-      - terraform -chdir=aws apply tfplan
+      - terraform -chdir=aws apply -input=false tfplan
       - "echo 'OK: terraform apply complete'"
 
   post_build:
     commands:
       - echo "Bootstrap complete."
-
-artifacts:
-  files:
-    - aws/terraform.tfstate
-  discard-paths: yes
