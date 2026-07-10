@@ -453,14 +453,10 @@ resource "aws_iam_role_policy" "codebuild" {
         Action = [
           "ec2:RunInstances",
           "ec2:TerminateInstances",
-          "ec2:DescribeInstances",
-          "ec2:DescribeInstanceAttribute",
           "ec2:ModifyInstanceAttribute",
           "ec2:CreateTags",
           "ec2:DeleteTags",
-          "ec2:DescribeVolumes",
-          "ec2:DescribeInstanceTypes",
-          "ec2:DescribeTags"
+          "ec2:Describe*"
         ]
         Resource = "*"
       },
