@@ -97,6 +97,37 @@ phases:
           -backend-config="region=${SHARED_SERVICES_REGION}"
       - "echo 'OK: terraform init complete'"
 
+      # ── TEMPORARY: one-time import ──────────────────────────────────────
+      # Reconciles four resources that already exist in AWS from earlier
+      # runs made before this S3 backend existed (local state, discarded
+      # between every CodeBuild run, so it never recorded them). Each is
+      # guarded with `|| true` since a resource already present in state
+      # makes import fail loudly -- safe to re-run this build without
+      # breaking on a resource already reconciled by a prior attempt.
+      # DELETE THIS WHOLE BLOCK once a build completes with no import
+      # errors below -- it's a one-time fixup, not a permanent step.
+      - |
+        terraform -chdir=aws import \
+          module.org.aws_organizations_delegated_administrator.stacksets \
+          905418220450/member.org.stacksets.cloudformation.amazonaws.com \
+          || echo "OK (or already imported): delegated_administrator"
+
+        terraform -chdir=aws import \
+          module.shared_services.aws_ecr_repository.app \
+          eksmanager \
+          || echo "OK (or already imported): ecr_repository"
+
+        terraform -chdir=aws import \
+          module.shared_services.aws_s3_bucket.config \
+          eks-manager-config-store-905418220450 \
+          || echo "OK (or already imported): s3_bucket config"
+
+        terraform -chdir=aws import \
+          module.shared_services.aws_iam_role.agent \
+          EKSManagerAgentRole \
+          || echo "OK (or already imported): iam_role agent"
+      - "echo 'OK: one-time import block complete -- remove it from buildspec.yml now'"
+
   build:
     commands:
       # ── Plan ─────────────────────────────────────────────────────────────
