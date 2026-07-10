@@ -459,7 +459,8 @@ resource "aws_iam_role_policy" "codebuild" {
           "ec2:CreateTags",
           "ec2:DeleteTags",
           "ec2:DescribeVolumes",
-          "ec2:DescribeInstanceTypes"
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeTags"
         ]
         Resource = "*"
       },
