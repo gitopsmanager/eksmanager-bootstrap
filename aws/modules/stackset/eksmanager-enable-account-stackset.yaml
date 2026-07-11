@@ -12,12 +12,9 @@ Parameters:
       Account ID of the shared-services account where EKSManagerAgentRole
       lives. Used to build the trust principal for EKSManagerAdminRole.
 
-  AllowedRegions:
-    Type: String
-    Default: ""
-    Description: >
-      Comma-separated list of AWS regions EKSManagerAdminRole is permitted
-      to operate in. Passed directly from OrgConfig by the bootstrap script.
+Mappings:
+  AccountRegionMap:
+${account_region_mappings}
 
 Resources:
   EKSManagerAdminRole:
@@ -31,7 +28,7 @@ Resources:
             Principal:
               # Trusts EKSManagerAgentRole in the shared-services account,
               # not the spoke account this stack is deployed into.
-              AWS: !Sub "arn:aws:iam::${SharedServicesAccountId}:role/EKSManagerAgentRole"
+              AWS: !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerAgentRole"
             Action: sts:AssumeRole
       Policies:
         - PolicyName: EKSManagerAdminPolicy
@@ -174,7 +171,7 @@ Resources:
                 Resource: "*"
                 Condition:
                   StringNotEquals:
-                    aws:RequestedRegion: !Split [",", !Ref AllowedRegions]
+                    aws:RequestedRegion: !Split [",", !FindInMap [AccountRegionMap, !Ref "AWS::AccountId", "AllowedRegions"]]
       Tags:
         - Key: ManagedBy
           Value: EKSManager

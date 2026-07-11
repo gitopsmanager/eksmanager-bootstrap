@@ -9,7 +9,9 @@
 
 locals {
   # Flat map of account_id -> { ou_id, regions }
-  # Used by the StackSet instances resource (one instance per account).
+  # Used by modules/stackset to derive the distinct set of OUs to target
+  # (one StackSet instance per OU, not per account) and to generate the
+  # CloudFormation template's per-account Mappings section.
   account_ou_map = merge([
     for ou_id, accounts in var.org_config : {
       for account_id, regions in accounts : account_id => {
@@ -18,13 +20,6 @@ locals {
       }
     }
   ]...)
-
-  # Distinct union of all regions across all accounts.
-  # Used as the StackSet-level AllowedRegions parameter.
-  all_regions = distinct(flatten([
-    for accounts in values(var.org_config) :
-    flatten(values(accounts))
-  ]))
 
   # Flat list of all OU IDs — used for SCP attachment.
   ou_ids = keys(var.org_config)

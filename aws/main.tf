@@ -102,7 +102,6 @@ module "stackset" {
   }
 
   shared_services_account_id = var.shared_services_account_id
-  all_regions                = local.all_regions
   account_ou_map             = local.account_ou_map
 
   depends_on = [module.org]
