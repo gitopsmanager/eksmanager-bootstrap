@@ -171,7 +171,13 @@ Resources:
                 Resource: "*"
                 Condition:
                   StringNotEquals:
-                    aws:RequestedRegion: !Split [",", !FindInMap [AccountRegionMap, !Ref "AWS::AccountId", "AllowedRegions"]]
+                    aws:RequestedRegion: !Split
+                      - ","
+                      - !FindInMap
+                        - AccountRegionMap
+                        - !Ref "AWS::AccountId"
+                        - "AllowedRegions"
+                        - DefaultValue: "none"
       Tags:
         - Key: ManagedBy
           Value: EKSManager
