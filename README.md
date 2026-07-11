@@ -74,6 +74,14 @@ Set `DESTROY_MODE=true` as a plaintext environment variable on the `eksmanager-b
 
 This only touches the `aws/` module's own state (`state/terraform.tfstate` in the `eksmanager-bootstrap-<account-id>` bucket) — it has no effect on the pipeline infrastructure itself (the CodeBuild project, IAM roles, the bucket). For that, use `setup-pipeline.sh --destroy` instead, documented above — the two are separate Terraform configurations with separate state, and neither tears down the other.
 
+### `EKSManagerAdminRole` deploys to every account in a targeted OU, not just enrolled ones
+
+The StackSet in `aws/modules/stackset` targets OUs (`organizational_unit_ids`), not individual accounts — the `SERVICE_MANAGED` permission model only reliably supports OU-level targeting (see the account-scoped targeting attempts, and why they were abandoned, in `aws/modules/stackset/main.tf`'s comments). That means `EKSManagerAdminRole` gets created in **every account CloudFormation finds in that OU**, including any account that isn't listed in `org_config` at all.
+
+For an account in that position, the role is deliberately rendered useless rather than left with real access: the template's `AccountIsEnrolled` condition (`aws/modules/stackset/eksmanager-enable-account-stackset.yaml`) falls through to a `DefaultValue: "none"` region sentinel, which denies every service the role would otherwise use — EKS, EC2, ECR, KMS, SecretsManager, Logs, CloudWatch, AutoScaling, SSM, ELB — with one narrow exception: `ec2:DescribeRegions`, a read-only, no-resource-exposure lookup, kept only to satisfy IAM's requirement that a `NotAction` list can't be empty. The role exists, but there's nothing meaningful it can do.
+
+This is a safety net, not a substitute for the right fix: **the actual solution is keeping a dedicated OU containing only accounts you intend to enroll**, so this fallback case never arises in the first place rather than being relied on. If the OU an account lives in also holds accounts unrelated to EKS Manager, consider moving the approved accounts into their own OU before enabling them here.
+
 ### Troubleshooting
 
 **`apply` fails with `EntityAlreadyExists` on `aws_iam_openid_connect_provider.github_actions`** — the shared services account already has a GitHub Actions OIDC provider from something else (an AWS account can only have one per URL). Nothing gets written to state on a failed create, so there's nothing to clean up. Find the existing one:
