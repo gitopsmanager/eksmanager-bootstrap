@@ -177,7 +177,7 @@ Resources:
                 NotAction: !If
                   - AccountIsEnrolled
                   - ["iam:*", "sts:*", "route53:*"]
-                  - []
+                  - ["not:enrolled"]
                 Resource: "*"
                 Condition:
                   StringNotEquals:
