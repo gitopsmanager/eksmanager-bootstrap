@@ -61,9 +61,19 @@ resource "aws_instance" "agent" {
     agent_upload_url           = var.agent_upload_url
   })
 
-  # Replace the instance if the install URLs change (new agent version).
-  # user_data changes alone don't trigger replacement by default in Terraform.
-  user_data_replace_on_change = true
+  # Presigned S3 URLs (af7_bundle_download_url etc.) embed a fresh
+  # timestamp + signature on every single API call, regardless of whether
+  # the underlying S3 object actually changed -- so user_data differs on
+  # every apply even when nothing about the agent itself is different.
+  # Replace-on-change was a false positive every time, tearing down a
+  # perfectly running instance on every pipeline run. Disabled: a running
+  # instance now stays running. Picking up a genuinely new agent version
+  # needs an explicit `terraform apply -replace=...` (or `taint`), not an
+  # automatic one -- there's currently no signal available here (like an
+  # S3 ETag/version ID, as opposed to the URL text itself) that would let
+  # Terraform tell "same content, new signature" apart from "new content"
+  # on its own.
+  user_data_replace_on_change = false
 
   tags = {
     Name = var.agent_name
