@@ -99,26 +99,53 @@ phases:
 
   build:
     commands:
-      # ── Plan ─────────────────────────────────────────────────────────────
-      - terraform -chdir=aws plan -input=false -out=tfplan
-      - "echo 'OK: terraform plan complete'"
-
-      # ── Verify approved version before applying ───────────────────────────
       - |
-        if [ "${APPROVED_VERSION}" != "${CURRENT_VERSION}" ]; then
-          echo "================================================================"
-          echo "APPROVAL REQUIRED — review the plan output above, then:"
-          echo "  1. Update APPROVED_VERSION on this CodeBuild project to:"
-          echo "       ${CURRENT_VERSION}"
-          echo "  2. Re-run the build to apply"
-          echo "================================================================"
-          exit 1
-        fi
-        echo "OK: Version approved — applying."
+        SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_account_id'])")
+        SHARED_SERVICES_REGION=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_region'])")
 
-      # ── Apply ─────────────────────────────────────────────────────────────
-      - terraform -chdir=aws apply -input=false tfplan
-      - "echo 'OK: terraform apply complete'"
+        if [ "${DESTROY_MODE}" = "true" ]; then
+          echo "DESTROY_MODE=true — tearing down the aws/ module."
+
+          CONFIG_BUCKET="eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}"
+          VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${CONFIG_BUCKET}" \
+            --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
+          if [ "$(echo "$VERSIONS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+            aws s3api delete-objects --bucket "${CONFIG_BUCKET}" --delete "$VERSIONS_JSON" >/dev/null
+          fi
+          MARKERS_JSON=$(aws s3api list-object-versions --bucket "${CONFIG_BUCKET}" \
+            --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
+          if [ "$(echo "$MARKERS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+            aws s3api delete-objects --bucket "${CONFIG_BUCKET}" --delete "$MARKERS_JSON" >/dev/null
+          fi
+
+          IMAGE_IDS=$(aws ecr list-images --repository-name eksmanager --region "${SHARED_SERVICES_REGION}" \
+            --output json --query 'imageIds' 2>/dev/null || echo '[]')
+          if [ "$(echo "$IMAGE_IDS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')" != "0" ]; then
+            aws ecr batch-delete-image --repository-name eksmanager --region "${SHARED_SERVICES_REGION}" \
+              --image-ids "$IMAGE_IDS" >/dev/null
+          fi
+
+          terraform -chdir=aws destroy -input=false -auto-approve
+          echo "OK: terraform destroy complete"
+
+        else
+          terraform -chdir=aws plan -input=false -out=tfplan
+          echo "OK: terraform plan complete"
+
+          if [ "${APPROVED_VERSION}" != "${CURRENT_VERSION}" ]; then
+            echo "================================================================"
+            echo "APPROVAL REQUIRED — review the plan output above, then:"
+            echo "  1. Update APPROVED_VERSION on this CodeBuild project to:"
+            echo "       ${CURRENT_VERSION}"
+            echo "  2. Re-run the build to apply"
+            echo "================================================================"
+            exit 1
+          fi
+          echo "OK: Version approved — applying."
+
+          terraform -chdir=aws apply -input=false tfplan
+          echo "OK: terraform apply complete"
+        fi
 
   post_build:
     commands:

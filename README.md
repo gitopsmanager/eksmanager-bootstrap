@@ -66,6 +66,14 @@ Use a private subnet routed through a NAT Gateway, and have the client allowlist
 
 The script is idempotent — safe to re-run any time, e.g. to change the VPC/subnets, rotate the `EKSMANAGER_*` credentials, or update the persisted GitHub App credentials. It only re-applies Terraform; it never touches S3 content, so re-running it does not start a build. A build starts on its own whenever something uploads a new `eksmanager-bootstrap.zip` (via EventBridge), and will pause for plan review since `APPROVED_VERSION` starts empty — to approve it, re-run this script with `APPROVED_VERSION` set to the version ID the build printed, which updates the CodeBuild project's environment variable.
 
+### Tearing down the aws/ module
+
+Set `DESTROY_MODE=true` as a plaintext environment variable on the `eksmanager-bootstrap` CodeBuild project (not set by `setup-pipeline.sh` — add it yourself when you actually want this) and trigger a build: it empties the config S3 bucket and the `eksmanager` ECR repository (both lack `force_destroy`/`force_delete`, so a plain `terraform destroy` fails on either otherwise), then runs `terraform destroy -auto-approve` against the `aws/` module — no plan review, no approval gate, immediate. This tears down everything the pipeline creates: the agent instance, ECR repo, config bucket, Secrets Manager secret, SSM parameters, the CloudFormation StackSet and every instance it deployed, and the Organizations delegated-admin registration.
+
+**Unset `DESTROY_MODE` before the next normal build** — it doesn't self-disable, and a build left with it set will destroy again instead of applying.
+
+This only touches the `aws/` module's own state (`state/terraform.tfstate` in the `eksmanager-bootstrap-<account-id>` bucket) — it has no effect on the pipeline infrastructure itself (the CodeBuild project, IAM roles, the bucket). For that, use `setup-pipeline.sh --destroy` instead, documented above — the two are separate Terraform configurations with separate state, and neither tears down the other.
+
 ### A note on the Headlamp OIDC secret
 
 The `identity_center` Terraform submodule (part of the AWS bootstrap module the CodeBuild project runs, not the pipeline setup above) creates a Secrets Manager secret (`/EKSManager/headlamp/oidc-config`) that `EKSManagerAgentRole` reads at runtime — that role's `secretsmanager:*` permissions are scoped to the shared services account only (see `aws/modules/shared_services/agent-role-policy.json`), so the secret has to be created there too. `aws/modules/identity_center/providers.tf` declares a `configuration_aliases = [aws.shared]` for this, authenticated via `var.shared_services_role_name` (default `AWSControlTowerExecution`) in the shared services account (see `aws/providers.tf`) — separate from whatever role CodeBuild itself runs as.
