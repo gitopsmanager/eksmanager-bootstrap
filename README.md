@@ -22,6 +22,18 @@ or on Windows:
 
 This only sets up infrastructure — it doesn't clone anything, upload anything to S3, or start a build. The CodeBuild project stays idle until something uploads `eksmanager-bootstrap.zip` to the `eksmanager-bootstrap-<shared-services-account-id>` bucket this creates, which starts a build automatically (see the EventBridge note below).
 
+If your shell's ambient AWS credentials aren't in the default profile/region (e.g. named SSO profiles), pass them explicitly — an `aws sso login` only refreshes the profile you logged into, it doesn't change what "ambient" means for a shell pointed elsewhere:
+
+```bash
+./setup-pipeline.sh --region eu-west-1 --profile AdministratorAccess-...
+```
+
+```powershell
+.\setup-pipeline.ps1 -Region eu-west-1 -Profile AdministratorAccess-...
+```
+
+`--region`/`-Region` here only affects each script's own direct `aws` CLI calls and Terraform's credential resolution — it does not change which region your infrastructure gets created in (that's `REGION` → `shared_services_region`, set separately).
+
 ### What the script creates
 
 - `EKSManagerBootstrap` in the management account, created directly by Terraform's default provider (your ambient credentials) — scoped to exactly what the `org` and `scp` Terraform submodules touch (not `AdministratorAccess` — see `iam/codebuild-pipeline-tf/policies/EKSManagerBootstrap-policy.json`)
