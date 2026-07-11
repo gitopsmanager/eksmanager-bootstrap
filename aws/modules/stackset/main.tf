@@ -74,7 +74,7 @@ resource "aws_cloudformation_stack_set_instance" "accounts" {
   # role's permissions apply. That's controlled entirely by the Mappings-
   # driven policy condition in the template. One explicit anchor region,
   # not one instance per allowed region.
-  region = var.shared_services_region
+  stack_set_instance_region = var.shared_services_region
 
   deployment_targets {
     organizational_unit_ids = [each.value]
