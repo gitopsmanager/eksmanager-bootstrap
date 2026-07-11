@@ -24,7 +24,7 @@ This only sets up infrastructure — it doesn't clone anything, upload anything 
 
 ### What the script creates
 
-- `EKSManagerBootstrap` in the management account, created directly by Terraform's default provider (your ambient credentials) — scoped to exactly what the `org`, `identity_center`, `iam` and `scp` Terraform submodules touch (not `AdministratorAccess` — see `iam/codebuild-pipeline-tf/policies/EKSManagerBootstrap-policy.json`)
+- `EKSManagerBootstrap` in the management account, created directly by Terraform's default provider (your ambient credentials) — scoped to exactly what the `org` and `scp` Terraform submodules touch (not `AdministratorAccess` — see `iam/codebuild-pipeline-tf/policies/EKSManagerBootstrap-policy.json`)
 - An S3 bucket named `eksmanager-bootstrap-<shared-services-account-id>`, versioned, with public access blocked
 - `EKSManagerBootstrapSharedRole` — the CodeBuild service role, scoped to:
   - `cloudformation:*StackSet*` on `EKSManagerEnableAccountStackSet` only
@@ -73,10 +73,6 @@ Set `DESTROY_MODE=true` as a plaintext environment variable on the `eksmanager-b
 **Unset `DESTROY_MODE` before the next normal build** — it doesn't self-disable, and a build left with it set will destroy again instead of applying.
 
 This only touches the `aws/` module's own state (`state/terraform.tfstate` in the `eksmanager-bootstrap-<account-id>` bucket) — it has no effect on the pipeline infrastructure itself (the CodeBuild project, IAM roles, the bucket). For that, use `setup-pipeline.sh --destroy` instead, documented above — the two are separate Terraform configurations with separate state, and neither tears down the other.
-
-### A note on the Headlamp OIDC secret
-
-The `identity_center` Terraform submodule (part of the AWS bootstrap module the CodeBuild project runs, not the pipeline setup above) creates a Secrets Manager secret (`/EKSManager/headlamp/oidc-config`) that `EKSManagerAgentRole` reads at runtime — that role's `secretsmanager:*` permissions are scoped to the shared services account only (see `aws/modules/shared_services/agent-role-policy.json`), so the secret has to be created there too. `aws/modules/identity_center/providers.tf` declares a `configuration_aliases = [aws.shared]` for this, authenticated via `var.shared_services_role_name` (default `AWSControlTowerExecution`) in the shared services account (see `aws/providers.tf`) — separate from whatever role CodeBuild itself runs as.
 
 ### Troubleshooting
 

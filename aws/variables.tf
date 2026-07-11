@@ -97,11 +97,6 @@ variable "agent_instance_type" {
   default     = "t3.medium"
 }
 
-# --- Identity Center ---------------------------------------------------------
-# sso_instance_arn / organization_id removed -- only ever consumed by
-# module "identity_center" (aws/main.tf), which is no longer called. See the
-# TODO note there for what replaces Headlamp's login mechanism.
-
 # --- Round-trip convenience (not consumed by any resource) ------------------
 # Terraform never needs this directly -- agent_subnet_id already carries the
 # subnet actually used, and AWS infers the VPC from it. Declared here only

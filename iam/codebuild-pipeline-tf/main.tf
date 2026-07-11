@@ -301,9 +301,9 @@ resource "aws_iam_role_policy" "codebuild" {
       },
       {
         # Lets the root aws/ Terraform module's default provider assume
-        # EKSManagerBootstrap in the management account, so the org/
-        # identity_center/iam/scp submodules actually run there instead of
-        # against this (shared services) account.
+        # EKSManagerBootstrap in the management account, so the org/scp
+        # submodules actually run there instead of against this (shared
+        # services) account.
         Sid      = "AssumeManagementAccountBootstrapRole"
         Effect   = "Allow"
         Action   = "sts:AssumeRole"
@@ -487,8 +487,7 @@ resource "aws_iam_role_policy" "codebuild" {
       {
         # aws/modules/shared_services' aws_iam_role.agent +
         # aws_iam_role_policy.agent + aws_iam_role_policy_attachment.agent_ssm_core.
-        # Scoped to the exact role name, same pattern previously used for
-        # EKSManagerHeadlampRole before that was removed.
+        # Scoped to the exact role name.
         Sid    = "EKSManagerAgentRole"
         Effect = "Allow"
         Action = [
