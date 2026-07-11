@@ -16,6 +16,16 @@ Mappings:
   AccountRegionMap:
 ${account_region_mappings}
 
+Conditions:
+  # True only for accounts actually listed in org_config -- reuses the same
+  # AllowedRegions lookup rather than a second per-account Mapping field.
+  # Falling through to the "none" sentinel means this account was never
+  # enrolled at all.
+  AccountIsEnrolled: !Not
+    - !Equals
+      - !FindInMap [AccountRegionMap, !Ref "AWS::AccountId", "AllowedRegions", DefaultValue: "none"]
+      - "none"
+
 Resources:
   EKSManagerAdminRole:
     Type: AWS::IAM::Role
@@ -164,10 +174,10 @@ Resources:
                 Resource: "*"
               - Sid: DenyOutsideAllowedRegions
                 Effect: Deny
-                NotAction:
-                  - "iam:*"
-                  - "sts:*"
-                  - "route53:*"
+                NotAction: !If
+                  - AccountIsEnrolled
+                  - ["iam:*", "sts:*", "route53:*"]
+                  - []
                 Resource: "*"
                 Condition:
                   StringNotEquals:
