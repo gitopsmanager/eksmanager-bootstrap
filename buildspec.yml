@@ -100,11 +100,12 @@ phases:
   build:
     commands:
       - |
-        set -euo pipefail
+        set -eu
+        CURRENT_VERSION="${CODEBUILD_SOURCE_VERSION}"
         SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_account_id'])")
         SHARED_SERVICES_REGION=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_region'])")
 
-        if [ "${DESTROY_MODE}" = "true" ]; then
+        if [ "${DESTROY_MODE:-}" = "true" ]; then
           echo "DESTROY_MODE=true — tearing down the aws/ module."
 
           CONFIG_BUCKET="eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}"
@@ -133,7 +134,7 @@ phases:
           terraform -chdir=aws plan -input=false -out=tfplan
           echo "OK: terraform plan complete"
 
-          if [ "${APPROVED_VERSION}" != "${CURRENT_VERSION}" ]; then
+          if [ "${APPROVED_VERSION:-}" != "${CURRENT_VERSION}" ]; then
             echo "================================================================"
             echo "APPROVAL REQUIRED — review the plan output above, then:"
             echo "  1. Update APPROVED_VERSION on this CodeBuild project to:"
