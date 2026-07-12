@@ -234,12 +234,14 @@ resource "aws_ssoadmin_permission_set_inline_policy" "eks_user_view" {
   instance_arn       = local.identity_center_instance_arn
   permission_set_arn = aws_ssoadmin_permission_set.eks_user_view.arn
   inline_policy      = local.eks_connect_policy
+  region             = length(local.identity_center_matches) > 0 ? local.identity_center_matches[0].region : null
 }
 
 resource "aws_ssoadmin_permission_set_inline_policy" "eks_user_admin" {
   instance_arn       = local.identity_center_instance_arn
   permission_set_arn = aws_ssoadmin_permission_set.eks_user_admin.arn
   inline_policy      = local.eks_connect_policy
+  region             = length(local.identity_center_matches) > 0 ? local.identity_center_matches[0].region : null
 }
 
 resource "aws_iam_role" "identity_center" {
