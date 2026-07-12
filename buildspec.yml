@@ -13,9 +13,6 @@ version: 0.2
 # azure-saml/README.md in the repo root.
 #
 # Environment variables (set on the CodeBuild project):
-#   APPROVED_VERSION  ← S3 object version ID approved for apply. Leave empty
-#                       on first run — build will print the version ID to
-#                       set after you review the plan.
 #   EKSMANAGER_CLIENT_ID    ← M2M client ID        (from Settings → Terraform tile)
 #   EKSMANAGER_COGNITO_URL  ← Cognito token endpoint
 #   EKSMANAGER_API_URL      ← EKS Manager API URL
@@ -50,10 +47,6 @@ phases:
       # Confirm AWS runner identity
       - aws sts get-caller-identity
       - "echo 'OK: AWS identity confirmed'"
-
-      # ── S3 source version (set by CodeBuild for the object it fetched) ────
-      - CURRENT_VERSION="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
-      - echo "Building eksmanager-bootstrap.zip version ${CURRENT_VERSION}"
 
       # ── Get M2M bearer token and validate topology ────────────────────────
       # Combined into one script so TOKEN is set and used in the same shell
@@ -101,7 +94,6 @@ phases:
     commands:
       - |
         set -eu
-        CURRENT_VERSION="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
         SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_account_id'])")
         SHARED_SERVICES_REGION=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_region'])")
 
@@ -133,17 +125,6 @@ phases:
         else
           terraform -chdir=aws plan -input=false -out=tfplan
           echo "OK: terraform plan complete"
-
-          if [ "${APPROVED_VERSION:-}" != "${CURRENT_VERSION}" ]; then
-            echo "================================================================"
-            echo "APPROVAL REQUIRED — review the plan output above, then:"
-            echo "  1. Update APPROVED_VERSION on this CodeBuild project to:"
-            echo "       ${CURRENT_VERSION}"
-            echo "  2. Re-run the build to apply"
-            echo "================================================================"
-            exit 1
-          fi
-          echo "OK: Version approved — applying."
 
           terraform -chdir=aws apply -input=false tfplan
           echo "OK: terraform apply complete"

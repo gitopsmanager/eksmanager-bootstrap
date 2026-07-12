@@ -41,11 +41,6 @@ variable "shared_services_region" {
   default     = "eu-west-1"
 }
 
-variable "approved_version" {
-  description = "S3 object version ID (of eksmanager-bootstrap.zip) approved for terraform apply inside the buildspec. Leave empty on first run — the buildspec will print the version ID to set after you review the plan."
-  type        = string
-  default     = ""
-}
 
 variable "eksmanager_client_id" {
   description = "M2M client ID. From Settings -> Terraform tile in EKS Manager."

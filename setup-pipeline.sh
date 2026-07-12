@@ -65,7 +65,6 @@
 #   export VPC_ID="vpc-..."
 #   export SUBNET_ID="subnet-..."
 #   export REGION="eu-west-1"                    # optional, default shown
-#   export APPROVED_VERSION=""                    # optional — leave empty until you've reviewed a plan
 #   export EKSMANAGER_CLIENT_ID="..."
 #   export EKSMANAGER_CLIENT_SECRET="..."
 #   export EKSMANAGER_COGNITO_URL="..."
@@ -131,7 +130,6 @@ REGION="${REGION:-eu-west-1}"
 MANAGEMENT_ACCOUNT_REGION="${MANAGEMENT_ACCOUNT_REGION:-}"
 AGENT_NAME="${AGENT_NAME:-aws-eksmanager-agent}"
 AGENT_AMI="${AGENT_AMI:-}"
-APPROVED_VERSION="${APPROVED_VERSION:-}"
 EKSMANAGER_CLIENT_ID="${EKSMANAGER_CLIENT_ID:-}"
 EKSMANAGER_CLIENT_SECRET="${EKSMANAGER_CLIENT_SECRET:-}"
 COGNITO_URL="${EKSMANAGER_COGNITO_URL:-}"
@@ -228,7 +226,6 @@ TF_VARS=(
   -var="shared_services_account_id=${SHARED_SERVICES_ACCOUNT_ID}"
   -var="shared_services_role_name=${SHARED_SERVICES_ROLE_NAME}"
   -var="shared_services_region=${REGION}"
-  -var="approved_version=${APPROVED_VERSION}"
   -var="eksmanager_client_id=${EKSMANAGER_CLIENT_ID}"
   -var="eksmanager_client_secret=${EKSMANAGER_CLIENT_SECRET}"
   -var="eksmanager_cognito_url=${COGNITO_URL}"

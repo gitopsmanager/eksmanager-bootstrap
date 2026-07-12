@@ -827,10 +827,6 @@ resource "aws_codebuild_project" "eksmanager_bootstrap" {
     image_pull_credentials_type = "CODEBUILD"
 
     environment_variable {
-      name  = "APPROVED_VERSION"
-      value = var.approved_version
-    }
-    environment_variable {
       name  = "EKSMANAGER_CLIENT_ID"
       value = var.eksmanager_client_id
     }
@@ -860,9 +856,7 @@ resource "aws_codebuild_project" "eksmanager_bootstrap" {
 # ── EventBridge trigger — starts a build when eksmanager-bootstrap.zip is
 # uploaded to the bucket ────────────────────────────────────────────────────
 # Covers both setup-pipeline.sh/.ps1's own upload and any future automation
-# that re-clones and re-uploads. The build still pauses at the
-# APPROVED_VERSION gate in buildspec.yml — this only starts it, it doesn't
-# bypass approval.
+# that re-clones and re-uploads.
 
 resource "aws_s3_bucket_notification" "eventbridge" {
   provider    = aws.shared

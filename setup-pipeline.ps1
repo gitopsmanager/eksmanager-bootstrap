@@ -70,7 +70,6 @@
     $env:VPC_ID = "vpc-..."
     $env:SUBNET_ID = "subnet-..."
     $env:REGION = "eu-west-1"                     # optional, default shown
-    $env:APPROVED_VERSION = ""                     # optional
     $env:EKSMANAGER_CLIENT_ID = "..."
     $env:EKSMANAGER_CLIENT_SECRET = "..."
     $env:EKSMANAGER_COGNITO_URL = "..."
@@ -123,7 +122,6 @@ $GithubRepo              = $env:GITHUB_REPO
 $VpcId                   = $env:VPC_ID
 $VpcSubnetId             = $env:SUBNET_ID
 $Region                  = if ($env:REGION) { $env:REGION } else { "eu-west-1" }
-$ApprovedVersion         = $env:APPROVED_VERSION
 $EksManagerClientId      = $env:EKSMANAGER_CLIENT_ID
 $EksManagerClientSecret  = $env:EKSMANAGER_CLIENT_SECRET
 $CognitoUrl              = $env:EKSMANAGER_COGNITO_URL
@@ -248,7 +246,6 @@ $tfVars = @(
     "-var=shared_services_account_id=$SharedServicesAccountId"
     "-var=shared_services_role_name=$SharedServicesRoleName"
     "-var=shared_services_region=$Region"
-    "-var=approved_version=$ApprovedVersion"
     "-var=eksmanager_client_id=$EksManagerClientId"
     "-var=eksmanager_client_secret=$EksManagerClientSecret"
     "-var=eksmanager_cognito_url=$CognitoUrl"

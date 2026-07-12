@@ -49,7 +49,7 @@ If your shell's ambient AWS credentials aren't in the default profile/region (e.
 - A security group with no inbound rules, attached to the CodeBuild project
 - A Secrets Manager secret `/EKSManagerBootstrap/client-m2m-cognito-secret` containing the M2M client secret — never stored as a plaintext CodeBuild environment variable
 - A Secrets Manager secret `/EKSManagerBootstrap/github-app` containing the GitHub App credentials (`appId`, `installId`, base64 `privateKey`) as JSON — persisted so future automation can reuse them to re-clone and re-upload without needing the credentials passed in again. CodeBuild's own role has no access to this secret; it never touches GitHub
-- The `eksmanager-bootstrap` CodeBuild project, S3-sourced, attached to your VPC, with `APPROVED_VERSION`, `EKSMANAGER_CLIENT_ID`, `EKSMANAGER_COGNITO_URL` and `EKSMANAGER_API_URL` set as plaintext environment variables
+- The `eksmanager-bootstrap` CodeBuild project, S3-sourced, attached to your VPC, with `EKSMANAGER_CLIENT_ID`, `EKSMANAGER_COGNITO_URL` and `EKSMANAGER_API_URL` set as plaintext environment variables
 - An EventBridge rule that starts a build whenever `eksmanager-bootstrap.zip` is uploaded to the bucket — see below
 - `EKSManagerBootstrapGithubActionsRole`, trusted only when `.github/workflows/upload-to-s3.yml` is run from `var.github_repo`'s `main` branch, and scoped to `s3:PutObject` on `eksmanager-bootstrap.zip` only. Federated to a GitHub Actions OIDC provider for `token.actions.githubusercontent.com` — since an AWS account can only have one OIDC provider per URL, this is opt-in rather than auto-detected: leave `GITHUB_OIDC_PROVIDER_ARN` empty (default) and Terraform creates the provider; if the shared services account already has one, `apply` fails once with `EntityAlreadyExists` (nothing gets written to state on a failed create, so there's nothing to clean up) — just set `GITHUB_OIDC_PROVIDER_ARN` to the existing one's ARN and re-run
 
@@ -76,7 +76,7 @@ Use a private subnet routed through a NAT Gateway, and have the client allowlist
 
 ### Re-running
 
-The script is idempotent — safe to re-run any time, e.g. to change the VPC/subnets, rotate the `EKSMANAGER_*` credentials, or update the persisted GitHub App credentials. It only re-applies Terraform; it never touches S3 content, so re-running it does not start a build. A build starts on its own whenever something uploads a new `eksmanager-bootstrap.zip` (via EventBridge), and will pause for plan review since `APPROVED_VERSION` starts empty — to approve it, re-run this script with `APPROVED_VERSION` set to the version ID the build printed, which updates the CodeBuild project's environment variable.
+The script is idempotent — safe to re-run any time, e.g. to change the VPC/subnets, rotate the `EKSMANAGER_*` credentials, or update the persisted GitHub App credentials. It only re-applies Terraform; it never touches S3 content, so re-running it does not start a build. A build starts on its own whenever something uploads a new `eksmanager-bootstrap.zip` (via EventBridge), and applies directly — there's no manual approval step between plan and apply.
 
 ### Tearing down the aws/ module
 
