@@ -31,7 +31,7 @@ output "eks_manager_identity_center_role_arn" {
 
 output "identity_store_id" {
   description = "ID of the IAM Identity Center identity store, auto-discovered -- needed by EKSManagerAgentRole at runtime to resolve a group name to a GroupId via identitystore:GetGroupId."
-  value       = tolist(data.aws_ssoadmin_instances.this.identity_store_ids)[0]
+  value       = local.identity_center_identity_store_id
 }
 
 output "bootstrap_bucket" {

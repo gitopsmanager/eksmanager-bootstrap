@@ -122,18 +122,28 @@ resource "aws_iam_role_policy" "management_bootstrap" {
 #
 # aws_ssoadmin_instances only returns a result when queried from the exact
 # region the instance actually lives in -- silently empty otherwise, not
-# an error. Assumes Identity Center's home region is the same as the
-# management account's (management_account_region, same default provider
-# EKSManagerBootstrap above already uses) unless identity_center_region
-# overrides it. The postcondition below turns a wrong guess into one clear
-# message instead of a cryptic tolist()[0] index error three resources
-# downstream.
+# an error. Rather than require the operator to find that region manually
+# via the AWS CLI first, this searches every AWS region enabled by default
+# (not opt-in -- a foundational, always-needed service like Identity
+# Center is virtually never placed in an opt-in region, since that would
+# require every account needing SSO access to also individually opt into
+# it) using for_each directly on the data source -- region is a per-
+# resource argument here, not something requiring a separate provider
+# block per region. identity_center_region overrides this entirely if
+# set, skipping the search (also the only way to reach an opt-in region
+# this candidate list doesn't cover).
+#
+# AWS now supports replicating one Identity Center instance across
+# multiple regions (GA Feb 2026) -- administrative actions like creating
+# permission sets only work from the PRIMARY region, though, so finding
+# the instance in more than one region here is treated as ambiguous
+# rather than picked automatically; the precondition below requires
+# identity_center_region to be set explicitly in that case.
 #
 # Assumes Identity Center is administered from the management account
-# itself, not a delegated admin account -- if that's wrong, neither the
-# region override nor the postcondition catches it (the data source would
-# just as likely find nothing there either), and this whole block needs
-# its own provider pointed at the correct account instead.
+# itself, not a delegated admin account -- if that's wrong, the search
+# finds nothing in any region regardless, and this whole block needs its
+# own provider pointed at the correct account instead.
 #
 # Trusts the shared services account root, not EKSManagerAgentRole's
 # specific ARN -- that role doesn't exist yet on first setup-pipeline.sh
@@ -142,31 +152,60 @@ resource "aws_iam_role_policy" "management_bootstrap" {
 # EKSManagerAgentRole's own policy actually grants it sts:AssumeRole here,
 # not the trust statement itself.
 
-data "aws_ssoadmin_instances" "this" {
-  region = var.identity_center_region != "" ? var.identity_center_region : null
+locals {
+  identity_center_candidate_regions = var.identity_center_region != "" ? toset([var.identity_center_region]) : toset([
+    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+    "eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1", "eu-north-1",
+    "ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "ap-south-1",
+    "ca-central-1", "sa-east-1"
+  ])
+}
 
-  lifecycle {
-    postcondition {
-      condition     = length(self.arns) > 0
-      error_message = "No IAM Identity Center instance found in ${var.identity_center_region != "" ? var.identity_center_region : var.management_account_region}. Either it hasn't been enabled yet, it's administered from a different region (set identity_center_region), or it's delegated to a different account entirely -- if the latter, this data source needs a provider pointed at the correct account instead."
+data "aws_ssoadmin_instances" "search" {
+  for_each = local.identity_center_candidate_regions
+  region   = each.key
+}
+
+locals {
+  # Only regions that actually returned an instance.
+  identity_center_matches = [
+    for region, result in data.aws_ssoadmin_instances.search : {
+      region            = region
+      instance_arn      = tolist(result.arns)[0]
+      identity_store_id = tolist(result.identity_store_ids)[0]
     }
-  }
+    if length(result.arns) > 0
+  ]
+
+  identity_center_instance_arn      = length(local.identity_center_matches) > 0 ? local.identity_center_matches[0].instance_arn : null
+  identity_center_identity_store_id = length(local.identity_center_matches) > 0 ? local.identity_center_matches[0].identity_store_id : null
 }
 
 resource "aws_ssoadmin_permission_set" "eks_user_view" {
   name             = "EKSManagerUserView"
   description      = "Read-only EKS console/API access -- Kubernetes-level access controlled separately via EKS Access Entries, not this permission set."
-  instance_arn     = tolist(data.aws_ssoadmin_instances.this.arns)[0]
+  instance_arn     = local.identity_center_instance_arn
   session_duration = "PT4H"
-  region           = var.identity_center_region != "" ? var.identity_center_region : null
+  region           = length(local.identity_center_matches) > 0 ? local.identity_center_matches[0].region : null
+
+  lifecycle {
+    precondition {
+      condition     = length(local.identity_center_matches) > 0
+      error_message = "No IAM Identity Center instance found in any of: ${join(", ", local.identity_center_candidate_regions)}. Either it hasn't been enabled yet, it's in a region not in this candidate list (set identity_center_region explicitly), or it's delegated to a different account entirely (check with: aws organizations list-delegated-administrators)."
+    }
+    precondition {
+      condition     = length(local.identity_center_matches) <= 1
+      error_message = "IAM Identity Center instance found in multiple regions (${join(", ", [for m in local.identity_center_matches : m.region])}) -- likely multi-region replication is active. Administrative actions like creating permission sets only work from the primary region; set identity_center_region explicitly to avoid picking the wrong one."
+    }
+  }
 }
 
 resource "aws_ssoadmin_permission_set" "eks_user_admin" {
   name             = "EKSManagerUserAdmin"
   description      = "Admin EKS console/API access -- Kubernetes-level access controlled separately via EKS Access Entries, not this permission set."
-  instance_arn     = tolist(data.aws_ssoadmin_instances.this.arns)[0]
+  instance_arn     = local.identity_center_instance_arn
   session_duration = "PT4H"
-  region           = var.identity_center_region != "" ? var.identity_center_region : null
+  region           = length(local.identity_center_matches) > 0 ? local.identity_center_matches[0].region : null
 }
 
 # Identical on both permission sets -- enough to browse/discover clusters
@@ -192,13 +231,13 @@ locals {
 }
 
 resource "aws_ssoadmin_permission_set_inline_policy" "eks_user_view" {
-  instance_arn       = tolist(data.aws_ssoadmin_instances.this.arns)[0]
+  instance_arn       = local.identity_center_instance_arn
   permission_set_arn = aws_ssoadmin_permission_set.eks_user_view.arn
   inline_policy      = local.eks_connect_policy
 }
 
 resource "aws_ssoadmin_permission_set_inline_policy" "eks_user_admin" {
-  instance_arn       = tolist(data.aws_ssoadmin_instances.this.arns)[0]
+  instance_arn       = local.identity_center_instance_arn
   permission_set_arn = aws_ssoadmin_permission_set.eks_user_admin.arn
   inline_policy      = local.eks_connect_policy
 }
@@ -236,7 +275,7 @@ resource "aws_iam_role_policy" "identity_center" {
           "sso:DescribeAccountAssignmentDeletionStatus"
         ]
         Resource = [
-          tolist(data.aws_ssoadmin_instances.this.arns)[0],
+          local.identity_center_instance_arn,
           aws_ssoadmin_permission_set.eks_user_view.arn,
           aws_ssoadmin_permission_set.eks_user_admin.arn,
           "arn:aws:sso:::account/*"

@@ -89,7 +89,7 @@ variable "vpc_subnet_id" {
 }
 
 variable "identity_center_region" {
-  description = "Overrides which region IAM Identity Center's permission sets are looked up/created in, if it differs from management_account_region. The discovery API only returns a result when queried from the exact region the instance actually lives in, and silently returns empty otherwise -- leave unset to default to management_account_region (the common case)."
+  description = "Skips region auto-discovery and uses this region directly for IAM Identity Center's permission sets. By default (left empty), Terraform searches every AWS region enabled by default for an Identity Center instance and uses whichever one responds -- no AWS CLI dependency needed. Set this explicitly if Identity Center lives in an opt-in region (not covered by that search), or if multi-region replication means more than one region would otherwise match (administrative actions like creating permission sets only work from the primary region)."
   type        = string
   default     = ""
 }
