@@ -35,7 +35,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/ubuntu/bin/agent_upgrade.dist/agent_upgrade.bin --download-url "${agent_download_url}" --upload-url "${agent_upload_url}"
+ExecStart=/home/ubuntu/bin/agent_upgrade.dist/agent_upgrade.bin --download-url '${agent_download_url}' --upload-url '${agent_upload_url}'
 # Automatically disable the service so it does not run on subsequent reboots
 ExecStartPost=/usr/bin/systemctl disable agent_install.service
 
