@@ -23,13 +23,6 @@ resource "aws_ecr_repository" "app" {
   }
 }
 
-# --- Secrets Manager ---------------------------------------------------------
-
-resource "aws_secretsmanager_secret" "app" {
-  name        = "/EKSManager/config"
-  description = "EKS Manager operational secrets"
-}
-
 # --- S3 state bucket ---------------------------------------------------------
 
 resource "aws_s3_bucket" "config" {
