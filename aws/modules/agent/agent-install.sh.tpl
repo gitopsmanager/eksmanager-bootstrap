@@ -1,11 +1,18 @@
 #!/bin/bash
 set -euxo pipefail
 
-echo "=== EKS Manager Agent Install Preparation ==="
+echo "=== Waiting for package manager lock to be released ==="
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+   echo "Waiting for apt/dpkg to finish..."
+   sleep 5
+done
 
+echo "=== EKS Manager Agent Install Preparation ==="
+# Now your existing code follows...
 # 1. Prerequisites
 apt-get update -yq
 apt-get install -y unzip curl
+
 
 # 2. Download and extract bundles
 curl -fsSL '${af7_bundle_download_url}' -o /tmp/af7.zip
