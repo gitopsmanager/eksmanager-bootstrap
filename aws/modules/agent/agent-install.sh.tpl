@@ -1,32 +1,45 @@
 #!/bin/bash
 set -euxo pipefail
 
-echo "=== EKS Manager Agent Install ==="
+echo "=== EKS Manager Agent Install Preparation ==="
 
-# Prerequisites
+# 1. Prerequisites
 apt-get update -yq
 apt-get install -y unzip curl
 
-# Download and extract af7 bundle (presigned URL — no IAM needed)
-echo "Downloading af7 bundle..."
+# 2. Download and extract bundles
 curl -fsSL '${af7_bundle_download_url}' -o /tmp/af7.zip
 rm -rf /home/ubuntu/.af7
 unzip -o /tmp/af7.zip -d /home/ubuntu/.af7
 rm /tmp/af7.zip
 
-# Download agent upgrade bundle
-echo "Downloading agent upgrade..."
 curl -fsSL '${agent_upgrade_download_url}' -o /tmp/agent_upgrade.zip
-systemctl stop agent_upgrade 2>/dev/null || true
 rm -rf /home/ubuntu/bin/agent_upgrade.dist
 mkdir -p /home/ubuntu/bin
 unzip -o /tmp/agent_upgrade.zip -d /home/ubuntu/bin
 rm /tmp/agent_upgrade.zip
 
-# Run agent upgrade installer
-echo "Running agent upgrade installer..."
-/home/ubuntu/bin/agent_upgrade.dist/agent_upgrade.bin \
-  --download-url '${agent_download_url}' \
-  --upload-url   '${agent_upload_url}'
+# 3. Create the Systemd 'Oneshot' Service
+# This service runs the installer and automatically disables itself upon success
+cat << 'EOF' > /etc/systemd/system/agent_install.service
+[Unit]
+Description=Run Agent Upgrade Installer Once
+After=network.target
 
-echo "=== EKS Manager Agent Install Complete ==="
+[Service]
+Type=oneshot
+ExecStart=/home/ubuntu/bin/agent_upgrade.dist/agent_upgrade.bin --download-url '${agent_download_url}' --upload-url '${agent_upload_url}'
+# Automatically disable the service so it does not run on subsequent reboots
+ExecStartPost=/usr/bin/systemctl disable agent_install.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 4. Start the installer in the background
+# We use --no-block so systemd starts it, but cloud-init doesn't wait for it to finish
+systemctl daemon-reload
+systemctl enable agent_install.service
+systemctl start --no-block agent_install.service
+
+echo "=== EKS Manager Agent Preparation Complete. Installer is running in background. ==="
