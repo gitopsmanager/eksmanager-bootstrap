@@ -58,6 +58,18 @@ resource "aws_ssm_parameter" "identity_store_id" {
   value = var.identity_store_id
 }
 
+resource "aws_ssm_parameter" "identity_center_role_arn" {
+  name  = "/EKSManager/config/identity-center-role-arn"
+  type  = "String"
+  value = var.eks_manager_identity_center_role_arn
+}
+
+resource "aws_ssm_parameter" "identity_center_region" {
+  name  = "/EKSManager/config/identity-center-region"
+  type  = "String"
+  value = var.identity_center_resolved_region
+}
+
 resource "aws_ssm_parameter" "secrets_editing" {
   name  = "/EKSManager/config/secrets-editing"
   type  = "String"

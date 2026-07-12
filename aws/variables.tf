@@ -165,6 +165,11 @@ variable "identity_store_id" {
   type        = string
 }
 
+variable "identity_center_resolved_region" {
+  description = "Region IAM Identity Center actually lives in, auto-discovered by iam/codebuild-pipeline-tf -- needed by EKSManagerAgentRole at runtime to target SSO Admin/Identity Store API calls at the right regional endpoint."
+  type        = string
+}
+
 # bearer_token removed -- was declared but never referenced by any resource
 # (confirmed via grep across aws/). The server-side fetch that populated it
 # was itself removed for the same reason plus being architecturally wrong

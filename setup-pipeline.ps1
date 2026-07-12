@@ -346,6 +346,7 @@ $eksUserViewPsArn = terraform output -raw eks_manager_user_view_permission_set_a
 $eksUserAdminPsArn = terraform output -raw eks_manager_user_admin_permission_set_arn
 $identityCenterRoleArn = terraform output -raw eks_manager_identity_center_role_arn
 $identityStoreId = terraform output -raw identity_store_id
+$identityCenterResolvedRegion = terraform output -raw identity_center_region
 
 function ConvertTo-Base64Url {
     param([Parameter(ValueFromPipeline = $true)][byte[]]$Bytes)
@@ -435,6 +436,7 @@ $pinnedObject = [ordered]@{
     eks_manager_user_admin_permission_set_arn = $eksUserAdminPsArn
     eks_manager_identity_center_role_arn      = $identityCenterRoleArn
     identity_store_id                         = $identityStoreId
+    identity_center_resolved_region            = $identityCenterResolvedRegion
 }
 $pinnedJson = $pinnedObject | ConvertTo-Json
 

@@ -317,6 +317,7 @@ EKS_USER_VIEW_PS_ARN=$(terraform output -raw eks_manager_user_view_permission_se
 EKS_USER_ADMIN_PS_ARN=$(terraform output -raw eks_manager_user_admin_permission_set_arn)
 IDENTITY_CENTER_ROLE_ARN=$(terraform output -raw eks_manager_identity_center_role_arn)
 IDENTITY_STORE_ID=$(terraform output -raw identity_store_id)
+IDENTITY_CENTER_RESOLVED_REGION=$(terraform output -raw identity_center_region)
 
 b64url() {
   openssl base64 -A | tr '+/' '-_' | tr -d '='
@@ -411,7 +412,8 @@ PINNED_JSON=$(cat <<EOF
   "eks_manager_user_view_permission_set_arn": "${EKS_USER_VIEW_PS_ARN}",
   "eks_manager_user_admin_permission_set_arn": "${EKS_USER_ADMIN_PS_ARN}",
   "eks_manager_identity_center_role_arn": "${IDENTITY_CENTER_ROLE_ARN}",
-  "identity_store_id": "${IDENTITY_STORE_ID}"
+  "identity_store_id": "${IDENTITY_STORE_ID}",
+  "identity_center_resolved_region": "${IDENTITY_CENTER_RESOLVED_REGION}"
 }
 EOF
 )

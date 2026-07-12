@@ -34,6 +34,11 @@ output "identity_store_id" {
   value       = local.identity_center_identity_store_id
 }
 
+output "identity_center_region" {
+  description = "Region IAM Identity Center actually lives in, auto-discovered -- needed by EKSManagerAgentRole at runtime to target SSO Admin/Identity Store API calls at the right regional endpoint, same reason aws_ssoadmin_permission_set_inline_policy needed it explicitly."
+  value       = length(local.identity_center_matches) > 0 ? local.identity_center_matches[0].region : null
+}
+
 output "bootstrap_bucket" {
   description = "Name of the S3 bucket used for bootstrap artifacts."
   value       = aws_s3_bucket.bootstrap.bucket

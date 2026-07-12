@@ -66,6 +66,8 @@ module "ssm" {
   eks_manager_user_view_permission_set_arn  = var.eks_manager_user_view_permission_set_arn
   eks_manager_user_admin_permission_set_arn = var.eks_manager_user_admin_permission_set_arn
   identity_store_id                         = var.identity_store_id
+  eks_manager_identity_center_role_arn       = var.eks_manager_identity_center_role_arn
+  identity_center_resolved_region            = var.identity_center_resolved_region
 
   depends_on = [module.shared_services]
 }
