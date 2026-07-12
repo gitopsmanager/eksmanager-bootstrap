@@ -88,6 +88,12 @@ variable "vpc_subnet_id" {
   }
 }
 
+variable "identity_center_region" {
+  description = "Overrides which region IAM Identity Center's permission sets are looked up/created in, if it differs from management_account_region. The discovery API only returns a result when queried from the exact region the instance actually lives in, and silently returns empty otherwise -- leave unset to default to management_account_region (the common case)."
+  type        = string
+  default     = ""
+}
+
 variable "github_oidc_provider_arn" {
   description = "ARN of an existing GitHub Actions OIDC provider (arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com), if the shared services account already has one. Leave empty (default) to have Terraform create it — an AWS account can only have one per URL, so if apply fails with EntityAlreadyExists on aws_iam_openid_connect_provider.github_actions, set this to the existing one's ARN and re-run."
   type        = string

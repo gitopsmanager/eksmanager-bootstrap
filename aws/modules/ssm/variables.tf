@@ -8,3 +8,6 @@ variable "secrets_editing"            { type = bool }
 variable "app_url"                    { type = string }
 variable "client_id"                  { type = string }
 variable "cognito_url"                { type = string }
+variable "eks_manager_user_view_permission_set_arn"  { type = string }
+variable "eks_manager_user_admin_permission_set_arn" { type = string }
+variable "identity_store_id"          { type = string }

@@ -342,6 +342,10 @@ $githubOrg = ($GithubRepo -split '/')[0]
 $githubRepoName = ($GithubRepo -split '/')[1]
 $roleArn = terraform output -raw github_actions_role_arn
 $outputBucket = terraform output -raw bootstrap_bucket
+$eksUserViewPsArn = terraform output -raw eks_manager_user_view_permission_set_arn
+$eksUserAdminPsArn = terraform output -raw eks_manager_user_admin_permission_set_arn
+$identityCenterRoleArn = terraform output -raw eks_manager_identity_center_role_arn
+$identityStoreId = terraform output -raw identity_store_id
 
 function ConvertTo-Base64Url {
     param([Parameter(ValueFromPipeline = $true)][byte[]]$Bytes)
@@ -427,6 +431,10 @@ $pinnedObject = [ordered]@{
     agent_subnet_id           = $VpcSubnetId
     agent_ami                 = $AgentAmi
     vpc_id                    = $VpcId
+    eks_manager_user_view_permission_set_arn  = $eksUserViewPsArn
+    eks_manager_user_admin_permission_set_arn = $eksUserAdminPsArn
+    eks_manager_identity_center_role_arn      = $identityCenterRoleArn
+    identity_store_id                         = $identityStoreId
 }
 $pinnedJson = $pinnedObject | ConvertTo-Json
 

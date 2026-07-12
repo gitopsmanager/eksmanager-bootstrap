@@ -40,6 +40,24 @@ resource "aws_ssm_parameter" "stackset_name" {
   value = "EKSManagerEnableAccountStackSet"
 }
 
+resource "aws_ssm_parameter" "eks_user_view_permission_set_arn" {
+  name  = "/EKSManager/config/eks-user-view-permission-set-arn"
+  type  = "String"
+  value = var.eks_manager_user_view_permission_set_arn
+}
+
+resource "aws_ssm_parameter" "eks_user_admin_permission_set_arn" {
+  name  = "/EKSManager/config/eks-user-admin-permission-set-arn"
+  type  = "String"
+  value = var.eks_manager_user_admin_permission_set_arn
+}
+
+resource "aws_ssm_parameter" "identity_store_id" {
+  name  = "/EKSManager/config/identity-store-id"
+  type  = "String"
+  value = var.identity_store_id
+}
+
 resource "aws_ssm_parameter" "secrets_editing" {
   name  = "/EKSManager/config/secrets-editing"
   type  = "String"

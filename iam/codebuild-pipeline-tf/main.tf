@@ -114,6 +114,149 @@ resource "aws_iam_role_policy" "management_bootstrap" {
   policy = file("${path.module}/policies/EKSManagerBootstrap-policy.json")
 }
 
+# ── IAM Identity Center — permission sets + cross-account trust ─────────────
+# Identity Center itself (SAML federation, SCIM group sync) is managed by
+# the infra team, not this repo -- this only creates the two permission
+# sets EKSManagerAgentRole is allowed to assign groups to, and the role in
+# whichever account administers Identity Center that lets it do so.
+#
+# aws_ssoadmin_instances only returns a result when queried from the exact
+# region the instance actually lives in -- silently empty otherwise, not
+# an error. Assumes Identity Center's home region is the same as the
+# management account's (management_account_region, same default provider
+# EKSManagerBootstrap above already uses) unless identity_center_region
+# overrides it. The postcondition below turns a wrong guess into one clear
+# message instead of a cryptic tolist()[0] index error three resources
+# downstream.
+#
+# Assumes Identity Center is administered from the management account
+# itself, not a delegated admin account -- if that's wrong, neither the
+# region override nor the postcondition catches it (the data source would
+# just as likely find nothing there either), and this whole block needs
+# its own provider pointed at the correct account instead.
+#
+# Trusts the shared services account root, not EKSManagerAgentRole's
+# specific ARN -- that role doesn't exist yet on first setup-pipeline.sh
+# run (it's created later, by the aws/ module). Same pattern as
+# EKSManagerBootstrap above: the real enforcement boundary is that only
+# EKSManagerAgentRole's own policy actually grants it sts:AssumeRole here,
+# not the trust statement itself.
+
+data "aws_ssoadmin_instances" "this" {
+  region = var.identity_center_region != "" ? var.identity_center_region : null
+
+  lifecycle {
+    postcondition {
+      condition     = length(self.arns) > 0
+      error_message = "No IAM Identity Center instance found in ${var.identity_center_region != "" ? var.identity_center_region : var.management_account_region}. Either it hasn't been enabled yet, it's administered from a different region (set identity_center_region), or it's delegated to a different account entirely -- if the latter, this data source needs a provider pointed at the correct account instead."
+    }
+  }
+}
+
+resource "aws_ssoadmin_permission_set" "eks_user_view" {
+  name             = "EKSManagerUserView"
+  description      = "Read-only EKS console/API access -- Kubernetes-level access controlled separately via EKS Access Entries, not this permission set."
+  instance_arn     = tolist(data.aws_ssoadmin_instances.this.arns)[0]
+  session_duration = "PT4H"
+  region           = var.identity_center_region != "" ? var.identity_center_region : null
+}
+
+resource "aws_ssoadmin_permission_set" "eks_user_admin" {
+  name             = "EKSManagerUserAdmin"
+  description      = "Admin EKS console/API access -- Kubernetes-level access controlled separately via EKS Access Entries, not this permission set."
+  instance_arn     = tolist(data.aws_ssoadmin_instances.this.arns)[0]
+  session_duration = "PT4H"
+  region           = var.identity_center_region != "" ? var.identity_center_region : null
+}
+
+# Identical on both permission sets -- enough to browse/discover clusters
+# and node groups in the console/CLI. The view-vs-admin distinction
+# happens entirely at the EKS Access Entry / Access Policy layer later,
+# per cluster, not here -- these two permission sets exist mainly so an
+# assignment list reads unambiguously (which one someone was granted),
+# not because their IAM content differs.
+locals {
+  eks_connect_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "eks:ListClusters",
+        "eks:DescribeCluster",
+        "eks:DescribeNodegroup",
+        "eks:ListNodegroups"
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_ssoadmin_permission_set_inline_policy" "eks_user_view" {
+  instance_arn       = tolist(data.aws_ssoadmin_instances.this.arns)[0]
+  permission_set_arn = aws_ssoadmin_permission_set.eks_user_view.arn
+  inline_policy      = local.eks_connect_policy
+}
+
+resource "aws_ssoadmin_permission_set_inline_policy" "eks_user_admin" {
+  instance_arn       = tolist(data.aws_ssoadmin_instances.this.arns)[0]
+  permission_set_arn = aws_ssoadmin_permission_set.eks_user_admin.arn
+  inline_policy      = local.eks_connect_policy
+}
+
+resource "aws_iam_role" "identity_center" {
+  name = "EKSManagerIdentityCenterRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { AWS = "arn:aws:iam::${var.shared_services_account_id}:root" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "identity_center" {
+  name = "EKSManagerIdentityCenterPolicy"
+  role = aws_iam_role.identity_center.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Target accounts vary with org_config, which this config has no
+        # visibility into -- can't enumerate them here the way the two
+        # permission set ARNs are scoped exactly.
+        Sid    = "EKSManagerAccountAssignments"
+        Effect = "Allow"
+        Action = [
+          "sso:CreateAccountAssignment",
+          "sso:DeleteAccountAssignment",
+          "sso:DescribeAccountAssignmentCreationStatus",
+          "sso:DescribeAccountAssignmentDeletionStatus"
+        ]
+        Resource = [
+          tolist(data.aws_ssoadmin_instances.this.arns)[0],
+          aws_ssoadmin_permission_set.eks_user_view.arn,
+          aws_ssoadmin_permission_set.eks_user_admin.arn,
+          "arn:aws:sso:::account/*"
+        ]
+      },
+      {
+        # GetGroupId's resource-level scoping isn't well-documented enough
+        # to narrow confidently -- Resource "*" here is deliberate, not an
+        # oversight, matching the same reasoning already used elsewhere in
+        # this file for actions with unclear or unsupported resource-level
+        # scoping (e.g. Ec2AgentInstanceLifecycle).
+        Sid      = "EKSManagerResolveGroupName"
+        Effect   = "Allow"
+        Action   = "identitystore:GetGroupId"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # ── S3 bucket for bootstrap release artifacts ───────────────────────────────
 # Terraform-owned — setup-pipeline.sh/.ps1 only sets up infrastructure, it
 # doesn't clone, zip, or upload anything, so there's no ordering conflict

@@ -14,6 +14,26 @@ output "management_bootstrap_role_arn" {
   value       = aws_iam_role.management_bootstrap.arn
 }
 
+output "eks_manager_user_view_permission_set_arn" {
+  description = "ARN of the EKSManagerUserView permission set."
+  value       = aws_ssoadmin_permission_set.eks_user_view.arn
+}
+
+output "eks_manager_user_admin_permission_set_arn" {
+  description = "ARN of the EKSManagerUserAdmin permission set."
+  value       = aws_ssoadmin_permission_set.eks_user_admin.arn
+}
+
+output "eks_manager_identity_center_role_arn" {
+  description = "ARN of EKSManagerIdentityCenterRole -- EKSManagerAgentRole assumes this to create/delete account assignments."
+  value       = aws_iam_role.identity_center.arn
+}
+
+output "identity_store_id" {
+  description = "ID of the IAM Identity Center identity store, auto-discovered -- needed by EKSManagerAgentRole at runtime to resolve a group name to a GroupId via identitystore:GetGroupId."
+  value       = tolist(data.aws_ssoadmin_instances.this.identity_store_ids)[0]
+}
+
 output "bootstrap_bucket" {
   description = "Name of the S3 bucket used for bootstrap artifacts."
   value       = aws_s3_bucket.bootstrap.bucket

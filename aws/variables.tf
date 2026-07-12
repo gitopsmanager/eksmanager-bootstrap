@@ -145,6 +145,26 @@ variable "cognito_url" {
   type        = string
 }
 
+variable "eks_manager_user_view_permission_set_arn" {
+  description = "ARN of the EKSManagerUserView permission set, created by setup-pipeline.sh -- pinned so the agent role can look it up."
+  type        = string
+}
+
+variable "eks_manager_user_admin_permission_set_arn" {
+  description = "ARN of the EKSManagerUserAdmin permission set, created by setup-pipeline.sh -- pinned so the agent role can look it up."
+  type        = string
+}
+
+variable "eks_manager_identity_center_role_arn" {
+  description = "ARN of EKSManagerIdentityCenterRole -- EKSManagerAgentRole assumes this to create/delete account assignments."
+  type        = string
+}
+
+variable "identity_store_id" {
+  description = "ID of the IAM Identity Center identity store -- needed by EKSManagerAgentRole at runtime to resolve a group name to a GroupId via identitystore:GetGroupId."
+  type        = string
+}
+
 # bearer_token removed -- was declared but never referenced by any resource
 # (confirmed via grep across aws/). The server-side fetch that populated it
 # was itself removed for the same reason plus being architecturally wrong

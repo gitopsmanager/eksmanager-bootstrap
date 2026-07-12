@@ -40,6 +40,7 @@ module "shared_services" {
   shared_services_region     = var.shared_services_region
   config_bucket_name         = local.config_bucket_name
   secrets_editing            = var.secrets_editing
+  eks_manager_identity_center_role_arn = var.eks_manager_identity_center_role_arn
 }
 
 
@@ -62,6 +63,9 @@ module "ssm" {
   app_url                    = var.app_url
   client_id                  = var.client_id
   cognito_url                = var.cognito_url
+  eks_manager_user_view_permission_set_arn  = var.eks_manager_user_view_permission_set_arn
+  eks_manager_user_admin_permission_set_arn = var.eks_manager_user_admin_permission_set_arn
+  identity_store_id                         = var.identity_store_id
 
   depends_on = [module.shared_services]
 }

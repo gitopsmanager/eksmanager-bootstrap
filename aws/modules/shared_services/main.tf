@@ -70,6 +70,7 @@ resource "aws_iam_role_policy" "agent" {
 
   policy = templatefile("${path.module}/agent-role-policy.json", {
     SHARED_SERVICES_ACCOUNT_ID = data.aws_caller_identity.shared.account_id
+    IDENTITY_CENTER_ROLE_ARN   = var.eks_manager_identity_center_role_arn
   })
 }
 

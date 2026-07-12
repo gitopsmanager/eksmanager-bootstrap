@@ -8,6 +8,12 @@
       "Resource": "arn:aws:iam::*:role/EKSManagerAdminRole"
     },
     {
+      "Sid": "AssumeIdentityCenterRole",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "${IDENTITY_CENTER_ROLE_ARN}"
+    },
+    {
       "Sid": "SecretsManager",
       "Effect": "Allow",
       "Action": [
