@@ -100,6 +100,7 @@ phases:
   build:
     commands:
       - |
+        set -euo pipefail
         SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_account_id'])")
         SHARED_SERVICES_REGION=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_region'])")
 
