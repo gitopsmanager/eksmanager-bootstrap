@@ -37,9 +37,20 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              # Trusts EKSManagerAgentRole in the shared-services account,
-              # not the spoke account this stack is deployed into.
-              AWS: !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerAgentRole"
+              # Trusts two roles in the shared-services account, neither of
+              # which is the spoke account this stack is deployed into:
+              #   - EKSManagerAgentRole: the ongoing runtime agent
+              #   - EKSManagerPrefixListsSharedRole: the prefix-lists/
+              #     add-cluster CodeBuild pipeline. Interim -- this role
+              #     currently gets EKSManagerAdminRole's full ec2:*/eks:*
+              #     policy just to manage prefix lists and SG rules, wider
+              #     than it needs. Tightening this (either a narrower
+              #     policy on EKSManagerAdminRole itself, or splitting the
+              #     pipeline onto its own dedicated role) is a deliberate
+              #     follow-up, not an oversight.
+              AWS:
+                - !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerAgentRole"
+                - !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerPrefixListsSharedRole"
             Action: sts:AssumeRole
       Policies:
         - PolicyName: EKSManagerAdminPolicy
