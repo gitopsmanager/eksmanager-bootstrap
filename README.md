@@ -135,13 +135,44 @@ eksmanager-bootstrap/
 │   ├── create-saml-app.ps1
 │   └── README.md
 └── iam/
-    └── codebuild-pipeline-tf/    # Terraform applied by setup-pipeline.sh/.ps1
+    ├── codebuild-pipeline-tf/    # Terraform applied by setup-pipeline.sh/.ps1
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   ├── outputs.tf
+    │   └── policies/
+    │       └── EKSManagerBootstrap-policy.json   # Scoped policy — not AdministratorAccess
+    └── prefix-lists-pipeline-tf/  # Applied separately — see "eksmanager-prefix-lists pipeline" below
         ├── main.tf
         ├── variables.tf
-        ├── outputs.tf
-        └── policies/
-            └── EKSManagerBootstrap-policy.json   # Scoped policy — not AdministratorAccess
+        └── outputs.tf
 ```
+
+## eksmanager-prefix-lists pipeline
+
+A second, independent CodeBuild project — manages EC2 managed prefix lists and
+the security group rules that reference them, across every client account and
+region. Not wired into `setup-pipeline.sh`/`.ps1` yet; apply
+`iam/prefix-lists-pipeline-tf/` on its own for now.
+
+**Currently implemented:** the CodeBuild project, its service role
+(`EKSManagerPrefixListsSharedRole`), the S3 bucket, and the two EventBridge
+triggers that start a build when `org-changes.zip` or `add-cluster.zip` is
+uploaded. Each trigger overrides the project's source at start time via
+`sourceLocationOverride`, so the two artifact types never race to overwrite
+a shared object.
+
+**Not yet implemented:** the `terraform/org-changes/` and
+`terraform/add-cluster/` Terraform this project actually runs, the Python
+generator that renders each build's `buildspec.yml` from `topology.json` and
+the granular/groups/cluster-selection config files, and the two GitHub
+Actions workflows (`org-changes.yml`, `add-cluster.yml`) that zip and upload
+those artifacts.
+
+**`org-changes` is a manual step, deliberately not auto-triggered after
+bootstrap succeeds.** An org-changes run replaces prefix lists across every
+enabled account and region in one batch — worth a human deciding to run it
+after reviewing what changed in `topology.json`, not something that fires
+automatically the moment a bootstrap build reports success.
 
 ## After bootstrap
 

@@ -290,6 +290,37 @@ if $DESTROY; then
 
   terraform destroy "${TF_VARS[@]}"
 
+  # ── iam/prefix-lists-pipeline-tf teardown ──────────────────────────────────
+  # Same versioned-bucket emptying requirement as above. Reuses
+  # GITHUB_OIDC_PROVIDER_ARN as already resolved by the auto-detection block
+  # earlier in this script (runs unconditionally, before this destroy
+  # branch) -- terraform apply never ran in this path, so there's no
+  # terraform output to read it back from instead.
+  PREFIX_LISTS_BUCKET_NAME="eksmanager-prefix-lists-${SHARED_SERVICES_ACCOUNT_ID}"
+  echo ""
+  echo "Emptying ${PREFIX_LISTS_BUCKET_NAME} (all object versions and delete markers)..."
+  cd "${SCRIPT_DIR}/iam/prefix-lists-pipeline-tf"
+  terraform init
+  VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${PREFIX_LISTS_BUCKET_NAME}" \
+    --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
+  if [ "$(echo "$VERSIONS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+    aws s3api delete-objects --bucket "${PREFIX_LISTS_BUCKET_NAME}" --delete "$VERSIONS_JSON" >/dev/null
+  fi
+  MARKERS_JSON=$(aws s3api list-object-versions --bucket "${PREFIX_LISTS_BUCKET_NAME}" \
+    --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
+  if [ "$(echo "$MARKERS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+    aws s3api delete-objects --bucket "${PREFIX_LISTS_BUCKET_NAME}" --delete "$MARKERS_JSON" >/dev/null
+  fi
+  echo "Bucket emptied."
+  echo ""
+  terraform destroy \
+    -var="shared_services_account_id=${SHARED_SERVICES_ACCOUNT_ID}" \
+    -var="shared_services_role_name=${SHARED_SERVICES_ROLE_NAME}" \
+    -var="shared_services_region=${REGION}" \
+    -var="github_repo=${GITHUB_REPO}" \
+    -var="github_oidc_provider_arn=${GITHUB_OIDC_PROVIDER_ARN:-}"
+  cd "${SCRIPT_DIR}"
+
   echo ""
   echo "================================================================"
   echo "Pipeline infrastructure destroyed."
@@ -315,6 +346,36 @@ EKS_USER_ADMIN_PS_ARN=$(terraform output -raw eks_manager_user_admin_permission_
 IDENTITY_CENTER_ROLE_ARN=$(terraform output -raw eks_manager_identity_center_role_arn)
 IDENTITY_STORE_ID=$(terraform output -raw identity_store_id)
 IDENTITY_CENTER_RESOLVED_REGION=$(terraform output -raw identity_center_region)
+OIDC_PROVIDER_ARN=$(terraform output -raw github_oidc_provider_arn)
+
+# ── iam/prefix-lists-pipeline-tf — the eksmanager-prefix-lists CodeBuild
+# project ─────────────────────────────────────────────────────────────────
+# Separate Terraform state, separate apply -- but reuses the OIDC provider
+# just created/detected above rather than repeating that detection, since
+# an AWS account can only have one provider per URL and this one is now
+# known for certain (Terraform state owns it either way, whether it was
+# pre-existing or created this run).
+echo ""
+echo "================================================================"
+echo "Running terraform apply (iam/prefix-lists-pipeline-tf)..."
+echo "================================================================"
+echo ""
+
+cd "${SCRIPT_DIR}/iam/prefix-lists-pipeline-tf"
+terraform init
+
+PREFIX_LISTS_TF_VARS=(
+  -var="shared_services_account_id=${SHARED_SERVICES_ACCOUNT_ID}"
+  -var="shared_services_role_name=${SHARED_SERVICES_ROLE_NAME}"
+  -var="shared_services_region=${REGION}"
+  -var="github_repo=${GITHUB_REPO}"
+  -var="github_oidc_provider_arn=${OIDC_PROVIDER_ARN}"
+)
+
+terraform apply "${PREFIX_LISTS_TF_VARS[@]}"
+PREFIX_LISTS_ROLE_ARN=$(terraform output -raw github_actions_role_arn)
+PREFIX_LISTS_BUCKET=$(terraform output -raw prefix_lists_bucket)
+cd "${SCRIPT_DIR}"
 
 b64url() {
   openssl base64 -A | tr '+/' '-_' | tr -d '='

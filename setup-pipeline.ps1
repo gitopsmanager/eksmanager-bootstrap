@@ -318,6 +318,45 @@ if ($Destroy) {
 
     terraform destroy @tfVars
 
+    # ── iam/prefix-lists-pipeline-tf teardown ────────────────────────────────
+    # Same versioned-bucket emptying requirement as above. Reuses
+    # $env:GITHUB_OIDC_PROVIDER_ARN as already resolved by the auto-detection
+    # block earlier in this script -- terraform apply never ran in this
+    # path, so there's no terraform output to read it back from instead.
+    # Pushed FROM iam/codebuild-pipeline-tf, popped back TO it -- the
+    # existing Pop-Location right before exit 0 below still handles
+    # returning to the original directory, same as before this block existed.
+    $PrefixListsBucketName = "eksmanager-prefix-lists-$SharedServicesAccountId"
+    Write-Host ""
+    Write-Host "Emptying $PrefixListsBucketName (all object versions and delete markers)..."
+    Push-Location (Join-Path $ScriptDir "iam\prefix-lists-pipeline-tf")
+    terraform init
+    $plVersionsJson = aws s3api list-object-versions --bucket $PrefixListsBucketName `
+        --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>$null
+    if ($plVersionsJson) {
+        $plVersions = $plVersionsJson | ConvertFrom-Json
+        if ($plVersions.Objects -and $plVersions.Objects.Count -gt 0) {
+            aws s3api delete-objects --bucket $PrefixListsBucketName --delete $plVersionsJson | Out-Null
+        }
+    }
+    $plMarkersJson = aws s3api list-object-versions --bucket $PrefixListsBucketName `
+        --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>$null
+    if ($plMarkersJson) {
+        $plMarkers = $plMarkersJson | ConvertFrom-Json
+        if ($plMarkers.Objects -and $plMarkers.Objects.Count -gt 0) {
+            aws s3api delete-objects --bucket $PrefixListsBucketName --delete $plMarkersJson | Out-Null
+        }
+    }
+    Write-Host "Bucket emptied."
+    Write-Host ""
+    terraform destroy `
+        "-var=shared_services_account_id=$SharedServicesAccountId" `
+        "-var=shared_services_role_name=$SharedServicesRoleName" `
+        "-var=shared_services_region=$Region" `
+        "-var=github_repo=$GithubRepo" `
+        "-var=github_oidc_provider_arn=$($env:GITHUB_OIDC_PROVIDER_ARN)"
+    Pop-Location
+
     Write-Host ""
     Write-Host "================================================================"
     Write-Host "Pipeline infrastructure destroyed."
@@ -344,6 +383,42 @@ $eksUserAdminPsArn = terraform output -raw eks_manager_user_admin_permission_set
 $identityCenterRoleArn = terraform output -raw eks_manager_identity_center_role_arn
 $identityStoreId = terraform output -raw identity_store_id
 $identityCenterResolvedRegion = terraform output -raw identity_center_region
+$oidcProviderArn = terraform output -raw github_oidc_provider_arn
+
+# ── iam/prefix-lists-pipeline-tf — the eksmanager-prefix-lists CodeBuild
+# project ─────────────────────────────────────────────────────────────────
+# Separate Terraform state, separate apply -- but reuses the OIDC provider
+# just created/detected above rather than repeating that detection, since
+# an AWS account can only have one provider per URL and this one is now
+# known for certain (Terraform state owns it either way, whether it was
+# pre-existing or created this run).
+#
+# Pushed FROM iam/codebuild-pipeline-tf, popped back TO it (not out to the
+# original directory) -- everything after this point in the script still
+# expects to be running from iam/codebuild-pipeline-tf (e.g. the
+# pinned.auto.tfvars.json write further down uses a path relative to it),
+# same as before this block existed.
+Write-Host ""
+Write-Host "================================================================"
+Write-Host "Running terraform apply (iam/prefix-lists-pipeline-tf)..."
+Write-Host "================================================================"
+Write-Host ""
+
+Push-Location (Join-Path $ScriptDir "iam\prefix-lists-pipeline-tf")
+terraform init
+
+$prefixListsTfVars = @(
+    "-var=shared_services_account_id=$SharedServicesAccountId"
+    "-var=shared_services_role_name=$SharedServicesRoleName"
+    "-var=shared_services_region=$Region"
+    "-var=github_repo=$GithubRepo"
+    "-var=github_oidc_provider_arn=$oidcProviderArn"
+)
+
+terraform apply @prefixListsTfVars
+$prefixListsRoleArn = terraform output -raw github_actions_role_arn
+$prefixListsBucket = terraform output -raw prefix_lists_bucket
+Pop-Location
 
 function ConvertTo-Base64Url {
     param([Parameter(ValueFromPipeline = $true)][byte[]]$Bytes)

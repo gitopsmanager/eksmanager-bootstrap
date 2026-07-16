@@ -48,3 +48,8 @@ output "github_actions_role_arn" {
   description = "ARN to set as the AWS_ROLE_ARN repository variable on the fork, for .github/workflows/upload-to-s3.yml."
   value       = aws_iam_role.github_actions_upload.arn
 }
+
+output "github_oidc_provider_arn" {
+  description = "ARN of the GitHub Actions OIDC provider — either the one this module created, or the pre-existing one it was pointed at via github_oidc_provider_arn. Other modules (e.g. iam/prefix-lists-pipeline-tf) reuse this rather than creating a second provider, since an AWS account can only have one per URL."
+  value       = local.github_oidc_provider_final_arn
+}
