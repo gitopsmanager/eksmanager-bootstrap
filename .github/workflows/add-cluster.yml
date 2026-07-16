@@ -1,0 +1,56 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+name: add-cluster
+
+# Dispatched with an explicit cluster_name input -- not triggered on push
+# to clusters.json and not inferred by diffing it. The GUI already knows
+# exactly which cluster it just created or edited, so it states that
+# directly (via the GitHub API's workflow_dispatch inputs) rather than this
+# workflow trying to reconstruct intent from a file diff, which breaks down
+# for deletions and for commits touching more than one cluster at once.
+#
+# Requires the same PREFIX_LISTS_ROLE_ARN / PREFIX_LISTS_S3_BUCKET /
+# AWS_REGION repository variables as org-changes.yml -- see that workflow's
+# header comment.
+#
+# Reads clusters.json and prefix-lists.json from this repo. clusters.json
+# must contain cluster_name as a key; prefix-lists.json's groups must
+# contain that cluster's group.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: "Cluster to build -- must be a key in clusters.json"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.PREFIX_LISTS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Generate add-cluster artifact
+        run: |
+          python3 scripts/generate_add_cluster.py \
+            --cluster-name "${{ inputs.cluster_name }}" \
+            --clusters clusters.json \
+            --prefix-lists prefix-lists.json \
+            --state-bucket "${{ vars.PREFIX_LISTS_S3_BUCKET }}" \
+            --state-region "${{ vars.AWS_REGION }}" \
+            --output-dir build/add-cluster
+
+      - name: Zip and upload
+        run: |
+          cd build/add-cluster
+          zip -qr /tmp/add-cluster.zip .
+          aws s3 cp /tmp/add-cluster.zip "s3://${{ vars.PREFIX_LISTS_S3_BUCKET }}/add-cluster.zip"

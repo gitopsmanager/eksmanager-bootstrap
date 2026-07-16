@@ -1,0 +1,55 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+name: org-changes
+
+# Manually triggered, deliberately -- an org-changes run replaces prefix
+# lists across every enabled account/region in one batch (see
+# terraform/org-changes and iam/prefix-lists-pipeline-tf/README notes).
+# NOT triggered automatically on push to topology.json/prefix-lists.json
+# and NOT chained after eksmanager-bootstrap succeeds -- run this yourself
+# once you've reviewed what changed in either file.
+#
+# Requires these repository variables (same Settings page as
+# upload-to-s3.yml's), set by setup-pipeline.sh/.ps1:
+#   PREFIX_LISTS_ROLE_ARN   - from iam/prefix-lists-pipeline-tf's
+#                             github_actions_role_arn output
+#   PREFIX_LISTS_S3_BUCKET  - from that module's prefix_lists_bucket output
+#   AWS_REGION              - same shared_services_region as bootstrap's
+#                             (one shared value, not duplicated under a
+#                             second variable name)
+#
+# Reads topology.json and prefix-lists.json from this repo -- both must
+# exist and be filled in (copy example-topology.json / example-prefix-
+# lists.json, same pattern as bootstrap's topology.json).
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.PREFIX_LISTS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Generate org-changes artifact
+        run: |
+          python3 scripts/generate_org_changes.py \
+            --topology topology.json \
+            --prefix-lists prefix-lists.json \
+            --state-bucket "${{ vars.PREFIX_LISTS_S3_BUCKET }}" \
+            --state-region "${{ vars.AWS_REGION }}" \
+            --output-dir build/org-changes
+
+      - name: Zip and upload
+        run: |
+          cd build/org-changes
+          zip -qr /tmp/org-changes.zip .
+          aws s3 cp /tmp/org-changes.zip "s3://${{ vars.PREFIX_LISTS_S3_BUCKET }}/org-changes.zip"
