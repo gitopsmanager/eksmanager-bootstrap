@@ -245,6 +245,49 @@ resource "aws_security_group" "codebuild" {
   }
 }
 
+# ── Batch build orchestration role ──────────────────────────────────────────
+# Required for StartBuildBatch (org-changes' build-list) to work at all --
+# separate from EKSManagerPrefixListsSharedRole (which runs the actual
+# build commands) by AWS's own explicit design: giving the build's own
+# role StartBuild/StopBuild/RetryBuild permissions would let a build spawn
+# more builds via its own buildspec, bypassing the batch's own restrictions
+# on build count/compute type. CodeBuild assumes this role internally to
+# launch/manage each task in the batch -- nothing else ever assumes it.
+
+resource "aws_iam_role" "codebuild_batch" {
+  provider = aws.shared
+  name     = "EKSManagerPrefixListsBatchRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "codebuild.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "codebuild_batch" {
+  provider = aws.shared
+  name     = "EKSManagerPrefixListsBatchRolePolicy"
+  role     = aws_iam_role.codebuild_batch.id
+
+  # Constructed directly rather than aws_codebuild_project.eksmanager_prefix_lists.arn
+  # -- that resource's build_batch_config needs THIS role's ARN, so
+  # referencing the project's ARN back here would be a circular
+  # dependency. The project's name is a literal string, so its ARN is
+  # fully deterministic without needing the resource to exist first.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["codebuild:StartBuild", "codebuild:StopBuild", "codebuild:RetryBuild"]
+      Resource = "arn:aws:codebuild:${var.shared_services_region}:${var.shared_services_account_id}:project/eksmanager-prefix-lists"
+    }]
+  })
+}
+
 # ── CodeBuild project ────────────────────────────────────────────────────────
 # VPC attachment required, same as eksmanager-bootstrap -- see the vpc_id
 # variable's description for why.
@@ -297,6 +340,10 @@ resource "aws_codebuild_project" "eksmanager_prefix_lists" {
       group_name = "/aws/codebuild/eksmanager-prefix-lists"
     }
   }
+
+  build_batch_config {
+    service_role = aws_iam_role.codebuild_batch.arn
+  }
 }
 
 # ── EventBridge -- one rule per artifact key, each overriding the project's
@@ -331,8 +378,11 @@ resource "aws_iam_role_policy" "eventbridge_codebuild" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = "codebuild:StartBuild"
+      Effect = "Allow"
+      Action = [
+        "codebuild:StartBuild",      # add-cluster / destroy-cluster (plain builds)
+        "codebuild:StartBuildBatch"  # org-changes (batch build-list)
+      ]
       Resource = aws_codebuild_project.eksmanager_prefix_lists.arn
     }]
   })
@@ -358,9 +408,16 @@ resource "aws_cloudwatch_event_target" "start_org_changes" {
   arn      = aws_codebuild_project.eksmanager_prefix_lists.arn
   role_arn = aws_iam_role.eventbridge_codebuild.arn
 
+  # buildType: BATCH is required here specifically -- EventBridge's default
+  # CodeBuild target calls plain StartBuild, which ignores the buildspec's
+  # batch: section entirely and runs phases: directly with the build-list's
+  # per-item env vars never set. This key is what tells EventBridge to call
+  # StartBuildBatch instead (needs codebuild:StartBuildBatch on the role
+  # above, not just StartBuild).
   input_transformer {
     input_template = jsonencode({
       sourceLocationOverride = "${local.prefix_lists_bucket}/org-changes.zip"
+      buildType              = "BATCH"
     })
   }
 }
