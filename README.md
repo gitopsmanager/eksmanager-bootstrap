@@ -125,15 +125,28 @@ eksmanager-bootstrap/
 ├── variables.tf                # All input variables
 ├── example-topology.json       # Reference copy — pre-filled for an AWS license
 ├── topology.json                # Created by you per client — copy of the example, filled in, committed to your fork
+├── example-prefix-lists.json    # Reference copy for the prefix-lists pipeline
+├── prefix-lists.json             # Created by you — granular CIDR sets + GUI-facing groups
+├── example-clusters.json        # Reference copy for the prefix-lists pipeline
+├── clusters.json                 # Created by you — GUI-maintained cluster selections
 ├── buildspec.yml                # CodeBuild pipeline (S3-sourced, no git)
 ├── .github/
 │   └── workflows/
-│       └── upload-to-s3.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
+│       ├── upload-to-s3.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
+│       ├── org-changes.yml      # Manual (workflow_dispatch) — see "eksmanager-prefix-lists pipeline" below
+│       └── add-cluster.yml       # Manual, takes a cluster_name input
 ├── aws/                        # AWS infrastructure module
 ├── azure-saml/                  # Standalone SAML setup — NOT part of the Terraform install
 │   ├── create-saml-app.sh
 │   ├── create-saml-app.ps1
 │   └── README.md
+├── scripts/
+│   ├── common.py                 # Shared helpers for the two generators below
+│   ├── generate_org_changes.py   # topology.json + prefix-lists.json -> buildspec + staged module
+│   └── generate_add_cluster.py   # clusters.json + prefix-lists.json -> buildspec + staged module
+├── terraform/
+│   ├── org-changes/               # Granular prefix lists — one apply per (account, region) pair
+│   └── add-cluster/                # SG rules for one cluster — one apply per cluster
 └── iam/
     ├── codebuild-pipeline-tf/    # Terraform applied by setup-pipeline.sh/.ps1
     │   ├── main.tf
@@ -141,7 +154,7 @@ eksmanager-bootstrap/
     │   ├── outputs.tf
     │   └── policies/
     │       └── EKSManagerBootstrap-policy.json   # Scoped policy — not AdministratorAccess
-    └── prefix-lists-pipeline-tf/  # Applied separately — see "eksmanager-prefix-lists pipeline" below
+    └── prefix-lists-pipeline-tf/  # Also applied by setup-pipeline.sh/.ps1
         ├── main.tf
         ├── variables.tf
         └── outputs.tf
@@ -151,28 +164,45 @@ eksmanager-bootstrap/
 
 A second, independent CodeBuild project — manages EC2 managed prefix lists and
 the security group rules that reference them, across every client account and
-region. Not wired into `setup-pipeline.sh`/`.ps1` yet; apply
-`iam/prefix-lists-pipeline-tf/` on its own for now.
+region. Now wired into `setup-pipeline.sh`/`.ps1` alongside the bootstrap
+module's own apply.
 
-**Currently implemented:** the CodeBuild project, its service role
-(`EKSManagerPrefixListsSharedRole`), the S3 bucket, and the two EventBridge
-triggers that start a build when `org-changes.zip` or `add-cluster.zip` is
-uploaded. Each trigger overrides the project's source at start time via
-`sourceLocationOverride`, so the two artifact types never race to overwrite
-a shared object.
+**Implemented:**
+- The CodeBuild project, its service role (`EKSManagerPrefixListsSharedRole`),
+  the S3 bucket, and the two EventBridge triggers that start a build when
+  `org-changes.zip` or `add-cluster.zip` is uploaded — each overrides the
+  project's source at start time via `sourceLocationOverride`, so the two
+  artifact types never race to overwrite a shared object.
+- `terraform/org-changes/` — one `aws_ec2_managed_prefix_list` per granular
+  list (see `example-prefix-lists.json`), deployed to every (account, region)
+  pair in `topology.json`, with `create_before_destroy` + a hash-triggered
+  replace on any entry change.
+- `terraform/add-cluster/` — `data` source lookups of those same granular
+  lists by name, plus one security group ingress rule per (security group,
+  prefix list) pair for a single cluster (see `example-clusters.json`).
+- `scripts/generate_org_changes.py` / `scripts/generate_add_cluster.py` —
+  render each build's literal `buildspec.yml` (a `build-list` batch for
+  org-changes, one per-cluster build for add-cluster — no CodeBuild `dynamic`
+  matrix; that mechanism has a documented env-var propagation gap) and stage
+  the Terraform module + its `.auto.tfvars.json` alongside it.
+- `.github/workflows/org-changes.yml` / `add-cluster.yml` — run the
+  generators and upload the resulting zip via OIDC, same pattern as
+  `upload-to-s3.yml`.
 
-**Not yet implemented:** the `terraform/org-changes/` and
-`terraform/add-cluster/` Terraform this project actually runs, the Python
-generator that renders each build's `buildspec.yml` from `topology.json` and
-the granular/groups/cluster-selection config files, and the two GitHub
-Actions workflows (`org-changes.yml`, `add-cluster.yml`) that zip and upload
-those artifacts.
+**`org-changes.yml` is `workflow_dispatch`-only, deliberately not triggered
+on push and not chained after bootstrap succeeds.** An org-changes run
+replaces prefix lists across every enabled account and region in one batch —
+worth a human running it after reviewing what changed in `topology.json` or
+`prefix-lists.json`, not something that fires automatically.
 
-**`org-changes` is a manual step, deliberately not auto-triggered after
-bootstrap succeeds.** An org-changes run replaces prefix lists across every
-enabled account and region in one batch — worth a human deciding to run it
-after reviewing what changed in `topology.json`, not something that fires
-automatically the moment a bootstrap build reports success.
+**`add-cluster.yml` takes an explicit `cluster_name` input**, dispatched by
+whatever's driving cluster creation (the GUI, via the GitHub API) — not
+inferred by diffing `clusters.json`, which breaks down for deletions and
+multi-cluster commits.
+
+**Config files needed (same pattern as `topology.json`):** copy
+`example-prefix-lists.json` → `prefix-lists.json` and
+`example-clusters.json` → `clusters.json`, fill in, commit to your fork.
 
 ## After bootstrap
 
