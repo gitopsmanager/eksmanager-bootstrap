@@ -213,9 +213,31 @@ entry, never had it, or had it removed first. Uploads to the same
 `destroy` instead of `apply` baked into the generated buildspec, so no new
 S3 key or EventBridge rule was needed.
 
-**Config files needed (same pattern as `topology.json`):** copy
-`example-prefix-lists.json` → `prefix-lists.json` and
-`example-clusters.json` → `clusters.json`, fill in, commit to your fork.
+### Before running org-changes or add-cluster
+
+1. Copy `example-prefix-lists.json` → `prefix-lists.json`, fill in your
+   real `granular` CIDR sets and `groups` (same "copy the example, fill
+   in, commit" pattern as `topology.json`).
+2. Copy `example-clusters.json` → `clusters.json`, fill in each cluster's
+   `account`, `region`, `group` (must be a key in `prefix-lists.json`'s
+   `groups`), and `sg_ids` (the NLB/EKS security group IDs — the GUI
+   normally supplies these since it creates them, but for manual testing
+   just use two real SG IDs in the target account).
+3. Commit both files to `main` on your fork. Both workflows run from
+   `main` only — same OIDC trust-policy constraint as `upload-to-s3.yml`.
+4. Run **`org-changes`** first (Actions tab → `workflow_dispatch`, no
+   inputs) — this deploys the granular prefix lists every cluster will
+   reference. Wait for the CodeBuild batch to finish successfully.
+5. Run **`add-cluster`** (Actions tab → `workflow_dispatch` → `cluster_name`
+   input) for a cluster already present in `clusters.json`. If this runs
+   before step 4 has succeeded for that cluster's account/region, the
+   `data` source lookup fails cleanly with a "not found" error rather than
+   doing anything silently wrong.
+
+`setup-pipeline.sh`/`.ps1` doesn't need to be re-run for any of this —
+it only provisions the AWS infrastructure (CodeBuild project, IAM roles,
+S3 bucket, EventBridge rules), which is separate from the repo content
+these workflows read, zip, and upload.
 
 ## After bootstrap
 
