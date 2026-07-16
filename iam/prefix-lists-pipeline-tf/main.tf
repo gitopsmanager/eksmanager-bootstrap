@@ -164,13 +164,19 @@ resource "aws_iam_role_policy" "codebuild" {
         ]
       },
       {
-        # Terraform S3 backend -- per-account/region state for org-changes,
-        # per-cluster state for add-cluster (see terraform/*/backend
-        # configs). Same bucket as the zip source, scoped to state/* only.
+        # Terraform S3 backend -- org-changes uses
+        # accounts/<account>/org-changes/<region>/terraform.tfstate,
+        # add-cluster uses accounts/<account>/clusters/<cluster>/terraform.tfstate.
+        # Both live under accounts/*, NOT state/* -- that was
+        # eksmanager-bootstrap's different, flat state/terraform.tfstate
+        # key convention; copying its resource scope here without
+        # updating it left this role unable to write its own lock file.
+        # Includes the native S3 lock file (*.tflock, terraform >= 1.11's
+        # use_lockfile) alongside the state file itself.
         Sid      = "TerraformStateBackend"
         Effect   = "Allow"
         Action   = ["s3:PutObject", "s3:DeleteObject"]
-        Resource = "${aws_s3_bucket.prefix_lists.arn}/state/*"
+        Resource = "${aws_s3_bucket.prefix_lists.arn}/accounts/*"
       },
       {
         # M2M secret is the same one iam/codebuild-pipeline-tf created --
