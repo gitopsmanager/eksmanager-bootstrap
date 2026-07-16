@@ -1,0 +1,17 @@
+{
+  "granular": {
+    "corp_vpn": [
+      { "cidr": "192.168.0.0/16", "description": "corp vpn" }
+    ],
+    "azure_cluster_cidrs": [
+      { "cidr": "10.5.0.0/16", "description": "azure clusters" }
+    ],
+    "office": [
+      { "cidr": "10.0.1.0/24", "description": "office" }
+    ]
+  },
+  "groups": {
+    "dev": ["corp_vpn", "azure_cluster_cidrs"],
+    "prod": ["corp_vpn", "office"]
+  }
+}

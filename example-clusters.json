@@ -1,0 +1,14 @@
+{
+  "cluster1": {
+    "account": "111111111111",
+    "region": "eu-west-1",
+    "group": "prod",
+    "sg_ids": ["sg-0abc123nlb", "sg-0def456eks"]
+  },
+  "cluster2": {
+    "account": "222222222222",
+    "region": "eu-central-1",
+    "group": "dev",
+    "sg_ids": ["sg-0111222nlb", "sg-0333444eks"]
+  }
+}
