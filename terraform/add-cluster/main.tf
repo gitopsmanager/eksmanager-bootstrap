@@ -41,5 +41,5 @@ resource "aws_vpc_security_group_ingress_rule" "cluster_access" {
   from_port          = var.ingress_port
   to_port            = var.ingress_port
 
-  description = "eksmanager: ${each.value.prefix_list_name} -> ${var.cluster_name}"
+  description = "eksmanager: ${each.value.prefix_list_name} to ${var.cluster_name}"
 }
