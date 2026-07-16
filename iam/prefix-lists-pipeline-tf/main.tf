@@ -187,6 +187,37 @@ resource "aws_iam_role_policy" "codebuild" {
         Resource = "arn:aws:iam::*:role/${var.client_account_role_name}"
       },
       {
+        # Lets CodeBuild create/manage the ENI used to reach the VPC. Same
+        # requirement, same permissions as eksmanager-bootstrap's role --
+        # this is CodeBuild's own service role attaching to the VPC, not
+        # the client_account_role_name AssumeRole above (that one's scoped
+        # to client accounts only and has nothing to do with VPC
+        # networking in the shared services account).
+        Sid    = "AllowVPCAttachment"
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeDhcpOptions",
+          "ec2:DescribeVpcs"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "AllowVPCNetworkInterfacePermission"
+        Effect   = "Allow"
+        Action   = "ec2:CreateNetworkInterfacePermission"
+        Resource = "arn:aws:ec2:*:${var.shared_services_account_id}:network-interface/*"
+        Condition = {
+          StringEquals = {
+            "ec2:AuthorizedService" = "codebuild.amazonaws.com"
+          }
+        }
+      },
+      {
         Sid      = "CloudWatchLogs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
