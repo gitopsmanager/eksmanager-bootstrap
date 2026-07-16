@@ -196,15 +196,27 @@ resource "aws_iam_role_policy" "codebuild" {
   })
 }
 
+# ── Network isolation — same requirement as eksmanager-bootstrap, same
+# reasoning: add-cluster's callback needs a known, allowlisted egress IP ────
+
+resource "aws_security_group" "codebuild" {
+  provider    = aws.shared
+  name        = "eksmanager-prefix-lists-codebuild-sg"
+  description = "Network perimeter for the EKS Manager prefix-lists CodeBuild container - no inbound, egress via VPC routing"
+  vpc_id      = var.vpc_id
+
+  egress {
+    description = "All outbound - restrict further via VPC route tables / NACLs if needed"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
 # ── CodeBuild project ────────────────────────────────────────────────────────
-# No VPC attachment -- unlike eksmanager-bootstrap, this project never calls
-# the EKS Manager API directly except for add-cluster's callback (which goes
-# through the same M2M/Cognito endpoint the bootstrap project already
-# reaches from inside the VPC's IP-allowlisted NAT Gateway). If that
-# callback needs the same allowlisted egress IP, this project will need the
-# same vpc_config block added later -- left out for now since it adds a
-# hard NAT Gateway/subnet requirement that isn't needed for the
-# AssumeRole/EC2 API calls this project otherwise makes.
+# VPC attachment required, same as eksmanager-bootstrap -- see the vpc_id
+# variable's description for why.
 
 resource "aws_codebuild_project" "eksmanager_prefix_lists" {
   provider      = aws.shared
@@ -228,6 +240,25 @@ resource "aws_codebuild_project" "eksmanager_prefix_lists" {
     image                       = "aws/codebuild/standard:7.0"
     type                        = "LINUX_CONTAINER"
     image_pull_credentials_type = "CODEBUILD"
+
+    environment_variable {
+      name  = "EKSMANAGER_CLIENT_ID"
+      value = var.eksmanager_client_id
+    }
+    environment_variable {
+      name  = "EKSMANAGER_COGNITO_URL"
+      value = var.eksmanager_cognito_url
+    }
+    environment_variable {
+      name  = "EKSMANAGER_API_URL"
+      value = var.eksmanager_api_url
+    }
+  }
+
+  vpc_config {
+    vpc_id             = var.vpc_id
+    subnets            = [var.vpc_subnet_id]
+    security_group_ids = [aws_security_group.codebuild.id]
   }
 
   logs_config {

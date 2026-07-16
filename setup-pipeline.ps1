@@ -354,7 +354,12 @@ if ($Destroy) {
         "-var=shared_services_role_name=$SharedServicesRoleName" `
         "-var=shared_services_region=$Region" `
         "-var=github_repo=$GithubRepo" `
-        "-var=github_oidc_provider_arn=$($env:GITHUB_OIDC_PROVIDER_ARN)"
+        "-var=github_oidc_provider_arn=$($env:GITHUB_OIDC_PROVIDER_ARN)" `
+        "-var=eksmanager_client_id=$EksManagerClientId" `
+        "-var=eksmanager_cognito_url=$CognitoUrl" `
+        "-var=eksmanager_api_url=$ApiUrl" `
+        "-var=vpc_id=$VpcId" `
+        "-var=vpc_subnet_id=$VpcSubnetId"
     Pop-Location
 
     Write-Host ""
@@ -413,6 +418,11 @@ $prefixListsTfVars = @(
     "-var=shared_services_region=$Region"
     "-var=github_repo=$GithubRepo"
     "-var=github_oidc_provider_arn=$oidcProviderArn"
+    "-var=eksmanager_client_id=$EksManagerClientId"
+    "-var=eksmanager_cognito_url=$CognitoUrl"
+    "-var=eksmanager_api_url=$ApiUrl"
+    "-var=vpc_id=$VpcId"
+    "-var=vpc_subnet_id=$VpcSubnetId"
 )
 
 terraform apply @prefixListsTfVars
@@ -482,6 +492,14 @@ function Set-GithubVariable {
 Set-GithubVariable -Name "AWS_ROLE_ARN" -Value $roleArn
 Set-GithubVariable -Name "AWS_REGION" -Value $Region
 Set-GithubVariable -Name "S3_BUCKET" -Value $outputBucket
+
+# Distinct names, not reused from above -- eksmanager-prefix-lists has its
+# own role and bucket, separate from eksmanager-bootstrap's. org-changes.yml
+# and add-cluster.yml (not built yet) will read these once they exist.
+# Region is the same value as AWS_REGION above (one shared_services_region
+# for both modules), so it isn't duplicated under a second name.
+Set-GithubVariable -Name "PREFIX_LISTS_ROLE_ARN" -Value $prefixListsRoleArn
+Set-GithubVariable -Name "PREFIX_LISTS_S3_BUCKET" -Value $prefixListsBucket
 
 # ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
 # Values the aws/ Terraform module needs but that must never come from

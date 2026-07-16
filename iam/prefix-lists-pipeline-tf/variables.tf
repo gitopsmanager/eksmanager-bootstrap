@@ -37,11 +37,68 @@ variable "github_repo" {
 }
 
 variable "github_oidc_provider_arn" {
-  description = "ARN of the GitHub Actions OIDC provider already created by iam/codebuild-pipeline-tf (its github_actions_role_arn... actually its provider, not the role -- pass through aws_iam_openid_connect_provider.github_actions[0].arn or var.github_oidc_provider_arn from that module's own state/output). Required here, not auto-created -- an AWS account can only have one OIDC provider per URL, and iam/codebuild-pipeline-tf already owns creating it."
+  description = "ARN of the GitHub Actions OIDC provider iam/codebuild-pipeline-tf already created (or was pointed at) — its github_oidc_provider_arn output. Required here, not auto-created: an AWS account can only have one OIDC provider per URL, and iam/codebuild-pipeline-tf already owns creating it."
   type        = string
 
   validation {
     condition     = length(var.github_oidc_provider_arn) > 0
     error_message = "github_oidc_provider_arn is required -- reuse the one iam/codebuild-pipeline-tf already created or was pointed at, rather than creating a second one (an AWS account can only have one per URL)."
+  }
+}
+
+# ── EKS Manager API — required for add-cluster's success/failure callback ──
+# add-cluster's buildspec finally block calls back to EKSMANAGER_API_URL via
+# EKSMANAGER_COGNITO_URL, same endpoints eksmanager-bootstrap already
+# reaches. Same values, same client -- reuse the ones already collected for
+# the bootstrap module rather than asking for them twice.
+
+variable "eksmanager_client_id" {
+  description = "M2M client ID. From Settings -> Terraform tile in EKS Manager. Same value passed to iam/codebuild-pipeline-tf."
+  type        = string
+}
+
+variable "eksmanager_cognito_url" {
+  description = "Cognito token endpoint. From Settings -> Terraform tile in EKS Manager. Same value passed to iam/codebuild-pipeline-tf."
+  type        = string
+}
+
+variable "eksmanager_api_url" {
+  description = "EKS Manager API base URL. From Settings -> Terraform tile in EKS Manager. Same value passed to iam/codebuild-pipeline-tf."
+  type        = string
+}
+
+# ── Network isolation — same reasoning and same requirement as
+# eksmanager-bootstrap's vpc_id/vpc_subnet_id ────────────────────────────────
+# add-cluster's callback hits the same IP-allowlisted EKS Manager API/Cognito
+# endpoints bootstrap does. AWS-managed networking gives CodeBuild a
+# different, unpredictable public IP on every run, which cannot pass an IP
+# allowlist -- so this project needs the same VPC attachment bootstrap has.
+# org-changes builds never call back and don't strictly need this, but VPC
+# attachment applies to the whole CodeBuild project, not per build type, so
+# there's no way to attach it only for add-cluster builds.
+#
+# Reuses the SAME vpc_id/vpc_subnet_id as eksmanager-bootstrap by default
+# recommendation (not enforced) -- the client's firewall already allowlists
+# that NAT Gateway's Elastic IP, so reusing it avoids needing a second
+# allowlist entry. A different VPC/subnet would work too, as long as its
+# NAT Gateway's Elastic IP is separately allowlisted.
+
+variable "vpc_id" {
+  description = "VPC ID to attach the CodeBuild project to. Required -- see comment above. Typically the same VPC as eksmanager-bootstrap's vpc_id."
+  type        = string
+
+  validation {
+    condition     = length(var.vpc_id) > 0
+    error_message = "vpc_id is required. The CodeBuild project must egress through a known, allowlisted NAT Gateway IP to reach the EKS Manager API for add-cluster's callback."
+  }
+}
+
+variable "vpc_subnet_id" {
+  description = "Private subnet ID for the CodeBuild project, routed through an allowlisted NAT Gateway. Required. Typically the same subnet as eksmanager-bootstrap's vpc_subnet_id."
+  type        = string
+
+  validation {
+    condition     = length(var.vpc_subnet_id) > 0
+    error_message = "vpc_subnet_id is required -- a private subnet routed through the allowlisted NAT Gateway."
   }
 }
