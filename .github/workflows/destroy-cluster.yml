@@ -1,0 +1,65 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+name: destroy-cluster
+
+# Manually triggered, with account_id/region/cluster_name given directly --
+# NOT read from clusters.json. This is deliberate: if the GUI already
+# removed this cluster's entry from clusters.json before triggering
+# teardown, a generator reading that file would have nothing to read.
+# Taking the identifying values directly works regardless of whether
+# clusters.json still has the entry, never had it, or had it removed
+# first.
+#
+# Destroys every resource in that cluster's state file
+# (accounts/<account>/clusters/<cluster>/terraform.tfstate) -- the security
+# group rules add-cluster.yml created, nothing else. Does not touch
+# terraform/org-changes' state or the granular prefix lists themselves.
+#
+# Requires the same PREFIX_LISTS_ROLE_ARN / PREFIX_LISTS_S3_BUCKET /
+# AWS_REGION repository variables as org-changes.yml / add-cluster.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: "12-digit account ID the cluster is/was in"
+        required: true
+        type: string
+      region:
+        description: "Region the cluster is/was in"
+        required: true
+        type: string
+      cluster_name:
+        description: "Cluster name -- must match what add-cluster.yml originally used"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.PREFIX_LISTS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Generate destroy-cluster artifact
+        run: |
+          python3 scripts/generate_destroy_cluster.py \
+            --account-id "${{ inputs.account_id }}" \
+            --region "${{ inputs.region }}" \
+            --cluster-name "${{ inputs.cluster_name }}" \
+            --state-bucket "${{ vars.PREFIX_LISTS_S3_BUCKET }}" \
+            --state-region "${{ vars.AWS_REGION }}" \
+            --output-dir build/destroy-cluster
+
+      - name: Zip and upload
+        run: |
+          cd build/destroy-cluster
+          zip -qr /tmp/add-cluster.zip .
+          aws s3 cp /tmp/add-cluster.zip "s3://${{ vars.PREFIX_LISTS_S3_BUCKET }}/add-cluster.zip"

@@ -134,7 +134,8 @@ eksmanager-bootstrap/
 │   └── workflows/
 │       ├── upload-to-s3.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
 │       ├── org-changes.yml      # Manual (workflow_dispatch) — see "eksmanager-prefix-lists pipeline" below
-│       └── add-cluster.yml       # Manual, takes a cluster_name input
+│       ├── add-cluster.yml       # Manual, takes a cluster_name input
+│       └── destroy-cluster.yml    # Manual, takes account_id/region/cluster_name inputs
 ├── aws/                        # AWS infrastructure module
 ├── azure-saml/                  # Standalone SAML setup — NOT part of the Terraform install
 │   ├── create-saml-app.sh
@@ -143,7 +144,8 @@ eksmanager-bootstrap/
 ├── scripts/
 │   ├── common.py                 # Shared helpers for the two generators below
 │   ├── generate_org_changes.py   # topology.json + prefix-lists.json -> buildspec + staged module
-│   └── generate_add_cluster.py   # clusters.json + prefix-lists.json -> buildspec + staged module
+│   ├── generate_add_cluster.py   # clusters.json + prefix-lists.json -> buildspec + staged module
+│   └── generate_destroy_cluster.py  # account_id/region/cluster_name -> destroy-mode buildspec + staged module
 ├── terraform/
 │   ├── org-changes/               # Granular prefix lists — one apply per (account, region) pair
 │   └── add-cluster/                # SG rules for one cluster — one apply per cluster
@@ -180,14 +182,15 @@ module's own apply.
 - `terraform/add-cluster/` — `data` source lookups of those same granular
   lists by name, plus one security group ingress rule per (security group,
   prefix list) pair for a single cluster (see `example-clusters.json`).
-- `scripts/generate_org_changes.py` / `scripts/generate_add_cluster.py` —
-  render each build's literal `buildspec.yml` (a `build-list` batch for
-  org-changes, one per-cluster build for add-cluster — no CodeBuild `dynamic`
-  matrix; that mechanism has a documented env-var propagation gap) and stage
-  the Terraform module + its `.auto.tfvars.json` alongside it.
-- `.github/workflows/org-changes.yml` / `add-cluster.yml` — run the
-  generators and upload the resulting zip via OIDC, same pattern as
-  `upload-to-s3.yml`.
+- `scripts/generate_org_changes.py` / `scripts/generate_add_cluster.py` /
+  `scripts/generate_destroy_cluster.py` — render each build's literal
+  `buildspec.yml` (a `build-list` batch for org-changes, one per-cluster
+  build for add-cluster/destroy-cluster — no CodeBuild `dynamic` matrix;
+  that mechanism has a documented env-var propagation gap) and stage the
+  Terraform module + its `.auto.tfvars.json` alongside it.
+- `.github/workflows/org-changes.yml` / `add-cluster.yml` / `destroy-cluster.yml`
+  — run the generators and upload the resulting zip via OIDC, same pattern
+  as `upload-to-s3.yml`.
 
 **`org-changes.yml` is `workflow_dispatch`-only, deliberately not triggered
 on push and not chained after bootstrap succeeds.** An org-changes run
@@ -199,6 +202,16 @@ worth a human running it after reviewing what changed in `topology.json` or
 whatever's driving cluster creation (the GUI, via the GitHub API) — not
 inferred by diffing `clusters.json`, which breaks down for deletions and
 multi-cluster commits.
+
+**`destroy-cluster.yml` takes `account_id`/`region`/`cluster_name` directly
+as inputs, not read from `clusters.json`.** Tears down exactly one cluster's
+SG rules (`terraform destroy` against the same `terraform/add-cluster`
+state that cluster's `add-cluster.yml` run created) — nothing else. This
+avoids an ordering dependency: works whether `clusters.json` still has the
+entry, never had it, or had it removed first. Uploads to the same
+`add-cluster.zip` key/trigger as `add-cluster.yml` — same module, just
+`destroy` instead of `apply` baked into the generated buildspec, so no new
+S3 key or EventBridge rule was needed.
 
 **Config files needed (same pattern as `topology.json`):** copy
 `example-prefix-lists.json` → `prefix-lists.json` and
