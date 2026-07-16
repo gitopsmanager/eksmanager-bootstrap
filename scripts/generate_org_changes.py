@@ -54,7 +54,7 @@ phases:
 
   build:
     commands:
-      - cd terraform/org-changes
+      - cd org-changes
       - |
         terraform init -input=false \\
           -backend-config="bucket={state_bucket}" \\
@@ -129,10 +129,10 @@ def main():
 
     stage_module(args.module_src, output_dir, "org-changes")
     write_json(
-        output_dir / "terraform" / "org-changes" / "granular.auto.tfvars.json",
+        output_dir / "org-changes" / "granular.auto.tfvars.json",
         {"granular_lists": prefix_lists["granular"]},
     )
-    print(f"Staged terraform/org-changes/ (module + granular.auto.tfvars.json) into {output_dir}")
+    print(f"Staged org-changes/ (module + granular.auto.tfvars.json) into {output_dir}")
 
 
 if __name__ == "__main__":

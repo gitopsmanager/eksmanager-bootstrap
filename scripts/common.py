@@ -38,16 +38,20 @@ def validate_account_id(account_id, source):
 
 def stage_module(module_src, output_dir, module_name):
     """Copies a terraform/<module_name> directory into
-    <output_dir>/terraform/<module_name>, so the generated buildspec and
-    the module it runs travel together in one zip. Fails loudly if the
-    source module doesn't exist -- a silent skip here would mean
+    <output_dir>/<module_name> -- NOT <output_dir>/terraform/<module_name>.
+    'terraform' is deliberately avoided as a staged directory name: it's
+    also the name of the CLI binary the install phase downloads and
+    unzips into the current directory, and having both a file and a
+    directory named 'terraform' in the same place makes unzip prompt
+    interactively (fails outright in CodeBuild, no TTY). Fails loudly if
+    the source module doesn't exist -- a silent skip here would mean
     `terraform init` failing deep inside a CodeBuild log instead of a
     clear error at generation time, on your own machine, before anything
     gets uploaded."""
     src = Path(module_src)
     if not src.is_dir():
         sys.exit(f"ERROR: {module_src} not found -- expected the terraform/{module_name} module there")
-    dest = Path(output_dir) / "terraform" / module_name
+    dest = Path(output_dir) / module_name
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(src, dest)

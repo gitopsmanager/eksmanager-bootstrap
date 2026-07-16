@@ -58,7 +58,7 @@ phases:
 
   build:
     commands:
-      - cd terraform/add-cluster
+      - cd add-cluster
       - |
         terraform init -input=false \\
           -backend-config="bucket={state_bucket}" \\
@@ -100,7 +100,7 @@ def main():
 
     stage_module(args.module_src, output_dir, "add-cluster")
     write_json(
-        output_dir / "terraform" / "add-cluster" / "cluster.auto.tfvars.json",
+        output_dir / "add-cluster" / "cluster.auto.tfvars.json",
         {
             "target_account_id": args.account_id,
             "target_region": args.region,
@@ -112,7 +112,7 @@ def main():
             "sg_ids": ["sg-00000000000000000"],
         },
     )
-    print(f"Staged terraform/add-cluster/ (module + placeholder cluster.auto.tfvars.json) into {output_dir}")
+    print(f"Staged add-cluster/ (module + placeholder cluster.auto.tfvars.json) into {output_dir}")
     print("NOTE: this will destroy every resource in that cluster's state file. Confirm account_id/cluster_name are correct before uploading the resulting artifact.")
 
 

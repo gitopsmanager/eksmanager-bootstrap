@@ -49,7 +49,7 @@ phases:
 
   build:
     commands:
-      - cd terraform/add-cluster
+      - cd add-cluster
       - |
         terraform init -input=false \\
           -backend-config="bucket={state_bucket}" \\
@@ -134,7 +134,7 @@ def main():
 
     stage_module(args.module_src, output_dir, "add-cluster")
     write_json(
-        output_dir / "terraform" / "add-cluster" / "cluster.auto.tfvars.json",
+        output_dir / "add-cluster" / "cluster.auto.tfvars.json",
         {
             "target_account_id": cluster["account"],
             "target_region": cluster["region"],
@@ -143,7 +143,7 @@ def main():
             "sg_ids": cluster["sg_ids"],
         },
     )
-    print(f"Staged terraform/add-cluster/ (module + cluster.auto.tfvars.json) into {output_dir}")
+    print(f"Staged add-cluster/ (module + cluster.auto.tfvars.json) into {output_dir}")
 
 
 if __name__ == "__main__":
