@@ -107,6 +107,12 @@
         "sts:TagSession"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "DescribeOwnInstance",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
     }
   ]
 }
