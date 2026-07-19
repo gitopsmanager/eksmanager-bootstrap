@@ -39,6 +39,7 @@ module "shared_services" {
   shared_services_account_id = var.shared_services_account_id
   shared_services_region     = var.shared_services_region
   config_bucket_name         = local.config_bucket_name
+  allowed_regions_json       = local.allowed_regions_json
   secrets_editing            = var.secrets_editing
   eks_manager_identity_center_role_arn = var.eks_manager_identity_center_role_arn
 }

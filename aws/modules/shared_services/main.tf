@@ -44,6 +44,16 @@ resource "aws_s3_bucket_public_access_block" "config" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_object" "allowed_regions" {
+  bucket       = aws_s3_bucket.config.id
+  key          = "allowed_regions.json"
+  content      = var.allowed_regions_json
+  content_type = "application/json"
+  # etag forces an update whenever the content actually changes (topology.json
+  # edits), rather than only on the object's first creation.
+  etag = md5(var.allowed_regions_json)
+}
+
 # --- EKSManagerAgentRole -----------------------------------------------------
 # Trust:  agent-role-trust.json  (ec2.amazonaws.com)
 # Policy: agent-role-policy.json with substitutions:

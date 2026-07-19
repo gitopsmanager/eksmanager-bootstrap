@@ -751,9 +751,17 @@ resource "aws_iam_role_policy" "codebuild" {
       },
       {
         # aws/modules/shared_services' aws_s3_bucket.config + versioning +
-        # public_access_block. Bucket name is deterministic
-        # (aws/locals.tf: eks-manager-config-store-${shared_services_account_id}),
-        # so this can be scoped to the exact bucket rather than a wildcard.
+        # public_access_block, and the allowed_regions.json object within it.
+        # Bucket name is deterministic (aws/locals.tf:
+        # eks-manager-config-store-${shared_services_account_id}), so this
+        # can be scoped to the exact bucket rather than a wildcard.
+        #
+        # Two resource entries, not one: CreateBucket/DeleteBucket/ListBucket
+        # are bucket-level actions (need the bucket ARN, no key) while
+        # Get*/Put* are object-level actions (need bucket/* -- an ARN with a
+        # key). A single bucket-only ARN silently matches nothing for
+        # Get*/Put*, so those actions were previously unusable despite
+        # appearing to be granted.
         Sid    = "S3ConfigBucket"
         Effect = "Allow"
         Action = [
@@ -763,7 +771,10 @@ resource "aws_iam_role_policy" "codebuild" {
           "s3:Get*",
           "s3:Put*"
         ]
-        Resource = "arn:aws:s3:::eks-manager-config-store-${var.shared_services_account_id}"
+        Resource = [
+          "arn:aws:s3:::eks-manager-config-store-${var.shared_services_account_id}",
+          "arn:aws:s3:::eks-manager-config-store-${var.shared_services_account_id}/*"
+        ]
       }
     ]
   })
