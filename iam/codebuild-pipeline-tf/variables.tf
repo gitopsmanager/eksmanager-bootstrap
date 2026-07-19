@@ -100,6 +100,26 @@ variable "github_repo" {
   type        = string
 }
 
+# Immutable numeric owner/repo IDs (GET /repos/{owner}/{repo} -> .owner.id / .id).
+# Optional, both default "" -- when both are set, the trust policy's sub
+# condition uses GitHub's immutable subject-claim format
+# (repo:OWNER@OWNER-ID/REPO@REPO-ID:ref:refs/heads/main) instead of the
+# legacy name-only format. GitHub auto-enforces the immutable format for
+# every repo created after July 15, 2026, so a name-only trust condition
+# will not match those repos' tokens -- leave both empty only if github_repo
+# was created before that date and has not opted in to the immutable format.
+variable "github_owner_id" {
+  description = "Immutable numeric GitHub owner ID for var.github_repo's org/user. Optional -- see comment above."
+  type        = string
+  default     = ""
+}
+
+variable "github_repo_id" {
+  description = "Immutable numeric GitHub repo ID for var.github_repo. Optional -- see comment above."
+  type        = string
+  default     = ""
+}
+
 variable "github_app_id" {
   description = "GitHub App ID, persisted to /EKSManagerBootstrap/github-app for reuse by future automation."
   type        = string

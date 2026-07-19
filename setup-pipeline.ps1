@@ -119,6 +119,8 @@ $ErrorActionPreference = "Stop"
 $SharedServicesAccountId = $env:SHARED_SERVICES_ACCOUNT_ID
 $SharedServicesRoleName  = if ($env:SHARED_SERVICES_ROLE_NAME) { $env:SHARED_SERVICES_ROLE_NAME } else { "AWSControlTowerExecution" }
 $GithubRepo              = $env:GITHUB_REPO
+$GithubOwnerId           = $env:GITHUB_OWNER_ID
+$GithubRepoId            = $env:GITHUB_REPO_ID
 $VpcId                   = $env:VPC_ID
 $VpcSubnetId             = $env:SUBNET_ID
 $Region                  = if ($env:REGION) { $env:REGION } else { "eu-west-1" }
@@ -254,6 +256,8 @@ $tfVars = @(
     "-var=vpc_subnet_id=$VpcSubnetId"
     "-var=github_oidc_provider_arn=$($env:GITHUB_OIDC_PROVIDER_ARN)"
     "-var=github_repo=$GithubRepo"
+    "-var=github_owner_id=$GithubOwnerId"
+    "-var=github_repo_id=$GithubRepoId"
     "-var=github_app_id=$($env:GITHUB_APP_ID)"
     "-var=github_app_install_id=$($env:GITHUB_APP_INSTALL_ID)"
     "-var=github_app_private_key=$($env:GITHUB_APP_PRIVATE_KEY)"
@@ -354,6 +358,8 @@ if ($Destroy) {
         "-var=shared_services_role_name=$SharedServicesRoleName" `
         "-var=shared_services_region=$Region" `
         "-var=github_repo=$GithubRepo" `
+        "-var=github_owner_id=$GithubOwnerId" `
+        "-var=github_repo_id=$GithubRepoId" `
         "-var=github_oidc_provider_arn=$($env:GITHUB_OIDC_PROVIDER_ARN)" `
         "-var=eksmanager_client_id=$EksManagerClientId" `
         "-var=eksmanager_cognito_url=$CognitoUrl" `
@@ -417,6 +423,8 @@ $prefixListsTfVars = @(
     "-var=shared_services_role_name=$SharedServicesRoleName"
     "-var=shared_services_region=$Region"
     "-var=github_repo=$GithubRepo"
+    "-var=github_owner_id=$GithubOwnerId"
+    "-var=github_repo_id=$GithubRepoId"
     "-var=github_oidc_provider_arn=$oidcProviderArn"
     "-var=eksmanager_client_id=$EksManagerClientId"
     "-var=eksmanager_cognito_url=$CognitoUrl"

@@ -124,6 +124,8 @@ done
 SHARED_SERVICES_ACCOUNT_ID="${SHARED_SERVICES_ACCOUNT_ID:-}"
 SHARED_SERVICES_ROLE_NAME="${SHARED_SERVICES_ROLE_NAME:-AWSControlTowerExecution}"
 GITHUB_REPO="${GITHUB_REPO:-}"
+GITHUB_OWNER_ID="${GITHUB_OWNER_ID:-}"
+GITHUB_REPO_ID="${GITHUB_REPO_ID:-}"
 VPC_ID="${VPC_ID:-}"
 SUBNET_ID="${SUBNET_ID:-}"
 REGION="${REGION:-eu-west-1}"
@@ -234,6 +236,8 @@ TF_VARS=(
   -var="vpc_subnet_id=${SUBNET_ID}"
   -var="github_oidc_provider_arn=${GITHUB_OIDC_PROVIDER_ARN:-}"
   -var="github_repo=${GITHUB_REPO}"
+  -var="github_owner_id=${GITHUB_OWNER_ID}"
+  -var="github_repo_id=${GITHUB_REPO_ID}"
   -var="github_app_id=${GITHUB_APP_ID}"
   -var="github_app_install_id=${GITHUB_APP_INSTALL_ID}"
   -var="github_app_private_key=${GITHUB_APP_PRIVATE_KEY}"
@@ -318,6 +322,8 @@ if $DESTROY; then
     -var="shared_services_role_name=${SHARED_SERVICES_ROLE_NAME}" \
     -var="shared_services_region=${REGION}" \
     -var="github_repo=${GITHUB_REPO}" \
+    -var="github_owner_id=${GITHUB_OWNER_ID}" \
+    -var="github_repo_id=${GITHUB_REPO_ID}" \
     -var="github_oidc_provider_arn=${GITHUB_OIDC_PROVIDER_ARN:-}" \
     -var="eksmanager_client_id=${EKSMANAGER_CLIENT_ID}" \
     -var="eksmanager_cognito_url=${COGNITO_URL}" \
@@ -374,6 +380,8 @@ PREFIX_LISTS_TF_VARS=(
   -var="shared_services_role_name=${SHARED_SERVICES_ROLE_NAME}"
   -var="shared_services_region=${REGION}"
   -var="github_repo=${GITHUB_REPO}"
+  -var="github_owner_id=${GITHUB_OWNER_ID}"
+  -var="github_repo_id=${GITHUB_REPO_ID}"
   -var="github_oidc_provider_arn=${OIDC_PROVIDER_ARN}"
   -var="eksmanager_client_id=${EKSMANAGER_CLIENT_ID}"
   -var="eksmanager_cognito_url=${COGNITO_URL}"

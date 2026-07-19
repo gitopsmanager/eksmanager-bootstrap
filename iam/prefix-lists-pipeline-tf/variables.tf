@@ -36,6 +36,21 @@ variable "github_repo" {
   type        = string
 }
 
+# See iam/codebuild-pipeline-tf/variables.tf for the full rationale -- same
+# immutable-subject-claim opt-in, kept in sync across both pipelines since
+# both create their own OIDC role trusted for the same var.github_repo.
+variable "github_owner_id" {
+  description = "Immutable numeric GitHub owner ID for var.github_repo's org/user. Optional."
+  type        = string
+  default     = ""
+}
+
+variable "github_repo_id" {
+  description = "Immutable numeric GitHub repo ID for var.github_repo. Optional."
+  type        = string
+  default     = ""
+}
+
 variable "github_oidc_provider_arn" {
   description = "ARN of the GitHub Actions OIDC provider iam/codebuild-pipeline-tf already created (or was pointed at) — its github_oidc_provider_arn output. Required here, not auto-created: an AWS account can only have one OIDC provider per URL, and iam/codebuild-pipeline-tf already owns creating it."
   type        = string

@@ -86,6 +86,13 @@ resource "aws_s3_bucket_public_access_block" "prefix_lists" {
 # Reuses the OIDC provider iam/codebuild-pipeline-tf already created (or was
 # pointed at) — not recreated here, an AWS account only gets one per URL.
 
+locals {
+  # See iam/codebuild-pipeline-tf/main.tf for the full rationale.
+  github_sub_repo = (var.github_owner_id != "" && var.github_repo_id != "") ? (
+    "${split("/", var.github_repo)[0]}@${var.github_owner_id}/${split("/", var.github_repo)[1]}@${var.github_repo_id}"
+  ) : var.github_repo
+}
+
 resource "aws_iam_role" "github_actions_upload" {
   provider = aws.shared
   name     = "EKSManagerPrefixListsGithubActionsRole"
@@ -99,7 +106,7 @@ resource "aws_iam_role" "github_actions_upload" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:ref:refs/heads/main"
         }
       }
     }]

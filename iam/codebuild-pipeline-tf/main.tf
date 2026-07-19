@@ -396,6 +396,14 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 
 locals {
   github_oidc_provider_final_arn = var.github_oidc_provider_arn != "" ? var.github_oidc_provider_arn : aws_iam_openid_connect_provider.github_actions[0].arn
+
+  # GitHub's immutable subject-claim format (auto-enforced for repos created
+  # after July 15, 2026): repo:OWNER@OWNER-ID/REPO@REPO-ID -- falls back to
+  # the legacy repo:OWNER/REPO format when either ID is unset, for repos
+  # that predate the change and haven't opted in.
+  github_sub_repo = (var.github_owner_id != "" && var.github_repo_id != "") ? (
+    "${split("/", var.github_repo)[0]}@${var.github_owner_id}/${split("/", var.github_repo)[1]}@${var.github_repo_id}"
+  ) : var.github_repo
 }
 
 resource "aws_iam_role" "github_actions_upload" {
@@ -412,7 +420,8 @@ resource "aws_iam_role" "github_actions_upload" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           # workflow_dispatch sub claim format: repo:<owner>/<repo>:ref:refs/heads/<branch>
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main"
+          # (or repo:<owner>@<owner-id>/<repo>@<repo-id>:ref:... -- see local.github_sub_repo)
+          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:ref:refs/heads/main"
         }
       }
     }]
