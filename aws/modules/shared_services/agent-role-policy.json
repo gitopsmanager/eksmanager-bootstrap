@@ -49,12 +49,7 @@
       "Sid": "SharedConfigBucketList",
       "Effect": "Allow",
       "Action": "s3:ListBucket",
-      "Resource": "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}",
-      "Condition": {
-        "StringLike": {
-          "s3:prefix": ["allowed_regions.json"]
-        }
-      }
+      "Resource": "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}"
     },
     {
       "Sid": "ParameterStoreDenyAllWrites",
