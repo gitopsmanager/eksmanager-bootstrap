@@ -94,7 +94,7 @@ variable "agent_ami" {
 variable "agent_instance_type" {
   description = "EC2 instance type for the agent VM."
   type        = string
-  default     = "t3.medium"
+  default     = "r5.large"
 }
 
 # --- Round-trip convenience (not consumed by any resource) ------------------
