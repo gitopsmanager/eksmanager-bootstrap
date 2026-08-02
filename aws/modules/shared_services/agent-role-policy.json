@@ -52,6 +52,24 @@
       "Resource": "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}"
     },
     {
+      "Sid": "LogBucketWrite",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}/*"
+    },
+    {
+      "Sid": "LogBucketRead",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}",
+        "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}/*"
+      ]
+    },
+    {
       "Sid": "ParameterStoreDenyAllWrites",
       "Effect": "Deny",
       "Action": [
