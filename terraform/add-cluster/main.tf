@@ -22,9 +22,19 @@ data "aws_ec2_managed_prefix_list" "lookup" {
 
 locals {
   # Every (security group, prefix list) combination this cluster needs a
-  # rule for -- e.g. 2 SGs x 2 prefix lists = 4 rules, not 2.
-  sg_prefix_list_pairs = {
-    for pair in setproduct(var.sg_ids, var.prefix_list_names) :
+  # rule for -- e.g. 2 SGs x 2 prefix lists = 4 rules, not 2. Split by what
+  # the group is for, because the two want very different port ranges: see
+  # the variable descriptions for why.
+  eks_pairs = {
+    for pair in setproduct(var.eks_sg_ids, var.prefix_list_names) :
+    "${pair[0]}-${pair[1]}" => {
+      sg_id            = pair[0]
+      prefix_list_name = pair[1]
+    }
+  }
+
+  nlb_pairs = {
+    for pair in setproduct(var.nlb_sg_ids, var.prefix_list_names) :
     "${pair[0]}-${pair[1]}" => {
       sg_id            = pair[0]
       prefix_list_name = pair[1]
@@ -32,14 +42,31 @@ locals {
   }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "cluster_access" {
-  for_each = local.sg_prefix_list_pairs
+# API server only. The self-referencing rule EKS puts on this group carries
+# everything the cluster needs internally, and is left untouched.
+resource "aws_vpc_security_group_ingress_rule" "eks_api" {
+  for_each = local.eks_pairs
 
   security_group_id = each.value.sg_id
   prefix_list_id    = data.aws_ec2_managed_prefix_list.lookup[each.value.prefix_list_name].id
-  ip_protocol        = var.ingress_protocol
-  from_port          = var.ingress_port
-  to_port            = var.ingress_port
+  ip_protocol       = var.ingress_protocol
+  from_port         = var.eks_ingress_port
+  to_port           = var.eks_ingress_port
 
-  description = "eksmanager: ${each.value.prefix_list_name} to ${var.cluster_name}"
+  description = "eksmanager: ${each.value.prefix_list_name} to ${var.cluster_name} API"
+}
+
+# Every TCP port. The group starts with no rules at all, so these are the
+# only way anything reaches the load balancer -- the prefix lists are what
+# does the restricting, not the port range.
+resource "aws_vpc_security_group_ingress_rule" "nlb_all_ports" {
+  for_each = local.nlb_pairs
+
+  security_group_id = each.value.sg_id
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.lookup[each.value.prefix_list_name].id
+  ip_protocol       = var.ingress_protocol
+  from_port         = 0
+  to_port           = 65535
+
+  description = "eksmanager: ${each.value.prefix_list_name} to ${var.cluster_name} NLB"
 }

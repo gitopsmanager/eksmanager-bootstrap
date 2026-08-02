@@ -105,11 +105,13 @@ def main():
             "target_account_id": args.account_id,
             "target_region": args.region,
             "cluster_name": args.cluster_name,
-            # Placeholders only -- terraform destroy acts on what's in
-            # state, not on these values. They exist purely to satisfy the
-            # module's own variable validation (sg_ids must be non-empty).
+            # Empty on purpose -- terraform destroy acts on what's in state,
+            # not on these values. The security group lists default to empty
+            # in the module and no longer carry a non-empty validation, so
+            # the fake sg id that used to sit here is not needed.
             "prefix_list_names": [],
-            "sg_ids": ["sg-00000000000000000"],
+            "eks_sg_ids": [],
+            "nlb_sg_ids": [],
         },
     )
     print(f"Staged add-cluster/ (module + placeholder cluster.auto.tfvars.json) into {output_dir}")

@@ -106,14 +106,32 @@ def main():
         )
     cluster = clusters[args.cluster_name]
 
-    for required_key in ("account", "region", "group", "sg_ids"):
+    for required_key in ("account", "region", "group"):
         if required_key not in cluster:
             raise SystemExit(f"ERROR: clusters.json['{args.cluster_name}'] is missing '{required_key}'")
 
     validate_account_id(cluster["account"], f"clusters.json[{args.cluster_name}].account")
 
-    if not cluster["sg_ids"]:
-        raise SystemExit(f"ERROR: clusters.json['{args.cluster_name}'].sg_ids is empty -- need at least one security group ID")
+    # The two groups take different rules -- the EKS group only needs the API
+    # server port, the NLB group needs every port Traefik fronts -- so they are
+    # listed separately rather than as one sg_ids list. Entries written before
+    # that split are read as EKS groups, which is the conservative reading: it
+    # grants 443 rather than opening every port on a group that may not want it.
+    eks_sg_ids = list(cluster.get("eks_sg_ids", cluster.get("sg_ids", [])))
+    nlb_sg_ids = list(cluster.get("nlb_sg_ids", []))
+
+    if "eks_sg_ids" not in cluster and "sg_ids" in cluster:
+        print(
+            f"NOTE: clusters.json['{args.cluster_name}'] uses the older 'sg_ids' key -- "
+            f"treating those as EKS security groups (port {443}). Add 'nlb_sg_ids' to open "
+            f"the load balancer's ports."
+        )
+
+    if not eks_sg_ids and not nlb_sg_ids:
+        raise SystemExit(
+            f"ERROR: clusters.json['{args.cluster_name}'] lists no security groups -- "
+            f"need at least one of 'eks_sg_ids' or 'nlb_sg_ids'"
+        )
 
     groups = prefix_lists.get("groups", {})
     prefix_list_names = expand_group(cluster["group"], groups)
@@ -140,7 +158,8 @@ def main():
             "target_region": cluster["region"],
             "cluster_name": args.cluster_name,
             "prefix_list_names": prefix_list_names,
-            "sg_ids": cluster["sg_ids"],
+            "eks_sg_ids": eks_sg_ids,
+            "nlb_sg_ids": nlb_sg_ids,
         },
     )
     print(f"Staged add-cluster/ (module + cluster.auto.tfvars.json) into {output_dir}")

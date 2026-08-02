@@ -49,24 +49,46 @@ variable "prefix_list_names" {
   type        = list(string)
 }
 
-variable "sg_ids" {
-  description = "Security group IDs to add rules to -- the cluster's NLB and EKS security groups, supplied by the GUI at cluster creation/edit time (it already knows these, since it created them)."
-  type        = list(string)
+variable "eks_sg_ids" {
+  description = <<-EOT
+    IDs of the security group EKS creates and manages for the cluster. Not
+    created here -- the GUI reads the id at cluster creation and passes it
+    through clusters.json. This module only adds ingress rules to it.
 
-  validation {
-    condition     = length(var.sg_ids) > 0
-    error_message = "sg_ids must contain at least one security group ID."
-  }
+    Gets one rule per prefix list on eks_ingress_port (443) and nothing else.
+    Everything the cluster needs internally -- kubelet on 10250, CoreDNS,
+    pod-to-pod across nodes, ephemeral ports -- already travels on the
+    self-referencing rule EKS puts on this group, which the resources in
+    main.tf never touch. The only thing an external prefix list needs in is
+    the private API server endpoint.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "nlb_sg_ids" {
+  description = <<-EOT
+    IDs of the cluster's NLB frontend security groups. Not created here --
+    the GUI creates "<cluster>-nlb-sg" at cluster creation and passes the id
+    through clusters.json. This module only adds ingress rules to it.
+
+    Gets every TCP port, because the prefix lists are what restrict access,
+    not the port range -- Traefik fronts 80, 443 and the datastore ports
+    behind it, and naming them here would mean a terraform edit every time
+    the service gains a port.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "eks_ingress_port" {
+  description = "Port allowed into eks_sg_ids from each prefix list. The EKS API server, so 443 unless something unusual is going on."
+  type        = number
+  default     = 443
 }
 
 variable "ingress_protocol" {
   description = "IP protocol for the ingress rules created below. Applied uniformly across every (security group, prefix list) pair -- not configurable per pair in this version."
   type        = string
   default     = "tcp"
-}
-
-variable "ingress_port" {
-  description = "Port for the ingress rules created below (used as both from_port and to_port). Defaults to 443 -- the EKS API server / NLB HTTPS port most cluster-access use cases need. Applied uniformly across every (security group, prefix list) pair."
-  type        = number
-  default     = 443
 }

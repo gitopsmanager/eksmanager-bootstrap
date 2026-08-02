@@ -220,9 +220,18 @@ S3 key or EventBridge rule was needed.
    in, commit" pattern as `topology.json`).
 2. Copy `example-clusters.json` → `clusters.json`, fill in each cluster's
    `account`, `region`, `group` (must be a key in `prefix-lists.json`'s
-   `groups`), and `sg_ids` (the NLB/EKS security group IDs — the GUI
-   normally supplies these since it creates them, but for manual testing
-   just use two real SG IDs in the target account).
+   `groups`), and its security groups. These are listed separately because
+   the two get different rules: `eks_sg_ids` (the security group EKS
+   creates for the cluster) is opened on 443 for the API server, while
+   `nlb_sg_ids` (the cluster's `<cluster>-nlb-sg` load balancer group) is
+   opened on every TCP port, since the prefix lists are what restrict
+   access there rather than the port range. The GUI normally supplies both
+   since it creates the cluster, but for manual testing just use real SG
+   IDs in the target account. Either list may be empty; both may not be.
+
+   Entries still using the older single `sg_ids` list are read as
+   `eks_sg_ids`, so they get 443 only — add `nlb_sg_ids` to open the load
+   balancer's ports.
 3. Commit both files to `main` on your fork. Both workflows run from
    `main` only — same OIDC trust-policy constraint as `upload-to-s3.yml`.
 4. Run **`org-changes`** first (Actions tab → `workflow_dispatch`, no
