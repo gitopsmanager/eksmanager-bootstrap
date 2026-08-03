@@ -240,6 +240,21 @@
         "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}",
         "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}/*"
       ]
+    },
+    {
+      "Sid": "S3LogBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:ListBucket",
+        "s3:Get*",
+        "s3:Put*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}",
+        "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}/*"
+      ]
     }
   ]
 }
