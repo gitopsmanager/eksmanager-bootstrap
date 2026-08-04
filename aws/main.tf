@@ -67,6 +67,8 @@ module "ssm" {
   eks_manager_user_view_permission_set_arn  = var.eks_manager_user_view_permission_set_arn
   eks_manager_user_admin_permission_set_arn = var.eks_manager_user_admin_permission_set_arn
   identity_store_id                         = var.identity_store_id
+  resource_tag_name                         = var.resource_tag_name
+  resource_tag_value                        = var.resource_tag_value
   eks_manager_identity_center_role_arn       = var.eks_manager_identity_center_role_arn
   identity_center_resolved_region            = var.identity_center_resolved_region
 

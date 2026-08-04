@@ -174,3 +174,24 @@ variable "identity_center_resolved_region" {
 # (confirmed via grep across aws/). The server-side fetch that populated it
 # was itself removed for the same reason plus being architecturally wrong
 # (see BootstrapApi.cs history).
+
+# Applied to everything this installation creates, for cost allocation.
+# Pinned by setup-pipeline.sh from the Terraform tile, like the other values in
+# pinned.auto.tfvars.json -- changing it means re-running that script.
+#
+# Reaches resources by two separate routes: Terraform-created ones through the
+# provider default_tags blocks in providers.tf, and agent-created ones (the EKS
+# cluster and its node groups) by way of the SSM parameters below, which the
+# agent reads at create time. Terraform cannot tag the latter -- it never sees
+# them.
+variable "resource_tag_name" {
+  description = "Tag key applied to all resources this installation creates. Empty disables the tag."
+  type        = string
+  default     = ""
+}
+
+variable "resource_tag_value" {
+  description = "Tag value paired with resource_tag_name."
+  type        = string
+  default     = ""
+}

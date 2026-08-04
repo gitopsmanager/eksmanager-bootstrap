@@ -40,6 +40,20 @@ terraform {
   }
 }
 
+locals {
+  # The customer's cost-allocation tag, merged into every provider's
+  # default_tags. Omitted entirely when no key is configured -- an empty tag key
+  # is rejected by the AWS API rather than ignored.
+  extra_tags = var.resource_tag_name == "" ? {} : {
+    (var.resource_tag_name) = var.resource_tag_value
+  }
+
+  common_tags = merge({
+    ManagedBy = "EKSManager"
+    Module    = "terraform-aws-eksmanager"
+  }, local.extra_tags)
+}
+
 # Management account — runner must authenticate here
 provider "aws" {
   region = var.management_account_region
@@ -50,10 +64,7 @@ provider "aws" {
   }
 
   default_tags {
-    tags = {
-      ManagedBy = "EKSManager"
-      Module    = "terraform-aws-eksmanager"
-    }
+    tags = local.common_tags
   }
 }
 
@@ -67,9 +78,6 @@ provider "aws" {
   region = var.shared_services_region
 
   default_tags {
-    tags = {
-      ManagedBy = "EKSManager"
-      Module    = "terraform-aws-eksmanager"
-    }
+    tags = local.common_tags
   }
 }

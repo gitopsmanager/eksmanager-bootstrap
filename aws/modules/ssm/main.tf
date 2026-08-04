@@ -93,3 +93,22 @@ resource "aws_ssm_parameter" "cognito_url" {
   type  = "String"
   value = var.cognito_url
 }
+
+# Read by the agent at cluster/node-group create time. Terraform's default_tags
+# cannot reach those -- they are created by the agent through the AWS CLI, not
+# by this module -- so the value is published here instead.
+#
+# Always written, even when empty: the agent treats an empty key as "no tag",
+# and a missing parameter would have it guessing between "not configured" and
+# "cannot read Parameter Store".
+resource "aws_ssm_parameter" "resource_tag_name" {
+  name  = "/EKSManager/config/resource-tag-name"
+  type  = "String"
+  value = var.resource_tag_name == "" ? "none" : var.resource_tag_name
+}
+
+resource "aws_ssm_parameter" "resource_tag_value" {
+  name  = "/EKSManager/config/resource-tag-value"
+  type  = "String"
+  value = var.resource_tag_value == "" ? "none" : var.resource_tag_value
+}

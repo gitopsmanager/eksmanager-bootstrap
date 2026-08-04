@@ -64,6 +64,8 @@
 #   export GITHUB_OIDC_PROVIDER_ARN=""             # optional — see main.tf's github_oidc_provider_arn
 #   export VPC_ID="vpc-..."
 #   export SUBNET_ID="subnet-..."
+#   export RESOURCE_TAG_NAME="CostCentre"           # optional — tags every resource
+#   export RESOURCE_TAG_VALUE="platform"            # optional — paired with the above
 #   export REGION="eu-west-1"                    # optional, default shown
 #   export EKSMANAGER_CLIENT_ID="..."
 #   export EKSMANAGER_CLIENT_SECRET="..."
@@ -132,6 +134,8 @@ REGION="${REGION:-eu-west-1}"
 MANAGEMENT_ACCOUNT_REGION="${MANAGEMENT_ACCOUNT_REGION:-}"
 AGENT_NAME="${AGENT_NAME:-aws-eksmanager-agent}"
 AGENT_AMI="${AGENT_AMI:-}"
+RESOURCE_TAG_NAME="${RESOURCE_TAG_NAME:-}"
+RESOURCE_TAG_VALUE="${RESOURCE_TAG_VALUE:-}"
 EKSMANAGER_CLIENT_ID="${EKSMANAGER_CLIENT_ID:-}"
 EKSMANAGER_CLIENT_SECRET="${EKSMANAGER_CLIENT_SECRET:-}"
 COGNITO_URL="${EKSMANAGER_COGNITO_URL:-}"
@@ -497,7 +501,9 @@ PINNED_JSON=$(cat <<EOF
   "eks_manager_user_admin_permission_set_arn": "${EKS_USER_ADMIN_PS_ARN}",
   "eks_manager_identity_center_role_arn": "${IDENTITY_CENTER_ROLE_ARN}",
   "identity_store_id": "${IDENTITY_STORE_ID}",
-  "identity_center_resolved_region": "${IDENTITY_CENTER_RESOLVED_REGION}"
+  "identity_center_resolved_region": "${IDENTITY_CENTER_RESOLVED_REGION}",
+  "resource_tag_name": "${RESOURCE_TAG_NAME}",
+  "resource_tag_value": "${RESOURCE_TAG_VALUE}"
 }
 EOF
 )
