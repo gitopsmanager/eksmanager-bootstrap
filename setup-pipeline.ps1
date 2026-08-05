@@ -502,8 +502,8 @@ Set-GithubVariable -Name "AWS_REGION" -Value $Region
 Set-GithubVariable -Name "S3_BUCKET" -Value $outputBucket
 
 # Distinct names, not reused from above -- eksmanager-prefix-lists has its
-# own role and bucket, separate from eksmanager-bootstrap's. org-changes.yml
-# and add-cluster.yml (not built yet) will read these once they exist.
+# own role and bucket, separate from eksmanager-bootstrap's. add-cluster.yml
+# and destroy-cluster.yml read these.
 # Region is the same value as AWS_REGION above (one shared_services_region
 # for both modules), so it isn't duplicated under a second name.
 Set-GithubVariable -Name "PREFIX_LISTS_ROLE_ARN" -Value $prefixListsRoleArn

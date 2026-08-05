@@ -57,45 +57,89 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: AllowEKS
+              # Read is wildcarded, write is enumerated. Describe/List on eks
+              # and ec2 is inventory data the agent reads constantly and is not
+              # worth chasing action by action; everything that mutates is
+              # listed explicitly so adding a capability is a visible change
+              # here rather than something a broad grant already covered.
+              #
+              # Derived from the calls the code actually makes, cross-checked
+              # against an IAM Access Analyzer policy generated from CloudTrail.
+              # That generation reported isComplete=false over a three-week
+              # window, so it was used to find *unused* services rather than as
+              # the source of truth for what is needed.
+              - Sid: AllowEKSRead
                 Effect: Allow
-                Action: ["eks:*"]
+                Action:
+                  - eks:Describe*
+                  - eks:List*
                 Resource: "*"
-              - Sid: AllowEC2
+              - Sid: AllowEKSWrite
                 Effect: Allow
-                Action: ["ec2:*"]
+                Action:
+                  - eks:CreateCluster
+                  - eks:CreateNodegroup
+                  - eks:CreateAddon
+                  - eks:CreatePodIdentityAssociation
+                  - eks:DeleteNodegroup
+                  - eks:DeleteAddon
+                  - eks:DeletePodIdentityAssociation
+                  - eks:UpdateClusterConfig
+                  - eks:UpdateClusterVersion
+                  - eks:UpdateNodegroupConfig
+                  - eks:UpdateNodegroupVersion
+                  - eks:UpdateAddon
+                  - eks:TagResource
+                  - eks:UntagResource
+                Resource: "*"
+              - Sid: AllowEC2Read
+                Effect: Allow
+                Action: ["ec2:Describe*", "ec2:Get*"]
+                Resource: "*"
+              - Sid: AllowEC2Write
+                Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                  - ec2:CreateSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
                 Resource: "*"
               - Sid: AllowIAM
                 Effect: Allow
-                Action: ["iam:*"]
+                Action:
+                  - iam:CreateRole
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:TagRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:CreateServiceLinkedRole
                 Resource: "*"
-              - Sid: AllowKMS
+              # ListHostedZones only -- the cluster's own DNS records are
+              # written by external-dns under its own Pod Identity role, not
+              # by this one.
+              - Sid: AllowRoute53Read
                 Effect: Allow
-                Action: ["kms:*"]
+                Action:
+                  - route53:ListHostedZones
+                  - route53:GetHostedZone
+                  - route53:ListResourceRecordSets
                 Resource: "*"
-              - Sid: AllowECR
-                Effect: Allow
-                Action: ["ecr:*"]
-                Resource: "*"
-              - Sid: AllowRoute53
-                Effect: Allow
-                Action: ["route53:*"]
-                Resource: "*"
-              - Sid: AllowSecretsManager
-                Effect: Allow
-                Action: ["secretsmanager:*"]
-                Resource: "*"
-              - Sid: AllowLogs
-                Effect: Allow
-                Action: ["logs:*"]
-                Resource: "*"
-              - Sid: AllowCloudWatch
-                Effect: Allow
-                Action: ["cloudwatch:*"]
-                Resource: "*"
+              # Node group tags do not reach the instances EKS launches, so the
+              # cost tag goes on the Auto Scaling Group with PropagateAtLaunch.
               - Sid: AllowAutoScaling
                 Effect: Allow
-                Action: ["autoscaling:*"]
+                Action:
+                  - autoscaling:CreateOrUpdateTags
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeTags
                 Resource: "*"
               - Sid: AllowSSMReadOnly
                 Effect: Allow
@@ -104,10 +148,6 @@ Resources:
                   - ssm:GetParameters
                   - ssm:DescribeParameters
                 Resource: !Sub "arn:aws:ssm:*:*:parameter/EKSManager/*"
-              - Sid: AllowELB
-                Effect: Allow
-                Action: ["elasticloadbalancing:*"]
-                Resource: "*"
               - Sid: AllowSTS
                 Effect: Allow
                 Action:
