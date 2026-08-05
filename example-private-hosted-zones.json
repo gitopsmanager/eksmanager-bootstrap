@@ -2,6 +2,7 @@
   "hosted-zones": [
     {
       "private-hosted-zone": "dev.aws.acme.com",
+      "public-hosted-zone": "dev.aws.acme.com",
       "account": "123456789012",
       "roles": {
         "cert_manager": "arn:aws:iam::123456789012:role/acme-dev-cert-manager",
@@ -10,6 +11,7 @@
     },
     {
       "private-hosted-zone": "prod.aws.acme.com",
+      "public-hosted-zone": "prod.aws.acme.com",
       "account": "210987654321",
       "roles": {
         "cert_manager": "arn:aws:iam::210987654321:role/acme-prod-cert-manager",
