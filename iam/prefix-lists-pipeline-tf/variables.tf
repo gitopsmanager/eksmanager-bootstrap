@@ -88,7 +88,7 @@ variable "eksmanager_api_url" {
 # endpoints bootstrap does. AWS-managed networking gives CodeBuild a
 # different, unpredictable public IP on every run, which cannot pass an IP
 # allowlist -- so this project needs the same VPC attachment bootstrap has.
-# org-changes builds never call back and don't strictly need this, but VPC
+# Not every build calls back, but VPC
 # attachment applies to the whole CodeBuild project, not per build type, so
 # there's no way to attach it only for add-cluster builds.
 #

@@ -12,10 +12,10 @@ name: destroy-cluster
 # Destroys every resource in that cluster's state file
 # (accounts/<account>/clusters/<cluster>/terraform.tfstate) -- the security
 # group rules add-cluster.yml created, nothing else. Does not touch
-# terraform/org-changes' state or the granular prefix lists themselves.
+# the prefix lists themselves, which this pipeline does not manage.
 #
 # Requires the same PREFIX_LISTS_ROLE_ARN / PREFIX_LISTS_S3_BUCKET /
-# AWS_REGION repository variables as org-changes.yml / add-cluster.yml.
+# AWS_REGION repository variables as add-cluster.yml.
 
 on:
   workflow_dispatch:

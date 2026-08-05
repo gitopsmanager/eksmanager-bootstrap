@@ -112,6 +112,45 @@ then set `GITHUB_OIDC_PROVIDER_ARN` to its ARN (`arn:aws:iam::<account-id>:oidc-
 
 The **GitHub App** credentials (`GITHUB_APP_ID` / `GITHUB_APP_INSTALL_ID` / `GITHUB_APP_PRIVATE_KEY`, all environment variables) are passed to Terraform, which persists them to Secrets Manager for whatever later clones the fork and uploads `eksmanager-bootstrap.zip` — that upload is what actually starts a build (via the EventBridge rule). The script also uses these credentials itself, right after `terraform apply`, to mint an installation token and set the `AWS_ROLE_ARN`/`AWS_REGION`/`S3_BUCKET` repository variables on the fork (assumes the App has the Variables: Read & Write permission — see "Getting a zip into S3" below). The CodeBuild project itself is **S3-sourced** and never touches GitHub. There is no GitHub PAT anywhere in this repo.
 
+## topology.json
+
+Copied from `example-topology.json`, filled in, and committed to your fork. Read
+by the server when CodeBuild POSTs it to `/bootstrap/aws`, which validates it and
+returns the Terraform variables for the run.
+
+```json
+{
+  "manageSCPAutomatically": true,
+  "secretsEditing": false,
+  "orgConfig": {
+    "ou-a1b2-c3d4e5f6": {
+      "111111111111": ["eu-west-1"],
+      "222222222222": ["eu-west-1", "eu-central-1"]
+    }
+  }
+}
+```
+
+`orgConfig` maps each workload OU to the accounts it contains, and each account to
+the regions it may host clusters in. The three levels drive different things:
+
+| Level | What it controls |
+| --- | --- |
+| **OU ID** | Where the account-enablement StackSet is deployed — one instance per OU, not per account — and, when `manageSCPAutomatically` is true, where the SCP attaches. |
+| **Account ID** | The accounts EKS Manager may operate in. Each becomes an entry in the StackSet template's per-account Mappings. |
+| **Regions** | Which regions that account offers in the **create-cluster** account/region pulldown. |
+
+The regions are the part worth getting right first time. They are written to
+`allowed_regions.json` in the config bucket and read by the agent
+(`awsapi.get_target_accounts_config`) to populate that pulldown — so **a region
+omitted here cannot be selected when creating a cluster**, and nothing in the GUI
+points back to this file to explain why. Adding one later means editing this file
+and re-running the pipeline.
+
+Validation is strict on all three: OU IDs must match `ou-xxxx-xxxxxxxx`, accounts
+must be 12 digits, and regions must be well-formed region names. An OU with no
+accounts, or an account with no regions, is rejected rather than ignored.
+
 ## Entra SAML SSO
 
 Set up separately via `azure-saml/` — it does not have a `topology.json` flag since it is not part of the Terraform install. See `azure-saml/README.md` for full instructions.
@@ -125,15 +164,14 @@ eksmanager-bootstrap/
 ├── variables.tf                # All input variables
 ├── example-topology.json       # Reference copy — pre-filled for an AWS license
 ├── topology.json                # Created by you per client — copy of the example, filled in, committed to your fork
-├── example-prefix-lists.json    # Reference copy for the prefix-lists pipeline
-├── prefix-lists.json             # Created by you — granular CIDR sets + GUI-facing groups
+├── example-prefix-groups.json   # Reference copy for the add-cluster pipeline
+├── prefix-groups.json            # Created by you — environment -> prefix list names
 ├── example-clusters.json        # Reference copy for the prefix-lists pipeline
 ├── clusters.json                 # Created by you — GUI-maintained cluster selections
 ├── buildspec.yml                # CodeBuild pipeline (S3-sourced, no git)
 ├── .github/
 │   └── workflows/
 │       ├── upload-to-s3.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
-│       ├── org-changes.yml      # Manual (workflow_dispatch) — see "eksmanager-prefix-lists pipeline" below
 │       ├── add-cluster.yml       # Manual, takes a cluster_name input
 │       └── destroy-cluster.yml    # Manual, takes account_id/region/cluster_name inputs
 ├── aws/                        # AWS infrastructure module
@@ -143,11 +181,9 @@ eksmanager-bootstrap/
 │   └── README.md
 ├── scripts/
 │   ├── common.py                 # Shared helpers for the two generators below
-│   ├── generate_org_changes.py   # topology.json + prefix-lists.json -> buildspec + staged module
-│   ├── generate_add_cluster.py   # clusters.json + prefix-lists.json -> buildspec + staged module
+│   ├── generate_add_cluster.py   # clusters.json + prefix-groups.json -> buildspec + staged module
 │   └── generate_destroy_cluster.py  # account_id/region/cluster_name -> destroy-mode buildspec + staged module
 ├── terraform/
-│   ├── org-changes/               # Granular prefix lists — one apply per (account, region) pair
 │   └── add-cluster/                # SG rules for one cluster — one apply per cluster
 └── iam/
     ├── codebuild-pipeline-tf/    # Terraform applied by setup-pipeline.sh/.ps1
@@ -164,39 +200,31 @@ eksmanager-bootstrap/
 
 ## eksmanager-prefix-lists pipeline
 
-A second, independent CodeBuild project — manages EC2 managed prefix lists and
-the security group rules that reference them, across every client account and
-region. Now wired into `setup-pipeline.sh`/`.ps1` alongside the bootstrap
-module's own apply.
+A second, independent CodeBuild project — manages the security group rules
+that reference EC2 managed prefix lists, per cluster. Wired into
+`setup-pipeline.sh`/`.ps1` alongside the bootstrap module's own apply.
+
+**The prefix lists themselves are not created or managed here.** They are
+expected to already exist in each target account and region — yours to
+provision however you like — and this pipeline only resolves them by name and
+attaches them to a cluster's security groups.
 
 **Implemented:**
 - The CodeBuild project, its service role (`EKSManagerPrefixListsSharedRole`),
-  the S3 bucket, and the two EventBridge triggers that start a build when
-  `org-changes.zip` or `add-cluster.zip` is uploaded — each overrides the
-  project's source at start time via `sourceLocationOverride`, so the two
-  artifact types never race to overwrite a shared object.
-- `terraform/org-changes/` — one `aws_ec2_managed_prefix_list` per granular
-  list (see `example-prefix-lists.json`), deployed to every (account, region)
-  pair in `topology.json`, with `create_before_destroy` + a hash-triggered
-  replace on any entry change.
-- `terraform/add-cluster/` — `data` source lookups of those same granular
-  lists by name, plus one security group ingress rule per (security group,
-  prefix list) pair for a single cluster (see `example-clusters.json`).
-- `scripts/generate_org_changes.py` / `scripts/generate_add_cluster.py` /
-  `scripts/generate_destroy_cluster.py` — render each build's literal
-  `buildspec.yml` (a `build-list` batch for org-changes, one per-cluster
-  build for add-cluster/destroy-cluster — no CodeBuild `dynamic` matrix;
-  that mechanism has a documented env-var propagation gap) and stage the
-  Terraform module + its `.auto.tfvars.json` alongside it.
-- `.github/workflows/org-changes.yml` / `add-cluster.yml` / `destroy-cluster.yml`
-  — run the generators and upload the resulting zip via OIDC, same pattern
-  as `upload-to-s3.yml`.
-
-**`org-changes.yml` is `workflow_dispatch`-only, deliberately not triggered
-on push and not chained after bootstrap succeeds.** An org-changes run
-replaces prefix lists across every enabled account and region in one batch —
-worth a human running it after reviewing what changed in `topology.json` or
-`prefix-lists.json`, not something that fires automatically.
+  the S3 bucket, and the EventBridge trigger that starts a build when
+  `add-cluster.zip` is uploaded, overriding the project's source at start time
+  via `sourceLocationOverride`.
+- `terraform/add-cluster/` — `data` source lookups of the prefix lists by name,
+  plus one security group ingress rule per (security group, prefix list) pair
+  for a single cluster (see `example-clusters.json`).
+- `scripts/generate_add_cluster.py` / `scripts/generate_destroy_cluster.py` —
+  render each build's literal `buildspec.yml` (one per-cluster build; no
+  CodeBuild `dynamic` matrix, that mechanism has a documented env-var
+  propagation gap) and stage the Terraform module + its `.auto.tfvars.json`
+  alongside it.
+- `.github/workflows/add-cluster.yml` / `destroy-cluster.yml` — run the
+  generators and upload the resulting zip via OIDC, same pattern as
+  `upload-to-s3.yml`.
 
 **`add-cluster.yml` takes an explicit `cluster_name` input**, dispatched by
 whatever's driving cluster creation (the GUI, via the GitHub API) — not
@@ -213,14 +241,24 @@ entry, never had it, or had it removed first. Uploads to the same
 `destroy` instead of `apply` baked into the generated buildspec, so no new
 S3 key or EventBridge rule was needed.
 
-### Before running org-changes or add-cluster
+### Before running add-cluster
 
-1. Copy `example-prefix-lists.json` → `prefix-lists.json`, fill in your
-   real `granular` CIDR sets and `groups` (same "copy the example, fill
-   in, commit" pattern as `topology.json`).
+1. Copy `example-prefix-groups.json` → `prefix-groups.json` and list, per
+   environment, the prefix lists a cluster in that environment may be reached
+   from (same "copy the example, fill in, commit" pattern as `topology.json`):
+
+   ```json
+   [
+     { "environment": "dev",  "prefix-lists": ["corp_vpn", "azure_cluster_cidrs"] },
+     { "environment": "prod", "prefix-lists": ["corp_vpn", "office"] }
+   ]
+   ```
+
+   Each name must match an existing managed prefix list in the target account
+   and region. Nothing here creates them.
 2. Copy `example-clusters.json` → `clusters.json`, fill in each cluster's
-   `account`, `region`, `group` (must be a key in `prefix-lists.json`'s
-   `groups`), and its security groups. These are listed separately because
+   `account`, `region`, `environment` (must appear in `prefix-groups.json`),
+   and its security groups. These are listed separately because
    the two get different rules: `eks_sg_ids` (the security group EKS
    creates for the cluster) is opened on 443 for the API server, while
    `nlb_sg_ids` (the cluster's `<cluster>-nlb-sg` load balancer group) is
@@ -232,16 +270,13 @@ S3 key or EventBridge rule was needed.
    Entries still using the older single `sg_ids` list are read as
    `eks_sg_ids`, so they get 443 only — add `nlb_sg_ids` to open the load
    balancer's ports.
-3. Commit both files to `main` on your fork. Both workflows run from
-   `main` only — same OIDC trust-policy constraint as `upload-to-s3.yml`.
-4. Run **`org-changes`** first (Actions tab → `workflow_dispatch`, no
-   inputs) — this deploys the granular prefix lists every cluster will
-   reference. Wait for the CodeBuild batch to finish successfully.
-5. Run **`add-cluster`** (Actions tab → `workflow_dispatch` → `cluster_name`
-   input) for a cluster already present in `clusters.json`. If this runs
-   before step 4 has succeeded for that cluster's account/region, the
-   `data` source lookup fails cleanly with a "not found" error rather than
-   doing anything silently wrong.
+3. Commit both files to `main` on your fork. The workflow runs from `main`
+   only — same OIDC trust-policy constraint as `upload-to-s3.yml`.
+4. Run **`add-cluster`** (Actions tab → `workflow_dispatch` → `cluster_name`
+   input) for a cluster already present in `clusters.json`. If a named prefix
+   list does not exist in that cluster's account and region, the `data` source
+   lookup fails cleanly with a "not found" error rather than doing anything
+   silently wrong.
 
 `setup-pipeline.sh`/`.ps1` doesn't need to be re-run for any of this —
 it only provisions the AWS infrastructure (CodeBuild project, IAM roles,

@@ -1,6 +1,6 @@
 # Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
-"""Shared helpers for scripts/generate_org_changes.py and
-scripts/generate_add_cluster.py -- kept small and only holds what's
+"""Shared helpers for scripts/generate_add_cluster.py and
+scripts/generate_destroy_cluster.py -- kept small and only holds what's
 genuinely duplicated between the two, not a general-purpose library.
 """
 import json

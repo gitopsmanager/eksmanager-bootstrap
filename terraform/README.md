@@ -149,30 +149,24 @@ eksmanager-bootstrap/
 
 ## eksmanager-prefix-lists pipeline
 
-A second, independent CodeBuild project — manages EC2 managed prefix lists and
-the security group rules that reference them, across every client account and
-region. Not wired into `setup-pipeline.sh`/`.ps1` yet; apply
-`iam/prefix-lists-pipeline-tf/` on its own for now.
+A second, independent CodeBuild project — manages the security group rules
+that reference EC2 managed prefix lists, per cluster. Wired into
+`setup-pipeline.sh`/`.ps1` alongside the bootstrap module's own apply.
 
-**Currently implemented:** the CodeBuild project, its service role
-(`EKSManagerPrefixListsSharedRole`), the S3 bucket, and the two EventBridge
-triggers that start a build when `org-changes.zip` or `add-cluster.zip` is
-uploaded. Each trigger overrides the project's source at start time via
-`sourceLocationOverride`, so the two artifact types never race to overwrite
-a shared object.
+**The prefix lists themselves are not created or managed here.** They must
+already exist in each target account and region; `terraform/add-cluster`
+resolves them by name and fails the apply cleanly if one is missing.
 
-**Not yet implemented:** the `terraform/org-changes/` and
-`terraform/add-cluster/` Terraform this project actually runs, the Python
-generator that renders each build's `buildspec.yml` from `topology.json` and
-the granular/groups/cluster-selection config files, and the two GitHub
-Actions workflows (`org-changes.yml`, `add-cluster.yml`) that zip and upload
-those artifacts.
+Comprises the CodeBuild project, its service role
+(`EKSManagerPrefixListsSharedRole`), the S3 bucket, and the EventBridge
+trigger that starts a build when `add-cluster.zip` is uploaded — overriding
+the project's source at start time via `sourceLocationOverride`. The
+Terraform it runs lives in `terraform/add-cluster/`, rendered per build by
+`scripts/generate_add_cluster.py` (or `generate_destroy_cluster.py`) and
+uploaded by the `add-cluster.yml` / `destroy-cluster.yml` workflows.
 
-**`org-changes` is a manual step, deliberately not auto-triggered after
-bootstrap succeeds.** An org-changes run replaces prefix lists across every
-enabled account and region in one batch — worth a human deciding to run it
-after reviewing what changed in `topology.json`, not something that fires
-automatically the moment a bootstrap build reports success.
+See the root `README.md` for the `prefix-groups.json` and `clusters.json`
+formats these read.
 
 ## After bootstrap
 

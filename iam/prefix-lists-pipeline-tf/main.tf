@@ -6,24 +6,18 @@
 # credentials, aws.shared assumes shared_services_role_name into the shared
 # services account to create everything here.
 #
-# Creates ONE CodeBuild project (eksmanager-prefix-lists) that runs two
-# different kinds of build, distinguished by which S3 object triggered it:
-#   - org-changes.zip  -> terraform/org-changes  (granular prefix lists,
-#     rolled out to every enabled account/region — org-wide blast radius)
-#   - add-cluster.zip  -> terraform/add-cluster   (SG rules for one cluster)
+# Creates ONE CodeBuild project (eksmanager-prefix-lists) which runs
+# terraform/add-cluster -- the SG rules for a single cluster -- triggered by
+# add-cluster.zip landing in the artifact bucket.
 #
-# Deliberately NOT auto-chained after eksmanager-bootstrap succeeds — an
-# org-changes run is org-wide and replaces prefix lists in place
-# (create_before_destroy), so running it is a separate, reviewed decision:
-# trigger org-changes.yml manually (workflow_dispatch) once bootstrap's
-# account/region changes look correct, not automatically the moment
-# bootstrap's build reports SUCCEEDED.
+# The prefix lists themselves are NOT created or managed here. They are
+# expected to already exist in each target account and region, and
+# terraform/add-cluster resolves them by name.
 #
-# One project, one fixed CodeBuild "source" block — but its source.location
-# is only ever used as a fallback for a manual console-triggered build.
-# Every real invocation comes from EventBridge, which overrides the source
-# per rule via input_transformer + sourceLocationOverride, so org-changes.zip
-# and add-cluster.zip never race to overwrite the same object.
+# One project, one fixed CodeBuild "source" block -- but its source.location
+# is only ever used as a fallback for a manual console-triggered build. Every
+# real invocation comes from EventBridge, which overrides the source per rule
+# via input_transformer + sourceLocationOverride.
 # -----------------------------------------------------------------------------
 
 terraform {
@@ -82,7 +76,7 @@ resource "aws_s3_bucket_public_access_block" "prefix_lists" {
   restrict_public_buckets = true
 }
 
-# ── GitHub Actions OIDC — org-changes.yml and add-cluster.yml in the fork ──
+# ── GitHub Actions OIDC — add-cluster.yml in the fork ──────────────────────
 # Reuses the OIDC provider iam/codebuild-pipeline-tf already created (or was
 # pointed at) — not recreated here, an AWS account only gets one per URL.
 
@@ -124,10 +118,7 @@ resource "aws_iam_role_policy" "github_actions_upload" {
       Sid    = "UploadPrefixListsArtifacts"
       Effect = "Allow"
       Action = "s3:PutObject"
-      Resource = [
-        "${aws_s3_bucket.prefix_lists.arn}/org-changes.zip",
-        "${aws_s3_bucket.prefix_lists.arn}/add-cluster.zip"
-      ]
+      Resource = "${aws_s3_bucket.prefix_lists.arn}/add-cluster.zip"
     }]
   })
 }
@@ -171,9 +162,8 @@ resource "aws_iam_role_policy" "codebuild" {
         ]
       },
       {
-        # Terraform S3 backend -- org-changes uses
-        # accounts/<account>/org-changes/<region>/terraform.tfstate,
-        # add-cluster uses accounts/<account>/clusters/<cluster>/terraform.tfstate.
+        # Terraform S3 backend -- add-cluster uses
+        # accounts/<account>/clusters/<cluster>/terraform.tfstate.
         # Both live under accounts/*, NOT state/* -- that was
         # eksmanager-bootstrap's different, flat state/terraform.tfstate
         # key convention; copying its resource scope here without
@@ -258,57 +248,10 @@ resource "aws_security_group" "codebuild" {
   }
 }
 
-# ── Batch build orchestration role ──────────────────────────────────────────
-# Required for StartBuildBatch (org-changes' build-list) to work at all --
-# separate from EKSManagerPrefixListsSharedRole (which runs the actual
-# build commands) by AWS's own explicit design: giving the build's own
-# role StartBuild/StopBuild/RetryBuild permissions would let a build spawn
-# more builds via its own buildspec, bypassing the batch's own restrictions
-# on build count/compute type. CodeBuild assumes this role internally to
-# launch/manage each task in the batch -- nothing else ever assumes it.
-
-resource "aws_iam_role" "codebuild_batch" {
-  provider = aws.shared
-  name     = "EKSManagerPrefixListsBatchRole"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "codebuild.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "codebuild_batch" {
-  provider = aws.shared
-  name     = "EKSManagerPrefixListsBatchRolePolicy"
-  role     = aws_iam_role.codebuild_batch.id
-
-  # Constructed directly rather than aws_codebuild_project.eksmanager_prefix_lists.arn
-  # -- that resource's build_batch_config needs THIS role's ARN, so
-  # referencing the project's ARN back here would be a circular
-  # dependency. The project's name is a literal string, so its ARN is
-  # fully deterministic without needing the resource to exist first.
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["codebuild:StartBuild", "codebuild:StopBuild", "codebuild:RetryBuild"]
-      Resource = "arn:aws:codebuild:${var.shared_services_region}:${var.shared_services_account_id}:project/eksmanager-prefix-lists"
-    }]
-  })
-}
-
-# ── CodeBuild project ────────────────────────────────────────────────────────
-# VPC attachment required, same as eksmanager-bootstrap -- see the vpc_id
-# variable's description for why.
-
 resource "aws_codebuild_project" "eksmanager_prefix_lists" {
   provider      = aws.shared
   name          = "eksmanager-prefix-lists"
-  description   = "Runs EKS Manager prefix-list (org-changes) and cluster SG-rule (add-cluster) Terraform"
+  description   = "Runs EKS Manager cluster SG-rule (add-cluster) Terraform"
   service_role  = aws_iam_role.codebuild.arn
   build_timeout = 60
 
@@ -318,7 +261,7 @@ resource "aws_codebuild_project" "eksmanager_prefix_lists" {
 
   source {
     type      = "S3"
-    location  = "${aws_s3_bucket.prefix_lists.bucket}/org-changes.zip"
+    location  = "${aws_s3_bucket.prefix_lists.bucket}/add-cluster.zip"
     buildspec = "buildspec.yml"
   }
 
@@ -353,14 +296,10 @@ resource "aws_codebuild_project" "eksmanager_prefix_lists" {
       group_name = "/aws/codebuild/eksmanager-prefix-lists"
     }
   }
-
-  build_batch_config {
-    service_role = aws_iam_role.codebuild_batch.arn
-  }
 }
 
 # ── EventBridge -- one rule per artifact key, each overriding the project's
-# source at start time so org-changes.zip and add-cluster.zip never race to
+# source at start time so each artifact drives its own build without
 # overwrite a shared object ──────────────────────────────────────────────────
 
 resource "aws_s3_bucket_notification" "eventbridge" {
@@ -392,47 +331,10 @@ resource "aws_iam_role_policy" "eventbridge_codebuild" {
     Version = "2012-10-17"
     Statement = [{
       Effect = "Allow"
-      Action = [
-        "codebuild:StartBuild",      # add-cluster / destroy-cluster (plain builds)
-        "codebuild:StartBuildBatch"  # org-changes (batch build-list)
-      ]
+      Action = "codebuild:StartBuild"
       Resource = aws_codebuild_project.eksmanager_prefix_lists.arn
     }]
   })
-}
-
-resource "aws_cloudwatch_event_rule" "org_changes_uploaded" {
-  provider = aws.shared
-  name     = "eksmanager-prefix-lists-org-changes-uploaded"
-
-  event_pattern = jsonencode({
-    source      = ["aws.s3"]
-    detail-type = ["Object Created"]
-    detail = {
-      bucket = { name = [local.prefix_lists_bucket] }
-      object = { key = ["org-changes.zip"] }
-    }
-  })
-}
-
-resource "aws_cloudwatch_event_target" "start_org_changes" {
-  provider = aws.shared
-  rule     = aws_cloudwatch_event_rule.org_changes_uploaded.name
-  arn      = aws_codebuild_project.eksmanager_prefix_lists.arn
-  role_arn = aws_iam_role.eventbridge_codebuild.arn
-
-  # buildType: BATCH is required here specifically -- EventBridge's default
-  # CodeBuild target calls plain StartBuild, which ignores the buildspec's
-  # batch: section entirely and runs phases: directly with the build-list's
-  # per-item env vars never set. This key is what tells EventBridge to call
-  # StartBuildBatch instead (needs codebuild:StartBuildBatch on the role
-  # above, not just StartBuild).
-  input_transformer {
-    input_template = jsonencode({
-      sourceLocationOverride = "${local.prefix_lists_bucket}/org-changes.zip"
-      buildType              = "BATCH"
-    })
-  }
 }
 
 resource "aws_cloudwatch_event_rule" "add_cluster_uploaded" {

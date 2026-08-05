@@ -9,12 +9,11 @@ name: add-cluster
 # for deletions and for commits touching more than one cluster at once.
 #
 # Requires the same PREFIX_LISTS_ROLE_ARN / PREFIX_LISTS_S3_BUCKET /
-# AWS_REGION repository variables as org-changes.yml -- see that workflow's
-# header comment.
+# AWS_REGION repository variables set by setup-pipeline.sh.
 #
-# Reads clusters.json and prefix-lists.json from this repo. clusters.json
-# must contain cluster_name as a key; prefix-lists.json's groups must
-# contain that cluster's group.
+# Reads clusters.json and prefix-groups.json from this repo. clusters.json
+# must contain cluster_name as a key; prefix-groups.json must contain that
+# cluster's environment.
 
 on:
   workflow_dispatch:
@@ -44,7 +43,7 @@ jobs:
           python3 scripts/generate_add_cluster.py \
             --cluster-name "${{ inputs.cluster_name }}" \
             --clusters clusters.json \
-            --prefix-lists prefix-lists.json \
+            --prefix-groups prefix-groups.json \
             --state-bucket "${{ vars.PREFIX_LISTS_S3_BUCKET }}" \
             --state-region "${{ vars.AWS_REGION }}" \
             --output-dir build/add-cluster

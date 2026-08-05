@@ -18,7 +18,7 @@ Usage:
   python3 generate_add_cluster.py \
     --cluster-name cluster1 \
     --clusters clusters.json \
-    --prefix-lists prefix-lists.json \
+    --prefix-groups prefix-groups.json \
     --state-bucket eksmanager-prefix-lists-905418220450 \
     --state-region eu-west-1 \
     --output-dir build/add-cluster
@@ -72,20 +72,38 @@ phases:
 """
 
 
-def expand_group(group_name, groups):
-    if group_name not in groups:
+def expand_environment(environment, prefix_groups):
+    """
+    Map an environment name to the prefix lists it allows in.
+
+    prefix-groups.json is a flat list so both concepts are named rather than
+    positional:
+
+        [ { "environment": "dev", "prefix-lists": ["corp_vpn"] } ]
+
+    The lists themselves are not created or managed here -- they must already
+    exist in the target account and region, and terraform/add-cluster resolves
+    them by name.
+    """
+    known = {}
+    for entry in prefix_groups:
+        name = (entry.get("environment") or "").strip()
+        if name:
+            known[name] = entry.get("prefix-lists") or []
+
+    if environment not in known:
         raise SystemExit(
-            f"ERROR: group '{group_name}' not found in prefix-lists.json's 'groups' -- "
-            f"available groups: {sorted(groups.keys())}"
+            f"ERROR: environment '{environment}' not found in prefix-groups.json -- "
+            f"available environments: {sorted(known)}"
         )
-    return groups[group_name]
+    return known[environment]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cluster-name", required=True, help="Which cluster in clusters.json to build for -- one build, one cluster, never a loop")
     parser.add_argument("--clusters", required=True, help="Path to clusters.json")
-    parser.add_argument("--prefix-lists", required=True, help="Path to prefix-lists.json (for the groups -> granular-names expansion)")
+    parser.add_argument("--prefix-groups", required=True, help="Path to prefix-groups.json (environment -> prefix list names)")
     parser.add_argument("--state-bucket", required=True)
     parser.add_argument("--state-region", required=True)
     parser.add_argument("--output-dir", required=True)
@@ -97,7 +115,7 @@ def main():
     args = parser.parse_args()
 
     clusters = load_json(args.clusters)
-    prefix_lists = load_json(args.prefix_lists)
+    prefix_groups = load_json(args.prefix_groups)
 
     if args.cluster_name not in clusters:
         raise SystemExit(
@@ -106,7 +124,7 @@ def main():
         )
     cluster = clusters[args.cluster_name]
 
-    for required_key in ("account", "region", "group"):
+    for required_key in ("account", "region", "environment"):
         if required_key not in cluster:
             raise SystemExit(f"ERROR: clusters.json['{args.cluster_name}'] is missing '{required_key}'")
 
@@ -133,9 +151,8 @@ def main():
             f"need at least one of 'eks_sg_ids' or 'nlb_sg_ids'"
         )
 
-    groups = prefix_lists.get("groups", {})
-    prefix_list_names = expand_group(cluster["group"], groups)
-    print(f"Cluster '{args.cluster_name}': group '{cluster['group']}' -> {prefix_list_names}")
+    prefix_list_names = expand_environment(cluster["environment"], prefix_groups)
+    print(f"Cluster '{args.cluster_name}': environment '{cluster['environment']}' -> {prefix_list_names}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

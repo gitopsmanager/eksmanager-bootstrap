@@ -19,7 +19,7 @@ variable "target_region" {
 }
 
 variable "client_account_role_name" {
-  description = "IAM role name in the target account this module assumes. Same role, same trust requirement as terraform/org-changes -- see that module's variable of the same name."
+  description = "IAM role name in the target account this module assumes. Must exist in every target account and trust the CodeBuild role that runs this module."
   type        = string
   default     = "EKSManagerAdminRole"
 }
@@ -31,18 +31,15 @@ variable "cluster_name" {
 
 variable "prefix_list_names" {
   description = <<-EOT
-    Granular prefix list names to allow into this cluster's security
-    groups. Already expanded from the cluster's selected group (e.g. "prod"
-    -> ["corp_vpn", "office"]) by the Python generator using the groups
-    mapping in the granular/groups config -- this module only ever sees a
-    flat list of granular names, never a group name, and never touches the
-    groups mapping itself.
+    Prefix list names to allow into this cluster's security groups. Already
+    expanded from the cluster's environment (e.g. "prod" -> ["corp_vpn",
+    "office"]) by the Python generator using prefix-groups.json -- this
+    module only ever sees a flat list of names, never an environment name,
+    and never reads that file itself.
 
-    Each name must already exist as a deployed prefix list in this
-    account/region -- created by terraform/org-changes, which runs
-    separately and (by design) always ahead of any cluster referencing it,
-    since org-changes deploys every granular list to every enabled
-    account/region unconditionally. If a name here doesn't exist yet, the
+    Each name must already exist as a deployed prefix list in this account
+    and region. Nothing here creates them: they are the customer's to manage,
+    and this module only resolves them by name. If a name does not exist, the
     data source lookup below fails the apply outright rather than silently
     skipping it.
   EOT

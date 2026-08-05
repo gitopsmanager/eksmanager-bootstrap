@@ -5,9 +5,9 @@
 # No prefix list creation or replacement here at all -- only data source
 # lookups (by name; prefix list names are unique within an account/region,
 # so this is unambiguous) and SG rule resources. This is deliberate: it
-# keeps every cluster's blast radius limited to its own SG rules, and means
-# adding/removing a cluster (or changing which prefix lists it references)
-# never touches org-changes' state or resources, and vice versa.
+# keeps every cluster's blast radius limited to its own SG rules -- adding or
+# removing a cluster, or changing which prefix lists it references, affects
+# nothing outside that cluster's own state.
 #
 # aws_vpc_security_group_ingress_rule (the modern, one-rule-per-resource
 # type) rather than the older aws_security_group_rule -- changing
