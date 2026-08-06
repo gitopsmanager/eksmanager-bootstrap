@@ -23,6 +23,12 @@ on:
         required: true
         type: string
 
+# Names the run after the cluster it is building. The dispatch API returns no
+# run id, so the server finds this run by listing recent runs and matching on
+# the title -- without this it would be matching on "created after I asked",
+# which picks the wrong run when two clusters are built at once.
+run-name: "add-cluster ${{ inputs.cluster_name }}"
+
 permissions:
   id-token: write
   contents: read
