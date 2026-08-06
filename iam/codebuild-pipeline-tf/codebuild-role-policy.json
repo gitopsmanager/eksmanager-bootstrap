@@ -186,6 +186,25 @@
       "Resource": "arn:aws:iam::*:role/EKSManagerAgentRole"
     },
     {
+      "Sid": "EKSManagerEcrPushRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::*:role/EKSManager-push-ecr"
+    },
+    {
       "Sid": "EKSManagerAgentInstanceProfile",
       "Effect": "Allow",
       "Action": [
