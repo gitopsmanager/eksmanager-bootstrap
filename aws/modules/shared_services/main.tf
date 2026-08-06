@@ -61,8 +61,21 @@ resource "aws_iam_role" "ecr_push" {
         # Naming the accounts alone would let any role in them assume this.
         # This narrows it to the per-cluster roles the agent creates, whose
         # names it controls: EKSManager-<cluster>-push-ecr.
+        #
+        # Built from the same list as Principal above rather than wildcarding
+        # the account, so the two cannot drift apart. ArnLike matches if any
+        # entry matches.
+        #
+        # Note what this does *not* do: anyone who can create a role in a
+        # trusted account can create one matching this name. Only a condition
+        # on the Pod Identity session tags (kubernetes-namespace and
+        # kubernetes-service-account, which a hand-made role cannot set) would
+        # close that -- tighten here once CloudTrail confirms which tags
+        # actually survive the second hop.
         ArnLike = {
-          "aws:PrincipalArn" = "arn:aws:iam::*:role/EKSManager-*-push-ecr"
+          "aws:PrincipalArn" = [
+            for acct in local.push_ecr_accounts : "arn:aws:iam::${acct}:role/EKSManager-*-push-ecr"
+          ]
         }
       }
     }]
