@@ -23,6 +23,95 @@ resource "aws_ecr_repository" "app" {
   }
 }
 
+# --- Cross-account ECR push role ---------------------------------------------
+#
+# The registry lives here, in shared services, but the build runners that push
+# to it live in the workload accounts. A repository policy cannot cover them:
+# builds create a repository per app on the fly, and ecr:CreateRepository has
+# no repository to carry a policy. So the runners chain into this role instead,
+# via the targetRoleArn on their EKS Pod Identity association, and run as a
+# principal in the account that owns the registry.
+#
+# Workload accounts come from allowed_regions.json, which the agent already
+# uses to decide which accounts it may act on -- so this trust stays in step
+# with that list rather than being a second one to maintain.
+locals {
+  push_ecr_accounts = try(keys(jsondecode(var.allowed_regions_json)["accounts"]), [])
+}
+
+resource "aws_iam_role" "ecr_push" {
+  # Skipped when no workload accounts are configured yet: a trust policy with
+  # an empty principal list is rejected outright.
+  count = length(local.push_ecr_accounts) > 0 ? 1 : 0
+
+  name        = "EKSManager-push-ecr"
+  description = "Assumed by workload-account build runners to create and push ECR repositories"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        AWS = [for acct in local.push_ecr_accounts : "arn:aws:iam::${acct}:root"]
+      }
+      # TagSession as well as AssumeRole -- Pod Identity carries session tags
+      # through the chain and the hop fails without it.
+      Action = ["sts:AssumeRole", "sts:TagSession"]
+      Condition = {
+        # Naming the accounts alone would let any role in them assume this.
+        # This narrows it to the per-cluster roles the agent creates, whose
+        # names it controls: EKSManager-<cluster>-push-ecr.
+        ArnLike = {
+          "aws:PrincipalArn" = "arn:aws:iam::*:role/EKSManager-*-push-ecr"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "ecr_push" {
+  count = length(local.push_ecr_accounts) > 0 ? 1 : 0
+
+  name = "EKSManagerEcrPushPolicy"
+  role = aws_iam_role.ecr_push[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Not resource-scoped by ECR -- it issues a token for the whole
+        # registry, so it can only be granted on "*".
+        Sid      = "AuthToken"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        # Create and push only. DeleteRepository and BatchDeleteImage are
+        # deliberately absent: a build that can delete other apps' images is a
+        # much larger blast radius than one that can add its own.
+        Sid    = "CreateAndPush"
+        Effect = "Allow"
+        Action = [
+          "ecr:CreateRepository",
+          "ecr:DescribeRepositories",
+          "ecr:DescribeImages",
+          "ecr:ListImages",
+          "ecr:TagResource",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImage",
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+        ]
+        Resource = "arn:aws:ecr:${var.shared_services_region}:${var.shared_services_account_id}:repository/*"
+      },
+    ]
+  })
+}
+
 # --- S3 state bucket ---------------------------------------------------------
 
 resource "aws_s3_bucket" "config" {
