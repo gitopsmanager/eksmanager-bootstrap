@@ -41,14 +41,13 @@
 # PREREQUISITES
 #   - terraform >= 1.5.0
 #   - Credentials for the MANAGEMENT account already active in your shell
-#   - aws CLI (optional) -- if present, this script auto-detects a
-#     pre-existing GitHub Actions OIDC provider in the shared services
-#     account (so you don't have to look up and set
-#     GITHUB_OIDC_PROVIDER_ARN yourself) and cleans up AdministratorAccess
-#     left over from the standalone Python bootstrap script, if you ran it.
-#     Without aws CLI, both steps are silently skipped -- everything still
-#     works, just with the same manual steps as before if either collision
-#     occurs.
+#   - aws CLI (required) -- used to detect a pre-existing GitHub Actions
+#     OIDC provider in the shared services account, which is an account-wide
+#     singleton: without that check Terraform tries to create a second one
+#     and fails with EntityAlreadyExists. Also cleans up AdministratorAccess
+#     left over from the standalone Python bootstrap script, and empties
+#     versioned buckets on --destroy.
+#   - python3 (required) -- parses AWS CLI JSON output
 #
 # USAGE
 #   Every input is an environment variable — no flags. Export these, then
@@ -225,6 +224,18 @@ for required in MANAGEMENT_ACCOUNT_ID MANAGEMENT_ACCOUNT_REGION SHARED_SERVICES_
   fi
 done
 
+# Required, not optional. The GitHub Actions OIDC provider is an account-wide
+# singleton, and the only way to know whether one already exists is to ask --
+# without the aws CLI that check cannot run, and Terraform fails later with
+# EntityAlreadyExists instead. Also used for role reconciliation and for
+# emptying versioned buckets on --destroy.
+for tool in aws terraform python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "ERROR: '${tool}' is required but was not found on PATH." >&2
+    exit 1
+  fi
+done
+
 if ! [[ "$MANAGEMENT_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
   echo "ERROR: MANAGEMENT_ACCOUNT_ID must be a 12-digit AWS account ID." >&2
   exit 1
@@ -278,25 +289,67 @@ if terraform state list 2>/dev/null | grep -qx 'aws_iam_openid_connect_provider.
   echo "OIDC provider already managed by this Terraform state -- skipping auto-detection."
 fi
 
-if [ -z "${GITHUB_OIDC_PROVIDER_ARN:-}" ] && ! $ALREADY_MANAGED_OIDC && command -v aws >/dev/null 2>&1; then
+if [ -z "${GITHUB_OIDC_PROVIDER_ARN:-}" ] && ! $ALREADY_MANAGED_OIDC; then
   echo "Checking for an existing GitHub Actions OIDC provider in ${SHARED_SERVICES_ACCOUNT_ID}..."
+
+  # Errors are captured, not discarded. This check is load-bearing: an account
+  # can only hold one provider per URL, so failing to see an existing one makes
+  # Terraform try to create a second and fail with EntityAlreadyExists several
+  # steps later, naming nothing about why the check didn't work.
+  #
+  # It used to end in `2>/dev/null) || EXISTING_OIDC_ARN=""`, which turned a
+  # failed assume-role into the same empty result as a genuinely empty account.
+  OIDC_LOOKUP_ERR=$(mktemp)
+
+  # Every step exits explicitly on failure rather than relying on `set -e`,
+  # for two reasons that between them let a failed assume-role look like an
+  # empty account:
+  #   - `set -e` is ignored inside a command substitution whose result is being
+  #     tested, which is exactly what the `if` below does.
+  #   - `export VAR=$(cmd)` takes the exit status of `export`, always 0, so a
+  #     failing cmd inside one is invisible either way.
+  # The status is then captured on its own line, outside any condition.
+  set +e
   EXISTING_OIDC_ARN=$(
-    set -e
     CREDS_JSON=$(aws sts assume-role \
       --role-arn "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${SHARED_SERVICES_ROLE_NAME}" \
-      --role-session-name "eksmanager-bootstrap-preflight" --output json)
-    export AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["AccessKeyId"])')
-    export AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["SecretAccessKey"])')
-    export AWS_SESSION_TOKEN=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["SessionToken"])')
+      --role-session-name "eksmanager-bootstrap-preflight" --output json) || exit 1
+    AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["AccessKeyId"])') || exit 1
+    AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["SecretAccessKey"])') || exit 1
+    AWS_SESSION_TOKEN=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["SessionToken"])') || exit 1
+    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
     aws iam list-open-id-connect-providers \
       --query "OpenIDConnectProviderList[?ends_with(Arn, 'token.actions.githubusercontent.com')].Arn" \
-      --output text
-  2>/dev/null) || EXISTING_OIDC_ARN=""
-  if [ -n "${EXISTING_OIDC_ARN:-}" ] && [ "${EXISTING_OIDC_ARN}" != "None" ]; then
-    echo "Found existing provider: ${EXISTING_OIDC_ARN} -- reusing it instead of creating a new one."
-    GITHUB_OIDC_PROVIDER_ARN="$EXISTING_OIDC_ARN"
+      --output text || exit 1
+  ) 2>"$OIDC_LOOKUP_ERR"
+  OIDC_LOOKUP_STATUS=$?
+  set -e
+
+  if [ "$OIDC_LOOKUP_STATUS" -eq 0 ]; then
+    if [ -n "${EXISTING_OIDC_ARN:-}" ] && [ "${EXISTING_OIDC_ARN}" != "None" ]; then
+      echo "Found existing provider: ${EXISTING_OIDC_ARN} -- reusing it instead of creating a new one."
+      GITHUB_OIDC_PROVIDER_ARN="$EXISTING_OIDC_ARN"
+    else
+      echo "No existing provider in ${SHARED_SERVICES_ACCOUNT_ID} -- Terraform will create one."
+    fi
+    rm -f "$OIDC_LOOKUP_ERR"
   else
-    echo "No existing provider found (or couldn't check) -- Terraform will create one."
+    echo "ERROR: could not check for an existing GitHub Actions OIDC provider in ${SHARED_SERVICES_ACCOUNT_ID}." >&2
+    echo "" >&2
+    cat "$OIDC_LOOKUP_ERR" >&2
+    rm -f "$OIDC_LOOKUP_ERR"
+    echo "" >&2
+    echo "Not continuing: an account holds only one provider for this URL, so guessing" >&2
+    echo "here means Terraform either creates a duplicate (EntityAlreadyExists) or" >&2
+    echo "destroys one it does not own." >&2
+    echo "" >&2
+    echo "Most likely SHARED_SERVICES_ROLE_NAME is wrong for this organisation" >&2
+    echo "(currently '${SHARED_SERVICES_ROLE_NAME}' -- Control Tower accounts use" >&2
+    echo "AWSControlTowerExecution, plain Organizations accounts use" >&2
+    echo "OrganizationAccountAccessRole), or your ambient credentials cannot assume it." >&2
+    echo "" >&2
+    echo "If you already know the provider's ARN, set GITHUB_OIDC_PROVIDER_ARN and re-run." >&2
+    exit 1
   fi
 fi
 

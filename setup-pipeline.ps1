@@ -1,4 +1,4 @@
-# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+﻿# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
 <#
 .SYNOPSIS
     One-shot setup for the EKS Manager bootstrap CodeBuild pipeline.
@@ -85,6 +85,17 @@
 
     .\setup-pipeline.ps1 -Destroy
 
+    To point this at a different AWS organisation, archive the previous
+    one's local Terraform state first:
+
+    .\setup-pipeline.ps1 -ClearOldState
+
+    iam/codebuild-pipeline-tf and iam/prefix-lists-pipeline-tf keep state in
+    a local terraform.tfstate (only aws/ and terraform/add-cluster use the S3
+    backend), so without this Terraform plans against the old org's account
+    and resource ids. It archives rather than deletes, and destroys nothing --
+    run -Destroy first if those resources still exist.
+
     If your shell's ambient AWS credentials aren't in the default profile/
     region (e.g. you use named SSO profiles), pass them explicitly -- an
     `aws sso login` only refreshes the profile you logged into; it doesn't
@@ -103,6 +114,7 @@
 
 param(
     [switch]$Destroy,
+    [switch]$ClearOldState,
     [string]$Region,
     [string]$Profile   # shadows PowerShell's automatic $PROFILE var within this script -- harmless, that variable (path to your PS profile script) isn't used here
 )
@@ -112,6 +124,67 @@ if ($Region) {
 }
 if ($Profile) {
     $env:AWS_PROFILE = $Profile
+}
+
+# ---- -ClearOldState ---------------------------------------------------------
+#
+# iam/codebuild-pipeline-tf and iam/prefix-lists-pipeline-tf keep their state in
+# a local terraform.tfstate next to the code -- unlike aws/ and
+# terraform/add-cluster, which use the S3 backend. So pointing this script at a
+# different AWS organisation leaves the previous org's account ids and resource
+# ids in those two files, and Terraform plans against them.
+#
+# Archives rather than deletes: the state is the only record of what was
+# created, and worth keeping even when the accounts are gone.
+#
+# Destroys nothing. Use -Destroy first if the old resources still exist -- once
+# the state is archived Terraform can no longer find them.
+if ($ClearOldState) {
+    # Resolved here rather than reusing the assignment further down, which runs
+    # after the required-variable checks this path deliberately skips.
+    $ClearScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+    Write-Host "================================================================"
+    Write-Host "Archiving local Terraform state for a fresh organisation"
+    Write-Host "================================================================"
+    Write-Host ""
+
+    $Suffix = "old." + (Get-Date -Format "yyyyMMddHHmmss")
+    $Archived = 0
+
+    foreach ($module in @("iam\codebuild-pipeline-tf", "iam\prefix-lists-pipeline-tf")) {
+        foreach ($f in @("terraform.tfstate", "terraform.tfstate.backup")) {
+            $full = Join-Path $ClearScriptDir (Join-Path $module $f)
+            if (Test-Path $full -PathType Leaf) {
+                Move-Item -Path $full -Destination "$full.$Suffix"
+                Write-Host "  archived $module\$f -> $f.$Suffix"
+                $Archived++
+            }
+        }
+        # Caches the backend config and providers -- stale entries here point at
+        # the old org's buckets and make `terraform init` reuse them.
+        $dotTf = Join-Path $ClearScriptDir (Join-Path $module ".terraform")
+        if (Test-Path $dotTf -PathType Container) {
+            Remove-Item -Recurse -Force $dotTf
+            Write-Host "  removed  $module\.terraform"
+        }
+    }
+
+    Write-Host ""
+    if ($Archived -eq 0) {
+        Write-Host "No local state found -- nothing to archive."
+    } else {
+        Write-Host "Archived $Archived state file(s). Terraform will start from empty."
+    }
+    Write-Host ""
+    Write-Host "Still holding the previous organisation's values, and NOT touched here:"
+    Write-Host "  - pinned.auto.tfvars.json  (auto-loaded by filename; rewritten by a normal run)"
+    Write-Host "  - topology.json            (OUs and accounts -- edit before re-running)"
+    Write-Host "  - clusters.json            (clusters in the old accounts)"
+    Write-Host ""
+    Write-Host "Re-run without -ClearOldState to build the pipeline in the new organisation."
+    Write-Host "================================================================"
+    exit 0
 }
 
 $ErrorActionPreference = "Stop"
