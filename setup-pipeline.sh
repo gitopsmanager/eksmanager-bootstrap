@@ -81,6 +81,16 @@
 #   vars still set), run instead:
 #   ./setup-pipeline.sh --destroy
 #
+#   To point this at a different AWS organisation, archive the previous
+#   one's local Terraform state first:
+#   ./setup-pipeline.sh --clear-old-state
+#
+#   iam/codebuild-pipeline-tf and iam/prefix-lists-pipeline-tf keep state in
+#   a local terraform.tfstate (only aws/ and terraform/add-cluster use the S3
+#   backend), so without this Terraform plans against the old org's account
+#   and resource ids. It archives rather than deletes, and destroys nothing --
+#   run --destroy first if those resources still exist.
+#
 #   If your shell's ambient AWS credentials aren't in the default profile/
 #   region (e.g. you use named SSO profiles), pass them explicitly -- an
 #   `aws sso login` only refreshes the profile you logged into; it doesn't
@@ -98,13 +108,22 @@
 
 set -euo pipefail
 
+# Defined here rather than further down because --clear-old-state, handled
+# immediately after argument parsing, needs it.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 DESTROY=false
+CLEAR_OLD_STATE=false
 ARGS=("$@")
 i=0
 while [ $i -lt ${#ARGS[@]} ]; do
   case "${ARGS[$i]}" in
     --destroy)
       DESTROY=true
+      i=$((i + 1))
+      ;;
+    --clear-old-state)
+      CLEAR_OLD_STATE=true
       i=$((i + 1))
       ;;
     --region)
@@ -117,11 +136,67 @@ while [ $i -lt ${#ARGS[@]} ]; do
       ;;
     *)
       echo "ERROR: unrecognized argument '${ARGS[$i]}'" >&2
-      echo "USAGE: $0 [--destroy] [--region <region>] [--profile <profile>]" >&2
+      echo "USAGE: $0 [--destroy] [--clear-old-state] [--region <region>] [--profile <profile>]" >&2
       exit 1
       ;;
   esac
 done
+
+# ── --clear-old-state ─────────────────────────────────────────────────────────
+#
+# iam/codebuild-pipeline-tf and iam/prefix-lists-pipeline-tf keep their state in
+# a local terraform.tfstate next to the code -- unlike aws/ and
+# terraform/add-cluster, which use the S3 backend. So pointing this script at a
+# different AWS organisation leaves the previous org's account ids and resource
+# ids in those two files, and Terraform plans against them.
+#
+# This archives them rather than deleting: the state is the only record of what
+# was created, and it is worth keeping even when the accounts are gone.
+#
+# It does NOT destroy anything. Use --destroy first if the old resources still
+# exist and you want them removed -- once the state is archived Terraform can no
+# longer find them, and they have to be cleaned up by hand.
+if $CLEAR_OLD_STATE; then
+  echo "================================================================"
+  echo "Archiving local Terraform state for a fresh organisation"
+  echo "================================================================"
+  echo ""
+
+  SUFFIX="old.$(date +%Y%m%d%H%M%S)"
+  ARCHIVED=0
+
+  for module in iam/codebuild-pipeline-tf iam/prefix-lists-pipeline-tf; do
+    for f in terraform.tfstate terraform.tfstate.backup; do
+      if [ -f "${SCRIPT_DIR}/${module}/${f}" ]; then
+        mv "${SCRIPT_DIR}/${module}/${f}" "${SCRIPT_DIR}/${module}/${f}.${SUFFIX}"
+        echo "  archived ${module}/${f} -> ${f}.${SUFFIX}"
+        ARCHIVED=$((ARCHIVED + 1))
+      fi
+    done
+    # Caches the backend config and providers -- stale entries here point at the
+    # old org's buckets and make `terraform init` reuse them.
+    if [ -d "${SCRIPT_DIR}/${module}/.terraform" ]; then
+      rm -rf "${SCRIPT_DIR}/${module}/.terraform"
+      echo "  removed  ${module}/.terraform"
+    fi
+  done
+
+  echo ""
+  if [ "$ARCHIVED" -eq 0 ]; then
+    echo "No local state found -- nothing to archive."
+  else
+    echo "Archived ${ARCHIVED} state file(s). Terraform will start from empty."
+  fi
+  echo ""
+  echo "Still holding the previous organisation's values, and NOT touched here:"
+  echo "  - pinned.auto.tfvars.json  (auto-loaded by filename; rewritten by a normal run)"
+  echo "  - topology.json            (OUs and accounts -- edit before re-running)"
+  echo "  - clusters.json            (clusters in the old accounts)"
+  echo ""
+  echo "Re-run without --clear-old-state to build the pipeline in the new organisation."
+  echo "================================================================"
+  exit 0
+fi
 
 SHARED_SERVICES_ACCOUNT_ID="${SHARED_SERVICES_ACCOUNT_ID:-}"
 SHARED_SERVICES_ROLE_NAME="${SHARED_SERVICES_ROLE_NAME:-AWSControlTowerExecution}"
@@ -159,7 +234,6 @@ if ! [[ "$SHARED_SERVICES_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUCKET_NAME="eksmanager-bootstrap-${SHARED_SERVICES_ACCOUNT_ID}"
 
 echo "================================================================"
