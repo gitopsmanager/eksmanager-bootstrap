@@ -137,18 +137,38 @@ phases:
         rm -f "${TOKEN_BODY}"
         echo "OK: M2M bearer token obtained"
 
+        API_ERR=$(mktemp)
         HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap/aws" \
+          --connect-timeout 10 --max-time 60 \
           -H "Authorization: Bearer ${TOKEN}" \
           -H "Content-Type: application/json" \
           -d @topology.json \
           -o terraform.tfvars.json \
-          -w "%{http_code}")
+          -w "%{http_code}" 2>"${API_ERR}" || echo "000")
 
         if [ "${HTTP_STATUS}" != "200" ]; then
+          echo "=============================================================="
           echo "ERROR: topology.json validation failed (HTTP ${HTTP_STATUS})"
-          cat terraform.tfvars.json
+          echo "  endpoint : ${EKSMANAGER_API_URL}/bootstrap/aws"
+          echo "  curl says: $(cat "${API_ERR}" 2>/dev/null || echo '<none>')"
+          echo "  response : $(cat terraform.tfvars.json 2>/dev/null)"
+          case "${HTTP_STATUS}" in
+            000) echo "  CAUSE: no HTTP response -- the request never completed."
+                 echo "         Cognito was reachable a moment ago, so general egress works;"
+                 echo "         this is specific to the API host."
+                 echo "         Most likely its allowlist does not include this build's public"
+                 echo "         IP (printed as 'internet egress confirmed' in the INSTALL phase)."
+                 echo "         A network-level block drops packets, which shows as 000 rather"
+                 echo "         than 403. Also check EKSMANAGER_API_URL host and port." ;;
+            401|403) echo "  CAUSE: the API rejected the token or this caller. Check the client's"
+                     echo "         entitlement and that this build's public IP is allowlisted." ;;
+            400|422) echo "  CAUSE: topology.json was rejected. See the response above." ;;
+          esac
+          echo "=============================================================="
+          rm -f "${API_ERR}"
           exit 1
         fi
+        rm -f "${API_ERR}"
         echo "OK: topology.json validated (HTTP 200) — terraform.tfvars.json received"
 
       - cp terraform.tfvars.json pinned.auto.tfvars.json aws/
