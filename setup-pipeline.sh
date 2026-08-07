@@ -47,7 +47,6 @@
 #     and fails with EntityAlreadyExists. Also cleans up AdministratorAccess
 #     left over from the standalone Python bootstrap script, and empties
 #     versioned buckets on --destroy.
-#   - python3 (required) -- parses AWS CLI JSON output
 #
 # USAGE
 #   Every input is an environment variable — no flags. Export these, then
@@ -229,7 +228,7 @@ done
 # without the aws CLI that check cannot run, and Terraform fails later with
 # EntityAlreadyExists instead. Also used for role reconciliation and for
 # emptying versioned buckets on --destroy.
-for tool in aws terraform python3; do
+for tool in aws terraform; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "ERROR: '${tool}' is required but was not found on PATH." >&2
     exit 1
@@ -313,10 +312,14 @@ if [ -z "${GITHUB_OIDC_PROVIDER_ARN:-}" ] && ! $ALREADY_MANAGED_OIDC; then
   EXISTING_OIDC_ARN=$(
     CREDS_JSON=$(aws sts assume-role \
       --role-arn "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${SHARED_SERVICES_ROLE_NAME}" \
-      --role-session-name "eksmanager-bootstrap-preflight" --output json) || exit 1
-    AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["AccessKeyId"])') || exit 1
-    AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["SecretAccessKey"])') || exit 1
-    AWS_SESSION_TOKEN=$(printf '%s' "$CREDS_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["Credentials"]["SessionToken"])') || exit 1
+      --role-session-name "eksmanager-bootstrap-preflight" \
+      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text) || exit 1
+    # cut, not a JSON parser -- --output text returns the three values
+    # tab-separated, in the order the query asked for.
+    AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS_JSON" | cut -f1)
+    AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS_JSON" | cut -f2)
+    AWS_SESSION_TOKEN=$(printf '%s' "$CREDS_JSON" | cut -f3)
+    [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ] && [ -n "$AWS_SESSION_TOKEN" ] || exit 1
     export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
     aws iam list-open-id-connect-providers \
       --query "OpenIDConnectProviderList[?ends_with(Arn, 'token.actions.githubusercontent.com')].Arn" \
@@ -412,12 +415,12 @@ if $DESTROY; then
   echo "Emptying ${BUCKET_NAME} (all object versions and delete markers)..."
   VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${BUCKET_NAME}" \
     --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
-  if [ "$(echo "$VERSIONS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+  if printf '%s' "$VERSIONS_JSON" | grep -q '"Key"'; then
     aws s3api delete-objects --bucket "${BUCKET_NAME}" --delete "$VERSIONS_JSON" >/dev/null
   fi
   MARKERS_JSON=$(aws s3api list-object-versions --bucket "${BUCKET_NAME}" \
     --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
-  if [ "$(echo "$MARKERS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+  if printf '%s' "$MARKERS_JSON" | grep -q '"Key"'; then
     aws s3api delete-objects --bucket "${BUCKET_NAME}" --delete "$MARKERS_JSON" >/dev/null
   fi
   echo "Bucket emptied."
@@ -438,12 +441,12 @@ if $DESTROY; then
   terraform init
   VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${PREFIX_LISTS_BUCKET_NAME}" \
     --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
-  if [ "$(echo "$VERSIONS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+  if printf '%s' "$VERSIONS_JSON" | grep -q '"Key"'; then
     aws s3api delete-objects --bucket "${PREFIX_LISTS_BUCKET_NAME}" --delete "$VERSIONS_JSON" >/dev/null
   fi
   MARKERS_JSON=$(aws s3api list-object-versions --bucket "${PREFIX_LISTS_BUCKET_NAME}" \
     --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
-  if [ "$(echo "$MARKERS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+  if printf '%s' "$MARKERS_JSON" | grep -q '"Key"'; then
     aws s3api delete-objects --bucket "${PREFIX_LISTS_BUCKET_NAME}" --delete "$MARKERS_JSON" >/dev/null
   fi
   echo "Bucket emptied."
