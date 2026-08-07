@@ -35,6 +35,43 @@ env:
 phases:
   install:
     commands:
+      # Egress check, first thing. This project is VPC-attached, so it has
+      # whatever internet access its subnet's route table gives it and no more
+      # -- with no NAT gateway everything outbound fails, and the first symptom
+      # used to be a bare "wget: unable to resolve host" on the Terraform
+      # download, which reads like a mirror problem rather than a network one.
+      #
+      # checkip.amazonaws.com is AWS-run and returns the caller's public IP as
+      # plain text, so this doubles as the whitelisting check: the address it
+      # prints is what the EKS Manager API sees.
+      - |
+        EGRESS_ERR=$(mktemp)
+        EGRESS_IP=$(curl -sS --connect-timeout 10 --max-time 20 https://checkip.amazonaws.com 2>"${EGRESS_ERR}") || EGRESS_IP=""
+        EGRESS_IP=$(printf '%s' "${EGRESS_IP}" | tr -d ' \t\r\n')
+        case "${EGRESS_IP}" in
+          ""|*[!0-9.]*)
+            echo "=============================================================="
+            echo "ERROR: no internet egress from this CodeBuild container."
+            echo "  curl said: $(cat "${EGRESS_ERR}" 2>/dev/null || echo '<no output>')"
+            echo ""
+            echo "  This project is attached to a VPC, so it can only reach what"
+            echo "  its subnet routes to. A private subnet with no NAT gateway"
+            echo "  has no outbound path at all."
+            echo ""
+            echo "  Check, for the subnet in the project's VPC config:"
+            echo "    - a route for 0.0.0.0/0 to a NAT gateway"
+            echo "    - the NAT gateway is in a PUBLIC subnet with an IGW route"
+            echo "    - the security group allows outbound 443"
+            echo "    - NACLs allow return traffic on ephemeral ports"
+            echo "=============================================================="
+            rm -f "${EGRESS_ERR}"
+            exit 1
+            ;;
+          *)
+            rm -f "${EGRESS_ERR}"
+            echo "OK: internet egress confirmed, public IP ${EGRESS_IP}"
+            ;;
+        esac
       - TERRAFORM_VERSION="1.11.0"
       - |
         wget -q -O terraform.zip \
