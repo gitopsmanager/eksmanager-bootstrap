@@ -54,15 +54,43 @@ phases:
       # environment, so it can't be relied on to pass it to a separate
       # commands: list item.
       - |
-        TOKEN=$(curl -fsSL -X POST "${EKSMANAGER_COGNITO_URL}/oauth2/token" \
+        # Status and body are captured rather than discarded. This used to be
+        # `curl -fsSL`, where -f fails silently on an HTTP error and -s hides
+        # the body -- so an invalid_client, a wrong Cognito URL and a network
+        # timeout all produced the same "Failed to obtain M2M bearer token"
+        # with nothing to tell them apart.
+        TOKEN_BODY=$(mktemp)
+        # --retry covers genuine transients (5xx, dropped connection) without
+        # masking the failures that matter: curl does not retry a 4xx, so bad
+        # credentials still fail immediately rather than three times slower.
+        TOKEN_STATUS=$(curl -sS -o "${TOKEN_BODY}" -w '%{http_code}' \
+          --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 \
+          -X POST "${EKSMANAGER_COGNITO_URL}/oauth2/token" \
           -H "Content-Type: application/x-www-form-urlencoded" \
           -d "grant_type=client_credentials&client_id=${EKSMANAGER_CLIENT_ID}&client_secret=${EKSMANAGER_CLIENT_SECRET}" \
-          | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+          || echo "000")
+
+        TOKEN=$(grep -o '"access_token":"[^"]*"' "${TOKEN_BODY}" | cut -d'"' -f4)
 
         if [ -z "${TOKEN}" ] || [ "${TOKEN}" = "null" ]; then
-          echo "ERROR: Failed to obtain M2M bearer token"
+          echo "ERROR: Failed to obtain M2M bearer token (HTTP ${TOKEN_STATUS})"
+          echo "  token endpoint: ${EKSMANAGER_COGNITO_URL}/oauth2/token"
+          echo "  client id     : ${EKSMANAGER_CLIENT_ID}"
+          # Cognito's error body names the cause (invalid_client,
+          # unauthorized_client, invalid_grant) and carries no secret.
+          echo "  response      : $(cat "${TOKEN_BODY}")"
+          case "${TOKEN_STATUS}" in
+            000) echo "  No HTTP response -- CodeBuild could not reach Cognito. This project is"
+                 echo "  VPC-attached, so its subnet needs egress (NAT gateway or equivalent)." ;;
+            400|401) echo "  Cognito rejected the credentials. Check EKSMANAGER_CLIENT_ID and the"
+                     echo "  /EKSManagerBootstrap/client-m2m-cognito-secret parameter, and that the"
+                     echo "  app client has the client_credentials grant enabled." ;;
+            404) echo "  Endpoint not found -- check EKSMANAGER_COGNITO_URL has no trailing slash" ;;
+          esac
+          rm -f "${TOKEN_BODY}"
           exit 1
         fi
+        rm -f "${TOKEN_BODY}"
         echo "OK: M2M bearer token obtained"
 
         HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap/aws" \
