@@ -81,6 +81,12 @@ Resources:
                   - eks:CreateNodegroup
                   - eks:CreateAddon
                   - eks:CreatePodIdentityAssociation
+                  # Repointing an existing association at a new role, which is
+                  # how a cluster built before the roles became per-cluster is
+                  # reconciled. Only one association may exist per service
+                  # account, so without this the only route is delete and
+                  # recreate by hand.
+                  - eks:UpdatePodIdentityAssociation
                   - eks:DeleteNodegroup
                   - eks:DeleteAddon
                   - eks:DeletePodIdentityAssociation
@@ -95,6 +101,20 @@ Resources:
               - Sid: AllowEC2Read
                 Effect: Allow
                 Action: ["ec2:Describe*", "ec2:Get*"]
+                Resource: "*"
+              # Read-only, and used before creating a node group: EC2 caps
+              # running vCPUs per instance-family bucket, and exceeding it does
+              # not fail the create call. The node group is accepted, the Auto
+              # Scaling Group silently launches nothing, and it only surfaces
+              # ~30 minutes later as CREATE_FAILED -- which is terminal and
+              # blocks the node group name until deleted. ListServiceQuotas as
+              # well as Get, because which quota governs a family is resolved by
+              # reading the quota list rather than hardcoding codes.
+              - Sid: AllowServiceQuotasRead
+                Effect: Allow
+                Action:
+                  - servicequotas:GetServiceQuota
+                  - servicequotas:ListServiceQuotas
                 Resource: "*"
               - Sid: AllowEC2Write
                 Effect: Allow
