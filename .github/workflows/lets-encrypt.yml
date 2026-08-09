@@ -51,6 +51,23 @@ jobs:
               sys.exit("private-hosted-zones.json has no 'hosted-zones' entries.")
 
           problems, seen = [], set()
+
+          # Top-level ACME settings. These sit beside the zone list rather than
+          # being pipeline inputs, so changing the contact or moving to staging
+          # is a file edit and a workflow run -- no Terraform apply, no setup.
+          email = doc.get("acme-email", "")
+          if not email:
+              problems.append(
+                  "missing top-level 'acme-email' -- Let's Encrypt requires a "
+                  "registration contact, and it is where expiry warnings go")
+          elif "@" not in email:
+              problems.append(f"acme-email '{email}' does not look like an address")
+
+          staging = doc.get("acme-staging", False)
+          if not isinstance(staging, bool):
+              problems.append(
+                  f"acme-staging must be true or false, not {staging!r}")
+
           for i, z in enumerate(zones):
               where = z.get("public-hosted-zone") or f"entry {i}"
               for field in ("public-hosted-zone", "account"):
@@ -74,7 +91,11 @@ jobs:
                   print(f"  - {p}")
               sys.exit(1)
 
-          print(f"OK: {len(zones)} zone(s) valid")
+          print(f"OK: {len(zones)} zone(s) valid, acme-email={email}")
+          if staging:
+              print("NOTE: acme-staging is true -- certificates will chain to an")
+              print("      untrusted root. Correct for rebuild testing, wrong for")
+              print("      anything anyone actually uses.")
           for z in zones:
               print(f"  {z['public-hosted-zone']}  account={z['account']}")
           PY

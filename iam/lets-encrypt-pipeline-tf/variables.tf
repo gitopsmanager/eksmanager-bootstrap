@@ -53,16 +53,12 @@ variable "renewal_schedule_expression" {
   default     = "cron(0 3 ? * SUN *)"
 }
 
-variable "acme_email" {
-  description = "Registration contact for the ACME account. Let's Encrypt sends expiry warnings here, which is the backstop if scheduled renewal silently stops."
-  type        = string
-}
-
-variable "acme_use_staging" {
-  description = "Point the pipeline at Let's Encrypt staging. Certificates chain to an untrusted root — use for anything that rebuilds clusters on the same zone, since production allows only 5 issuances per week for an identical SAN set."
-  type        = bool
-  default     = false
-}
+# acme-email and acme-staging are NOT inputs here. They live at the top of
+# private-hosted-zones.json, beside the zones they apply to, and travel in the
+# artifact. That keeps this module to infrastructure only: setup creates the
+# bucket, roles, project and schedule unconditionally, with nothing to collect
+# and no reason to skip it. Changing the contact address or moving to staging
+# is then a file edit and a workflow run, not a setup re-run.
 
 variable "github_repo" {
   description = "GitHub org/repo of the client's private copy, e.g. your-org/eksmanager-bootstrap. Scopes the GitHub Actions OIDC role's trust policy."

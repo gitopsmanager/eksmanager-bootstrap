@@ -134,7 +134,44 @@ phases:
         json.dump({"hosted_zones": out}, open("zones.auto.tfvars.json", "w"), indent=2)
         print(f"\nOK: resolved {len(out)} zone(s)")
         PY
-      - cp private-hosted-zones.json zones.auto.tfvars.json /tmp/ 2>/dev/null || true
+      # ── ACME settings travel with the zone list ───────────────────────────
+      # Read here rather than passed as CodeBuild environment variables so that
+      # changing the contact address, or moving to staging while rebuilding a
+      # cluster, is a file edit and a workflow run -- not a Terraform apply
+      # against the pipeline module.
+      #
+      # Emitted as a tfvars file rather than exported, because a CodeBuild
+      # `commands:` entry is its own shell: an export here would not survive
+      # into the terraform invocation below.
+      - |
+        set -eu
+        python3 - <<'PY'
+        import json, sys
+
+        doc = json.load(open("private-hosted-zones.json"))
+
+        email = doc.get("acme-email", "")
+        if not email:
+            print("==============================================================")
+            print("ERROR: no 'acme-email' at the top of private-hosted-zones.json.")
+            print("Let's Encrypt requires a registration contact, and it is where")
+            print("expiry warnings go -- the one alert that still arrives if this")
+            print("pipeline stops running. Add, alongside 'hosted-zones':")
+            print('  "acme-email": "you@example.com",')
+            print("==============================================================")
+            sys.exit(1)
+
+        staging = bool(doc.get("acme-staging", False))
+
+        with open("acme.auto.tfvars.json", "w") as f:
+            json.dump({"acme_email": email, "acme_use_staging": staging}, f, indent=2)
+
+        print(f"OK: acme-email={email} acme-staging={staging}")
+        if staging:
+            print("NOTE: staging issues from an untrusted root -- browsers warn and")
+            print("      gRPC clients fail outright. Correct for rebuild testing,")
+            print("      wrong for anything anyone actually uses.")
+        PY
 
       - |
         terraform init -input=false \

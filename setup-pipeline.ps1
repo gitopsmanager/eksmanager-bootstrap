@@ -152,7 +152,7 @@ if ($ClearOldState) {
     $Suffix = "old." + (Get-Date -Format "yyyyMMddHHmmss")
     $Archived = 0
 
-    foreach ($module in @("iam\codebuild-pipeline-tf", "iam\prefix-lists-pipeline-tf")) {
+    foreach ($module in @("iam\codebuild-pipeline-tf", "iam\prefix-lists-pipeline-tf", "iam\lets-encrypt-pipeline-tf")) {
         foreach ($f in @("terraform.tfstate", "terraform.tfstate.backup")) {
             $full = Join-Path $ClearScriptDir (Join-Path $module $f)
             if (Test-Path $full -PathType Leaf) {
@@ -441,6 +441,50 @@ if ($Destroy) {
         "-var=vpc_subnet_id=$VpcSubnetId"
     Pop-Location
 
+    # ── iam/lets-encrypt-pipeline-tf teardown ────────────────────────────────
+    # Same versioned-bucket emptying requirement. Runs unconditionally rather
+    # A destroy must clean up whatever a previous run
+    # created, and whoever tears down may not have the same environment set as
+    # whoever built it. terraform destroy on empty state is a no-op, and the
+    # emptying tolerates the bucket not existing.
+    #
+    # This bucket holds the Terraform state containing every wildcard's PRIVATE
+    # KEY, so emptying it is the point rather than an S3 technicality.
+    $LetsEncryptBucketName = "eksmanager-lets-encrypt-$SharedServicesAccountId"
+    Write-Host ""
+    Write-Host "Emptying $LetsEncryptBucketName (all object versions and delete markers)..."
+    Push-Location (Join-Path $ScriptDir "iam\lets-encrypt-pipeline-tf")
+    terraform init
+    $leVersionsJson = aws s3api list-object-versions --bucket $LetsEncryptBucketName `
+        --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>$null
+    if ($leVersionsJson) {
+        $leVersions = $leVersionsJson | ConvertFrom-Json
+        if ($leVersions.Objects -and $leVersions.Objects.Count -gt 0) {
+            aws s3api delete-objects --bucket $LetsEncryptBucketName --delete $leVersionsJson | Out-Null
+        }
+    }
+    $leMarkersJson = aws s3api list-object-versions --bucket $LetsEncryptBucketName `
+        --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>$null
+    if ($leMarkersJson) {
+        $leMarkers = $leMarkersJson | ConvertFrom-Json
+        if ($leMarkers.Objects -and $leMarkers.Objects.Count -gt 0) {
+            aws s3api delete-objects --bucket $LetsEncryptBucketName --delete $leMarkersJson | Out-Null
+        }
+    }
+    Write-Host "Bucket emptied."
+    Write-Host ""
+    terraform destroy `
+        "-var=shared_services_account_id=$SharedServicesAccountId" `
+        "-var=shared_services_role_name=$SharedServicesRoleName" `
+        "-var=shared_services_region=$Region" `
+        "-var=github_repo=$GithubRepo" `
+        "-var=github_owner_id=$GithubOwnerId" `
+        "-var=github_repo_id=$GithubRepoId" `
+        "-var=github_oidc_provider_arn=$($env:GITHUB_OIDC_PROVIDER_ARN)" `
+        "-var=vpc_id=$VpcId" `
+        "-var=vpc_subnet_id=$VpcSubnetId"
+    Pop-Location
+
     Write-Host ""
     Write-Host "================================================================"
     Write-Host "Pipeline infrastructure destroyed."
@@ -510,6 +554,58 @@ terraform apply @prefixListsTfVars
 $prefixListsRoleArn = terraform output -raw github_actions_role_arn
 $prefixListsBucket = terraform output -raw prefix_lists_bucket
 Pop-Location
+
+# ── iam/lets-encrypt-pipeline-tf ─────────────────────────────────────────────
+# Third pipeline, same pattern: its own bucket, CodeBuild project and role.
+# Issues one wildcard per hosted zone in private-hosted-zones.json and stores
+# each in Secrets Manager, where the agent picks it up.
+#
+# Reuses this module's OIDC provider (an account can only have one per URL) and
+# the same VPC/subnet, so egress leaves via the same allowlisted NAT IP.
+#
+# Created unconditionally, like the other two. It needs no new inputs: the ACME
+# contact address and the staging toggle live at the top of
+# private-hosted-zones.json and travel in the artifact, so there is nothing to
+# collect here and nothing to skip on.
+Write-Host ""
+Write-Host "================================================================"
+Write-Host "Running terraform apply (iam/lets-encrypt-pipeline-tf)..."
+Write-Host "================================================================"
+Write-Host ""
+
+Push-Location (Join-Path $ScriptDir "iam\lets-encrypt-pipeline-tf")
+terraform init
+
+$letsEncryptTfVars = @(
+    "-var=shared_services_account_id=$SharedServicesAccountId"
+    "-var=shared_services_role_name=$SharedServicesRoleName"
+    "-var=shared_services_region=$Region"
+    "-var=github_repo=$GithubRepo"
+    "-var=github_owner_id=$GithubOwnerId"
+    "-var=github_repo_id=$GithubRepoId"
+    "-var=github_oidc_provider_arn=$oidcProviderArn"
+    "-var=vpc_id=$VpcId"
+    "-var=vpc_subnet_id=$VpcSubnetId"
+)
+
+terraform apply @letsEncryptTfVars
+$letsEncryptRoleArn = terraform output -raw github_actions_role_arn
+$letsEncryptBucket = terraform output -raw lets_encrypt_bucket
+$letsEncryptCodebuildRoleArn = terraform output -raw codebuild_role_arn
+Pop-Location
+
+# Printed because nothing automated can do this next step: every
+# roles.cert_manager in private-hosted-zones.json lives in a customer
+# account we do not control, and each must trust this ARN or DNS-01 cannot
+# write its challenge record. The pipeline fails in pre_build naming the
+# offending role if the trust is missing.
+Write-Host ""
+Write-Host "================================================================"
+Write-Host "ACTION REQUIRED -- Let's Encrypt trust"
+Write-Host "================================================================"
+Write-Host "Each roles.cert_manager in private-hosted-zones.json must trust:"
+Write-Host "  $letsEncryptCodebuildRoleArn"
+Write-Host "================================================================"
 
 function ConvertTo-Base64Url {
     param([Parameter(ValueFromPipeline = $true)][byte[]]$Bytes)
@@ -581,6 +677,11 @@ Set-GithubVariable -Name "S3_BUCKET" -Value $outputBucket
 # for both modules), so it isn't duplicated under a second name.
 Set-GithubVariable -Name "PREFIX_LISTS_ROLE_ARN" -Value $prefixListsRoleArn
 Set-GithubVariable -Name "PREFIX_LISTS_S3_BUCKET" -Value $prefixListsBucket
+
+# Same reasoning again -- lets-encrypt.yml reads these, and they point at a
+# third distinct role and bucket.
+Set-GithubVariable -Name "LETS_ENCRYPT_ROLE_ARN" -Value $letsEncryptRoleArn
+Set-GithubVariable -Name "LETS_ENCRYPT_S3_BUCKET" -Value $letsEncryptBucket
 
 # ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
 # Values the aws/ Terraform module needs but that must never come from

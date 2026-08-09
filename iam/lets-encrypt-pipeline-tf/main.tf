@@ -329,14 +329,11 @@ resource "aws_codebuild_project" "lets_encrypt" {
       name  = "TF_VAR_shared_services_region"
       value = var.shared_services_region
     }
-    environment_variable {
-      name  = "TF_VAR_acme_email"
-      value = var.acme_email
-    }
-    environment_variable {
-      name  = "TF_VAR_acme_use_staging"
-      value = tostring(var.acme_use_staging)
-    }
+    # TF_VAR_acme_email and TF_VAR_acme_use_staging are deliberately absent.
+    # The buildspec reads acme-email and acme-staging from the top of
+    # private-hosted-zones.json and exports them, so changing the contact or
+    # switching to staging is a file edit plus a workflow run -- no Terraform
+    # apply against this module, and nothing to supply at setup time.
   }
 
   vpc_config {
