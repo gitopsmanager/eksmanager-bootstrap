@@ -1,0 +1,104 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+name: lets-encrypt
+
+# Manually dispatched. Packages terraform/lets-encrypt together with
+# private-hosted-zones.json and uploads it, which starts a CodeBuild run via
+# EventBridge.
+#
+# Run this after editing private-hosted-zones.json -- adding a zone, changing a
+# cert_manager role -- or after syncing new module code from the public repo.
+# You do NOT need to run it for renewals: a weekly EventBridge schedule applies
+# the artifact already in the bucket, and Terraform reissues only certificates
+# inside min_days_remaining.
+#
+# Requires these repository variables, from the
+# iam/lets-encrypt-pipeline-tf outputs:
+#   LETS_ENCRYPT_ROLE_ARN   - github_actions_role_arn
+#   LETS_ENCRYPT_S3_BUCKET  - lets_encrypt_bucket
+#   AWS_REGION              - the shared services region
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  package-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fail here rather than in CodeBuild. A malformed zone list would
+      # otherwise surface as a Terraform or Python error several minutes into a
+      # build, and a zone silently missing from the artifact makes Terraform
+      # destroy that certificate and its secret.
+      - name: Validate private-hosted-zones.json
+        run: |
+          python3 - <<'PY'
+          import json, sys
+
+          try:
+              doc = json.load(open("private-hosted-zones.json"))
+          except FileNotFoundError:
+              sys.exit("private-hosted-zones.json not found. Copy example-private-hosted-zones.json and fill it in.")
+          except json.JSONDecodeError as e:
+              sys.exit(f"private-hosted-zones.json is not valid JSON: {e}")
+
+          zones = doc.get("hosted-zones")
+          if not zones:
+              sys.exit("private-hosted-zones.json has no 'hosted-zones' entries.")
+
+          problems, seen = [], set()
+          for i, z in enumerate(zones):
+              where = z.get("public-hosted-zone") or f"entry {i}"
+              for field in ("public-hosted-zone", "account"):
+                  if not z.get(field):
+                      problems.append(f"{where}: missing '{field}'")
+              if not z.get("roles", {}).get("cert_manager"):
+                  problems.append(f"{where}: missing roles.cert_manager -- the role DNS-01 assumes to write the challenge record")
+              acct = str(z.get("account", ""))
+              if acct and not (acct.isdigit() and len(acct) == 12):
+                  problems.append(f"{where}: account '{acct}' is not a 12-digit AWS account id")
+              # One certificate per zone; a duplicate would mean two Terraform
+              # resources fighting over the same secret.
+              name = z.get("public-hosted-zone")
+              if name in seen:
+                  problems.append(f"{name}: listed more than once")
+              seen.add(name)
+
+          if problems:
+              print("private-hosted-zones.json has problems:")
+              for p in problems:
+                  print(f"  - {p}")
+              sys.exit(1)
+
+          print(f"OK: {len(zones)} zone(s) valid")
+          for z in zones:
+              print(f"  {z['public-hosted-zone']}  account={z['account']}")
+          PY
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.LETS_ENCRYPT_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Flattened so buildspec.yml sits at the zip root, where CodeBuild looks
+      # for it, and private-hosted-zones.json sits beside it where the
+      # buildspec's pre_build step reads it.
+      - name: Package and upload
+        run: |
+          set -eu
+          BUILD_DIR=build/lets-encrypt
+          mkdir -p "$BUILD_DIR"
+          cp terraform/lets-encrypt/* "$BUILD_DIR"/
+          cp private-hosted-zones.json "$BUILD_DIR"/
+
+          echo "--- artifact contents ---"
+          ls -1 "$BUILD_DIR"
+
+          cd "$BUILD_DIR"
+          zip -qr /tmp/lets-encrypt.zip .
+          aws s3 cp /tmp/lets-encrypt.zip "s3://${{ vars.LETS_ENCRYPT_S3_BUCKET }}/lets-encrypt.zip"
+          echo "Uploaded -- a CodeBuild run starts automatically via EventBridge."

@@ -1,0 +1,160 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+# -----------------------------------------------------------------------------
+# EKS Manager Let's Encrypt — CodeBuild buildspec
+# -----------------------------------------------------------------------------
+# Sourced from S3 (lets-encrypt.zip). Two things start a build:
+#   - the zip landing in the bucket  -> the code or zone list changed
+#   - the weekly EventBridge rule    -> renew anything inside min_days_remaining
+# Both run the same apply. Most weekly runs change nothing.
+#
+# Runs as EKSManagerLetsEncryptRole in shared services, which assumes each
+# zone's roles.cert_manager to write its _acme-challenge TXT record.
+# -----------------------------------------------------------------------------
+
+version: 0.2
+
+phases:
+  install:
+    commands:
+      # Egress check first. This project is VPC-attached, so it reaches only
+      # what its subnet routes to. Without a NAT gateway everything outbound
+      # fails, and the first symptom would otherwise be an unresolvable host on
+      # the Terraform download -- which reads like a mirror problem rather than
+      # a network one.
+      - |
+        EGRESS_IP=$(curl -sS --connect-timeout 10 --max-time 20 https://checkip.amazonaws.com 2>/dev/null | tr -d ' \t\r\n')
+        case "${EGRESS_IP}" in
+          ""|*[!0-9.]*)
+            echo "=============================================================="
+            echo "ERROR: no internet egress from this CodeBuild container."
+            echo "  Needed for: the Terraform download, and Let's Encrypt itself."
+            echo "  Check the subnet has a 0.0.0.0/0 route to a NAT gateway in a"
+            echo "  public subnet, and that the security group allows outbound 443."
+            echo "=============================================================="
+            exit 1
+            ;;
+          *) echo "OK: internet egress confirmed, public IP ${EGRESS_IP}" ;;
+        esac
+      - TERRAFORM_VERSION="1.11.0"
+      - wget -q -O terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+      - unzip -q terraform.zip -d /tmp/terraform-install && mv /tmp/terraform-install/terraform /usr/local/bin/ && rm terraform.zip
+      - terraform version
+
+  pre_build:
+    commands:
+      - aws sts get-caller-identity
+      - "echo 'OK: AWS identity confirmed'"
+
+      # ── Resolve each zone's PUBLIC hosted zone id ──────────────────────────
+      # Done here rather than with a Terraform data source for two reasons.
+      # The zone lives in the customer's account, so the lookup needs that
+      # account's credentials, and Terraform cannot select a provider per
+      # for_each instance. And the public and private zones share a name, so
+      # the lookup must filter on Config.PrivateZone == false -- by name alone
+      # it is ambiguous, and picking the private zone writes a TXT record
+      # Let's Encrypt can never see, failing much later as a bare timeout.
+      #
+      # Anything that fails here fails the build. A zone silently dropped from
+      # the tfvars would make Terraform destroy its certificate and secret.
+      - |
+        set -eu
+        python3 - <<'PY'
+        import json, subprocess, sys
+
+        zones = json.load(open("private-hosted-zones.json"))["hosted-zones"]
+        out, failures = {}, []
+
+        for z in zones:
+            public = z["public-hosted-zone"]
+            account = z["account"]
+            role = z.get("roles", {}).get("cert_manager")
+            if not role:
+                failures.append(f"{public}: no roles.cert_manager in private-hosted-zones.json")
+                continue
+
+            try:
+                creds = json.loads(subprocess.run([
+                    "aws", "sts", "assume-role",
+                    "--role-arn", role,
+                    "--role-session-name", "eksmanager-letsencrypt-zonelookup",
+                    "--output", "json",
+                ], capture_output=True, text=True, check=True).stdout)["Credentials"]
+            except subprocess.CalledProcessError as e:
+                failures.append(
+                    f"{public}: cannot assume {role}. It must trust "
+                    f"EKSManagerLetsEncryptRole. aws said: {e.stderr.strip()}"
+                )
+                continue
+
+            env = {
+                "AWS_ACCESS_KEY_ID": creds["AccessKeyId"],
+                "AWS_SECRET_ACCESS_KEY": creds["SecretAccessKey"],
+                "AWS_SESSION_TOKEN": creds["SessionToken"],
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+            }
+
+            listed = json.loads(subprocess.run(
+                ["aws", "route53", "list-hosted-zones-by-name",
+                 "--dns-name", public, "--output", "json"],
+                capture_output=True, text=True, check=True, env=env,
+            ).stdout)["HostedZones"]
+
+            # Trailing dot, and PUBLIC only -- the private zone of the same name
+            # is the trap this whole block exists to avoid.
+            want = public.rstrip(".") + "."
+            public_zones = [
+                h for h in listed
+                if h["Name"] == want and not h.get("Config", {}).get("PrivateZone", False)
+            ]
+
+            if len(public_zones) != 1:
+                failures.append(
+                    f"{public}: expected exactly 1 public hosted zone, found "
+                    f"{len(public_zones)} (private zones ignored)"
+                )
+                continue
+
+            out[public] = {
+                "public_hosted_zone": public,
+                "public_zone_id": public_zones[0]["Id"].split("/")[-1],
+                "account": account,
+                "cert_manager_role": role,
+            }
+            print(f"OK: {public} -> {out[public]['public_zone_id']}")
+
+        if failures:
+            print("\n==============================================================")
+            print("ERROR: could not resolve every zone. Refusing to continue --")
+            print("a missing zone here would destroy its certificate and secret.")
+            for f in failures:
+                print(f"  - {f}")
+            print("==============================================================")
+            sys.exit(1)
+
+        json.dump({"hosted_zones": out}, open("zones.auto.tfvars.json", "w"), indent=2)
+        print(f"\nOK: resolved {len(out)} zone(s)")
+        PY
+      - cp private-hosted-zones.json zones.auto.tfvars.json /tmp/ 2>/dev/null || true
+
+      - |
+        terraform init -input=false \
+          -backend-config="bucket=${STATE_BUCKET}" \
+          -backend-config="key=${STATE_KEY}" \
+          -backend-config="region=${AWS_REGION}"
+      - "echo 'OK: terraform init complete'"
+
+  build:
+    commands:
+      - terraform plan -input=false -out=tfplan
+      - terraform apply -input=false tfplan
+      - "echo 'OK: terraform apply complete'"
+
+      # Printed every run, including the many that renew nothing. This is the
+      # cheapest check that renewal is still working, and it does not depend on
+      # the thing doing the renewing -- which is exactly the failure mode that
+      # otherwise stays invisible until a certificate expires.
+      - terraform output -json certificate_expiry
+
+  post_build:
+    commands:
+      - echo "Let's Encrypt run complete."
