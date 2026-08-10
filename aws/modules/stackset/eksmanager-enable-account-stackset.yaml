@@ -27,6 +27,135 @@ Conditions:
       - "none"
 
 Resources:
+  # ---------------------------------------------------------------------------
+  # Permissions boundary for every role the agent creates
+  # ---------------------------------------------------------------------------
+  # A ceiling, not a grant. Nothing is permitted by attaching this -- the actual
+  # permissions still come from the managed and inline policies on each role.
+  # What it does is cap them, which is what makes iam:PutRolePolicy safe: the
+  # agent can write "Action": "*" onto EKSManager-<cluster>-node and the role's
+  # effective permissions are still the intersection with this, so it cannot
+  # become an admin whose credentials a pod then reads off the instance.
+  #
+  # Enumerated by service rather than written as "everything except iam" --
+  # that shorter form would still leave s3:*, secretsmanager:* and dynamodb:*
+  # inside the ceiling, and reading every secret in the account is not much
+  # better than the escalation it is meant to prevent.
+  #
+  # The list is derived from what is actually attached to these roles:
+  #   AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy      -> ec2
+  #   AmazonEC2ContainerRegistryReadOnly                   -> ecr
+  #   AmazonEBSCSIDriverPolicy                             -> ec2, kms
+  #   AutoScalingFullAccess                                -> autoscaling,
+  #                                                           cloudwatch, elb
+  #   AmazonEKSClusterPolicy                               -> ec2, elb
+  #   Route53Access (inline, external-dns)                 -> route53
+  #   AWSLoadBalancerControllerPolicy (inline, from
+  #     kmcore/eks/aws-load-balancer-controller/base/aws_lbc_iam_policy.json)
+  #     -> acm, cognito-idp, ec2, elasticloadbalancing, shield, waf-regional,
+  #        wafv2, plus the three iam actions carved out below
+  #   AssumeSharedServicesEcrPush (inline)                 -> sts:AssumeRole
+  #
+  # Adding a capability to a per-cluster role means adding its service here
+  # too, or it is denied by the boundary -- which presents as the attached
+  # policy not working, so check here first.
+  EKSManagerRoleBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: EKSManagerRoleBoundary
+      Description: >
+        Ceiling for roles created by EKSManagerAdminRole. Caps what any
+        EKSManager-* role can do regardless of the policies attached to it.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ServicesTheseRolesUse
+            Effect: Allow
+            Action:
+              - ec2:*
+              - elasticloadbalancing:*
+              - ecr:*
+              - route53:*
+              - acm:*
+              - wafv2:*
+              - waf-regional:*
+              - shield:*
+              - cognito-idp:Describe*
+              - kms:CreateGrant
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+              - cloudwatch:PutMetricData
+              - cloudwatch:GetMetricData
+              - cloudwatch:GetMetricStatistics
+              - cloudwatch:ListMetrics
+              - tag:GetResources
+              - eks:Describe*
+              - eks:List*
+              - eks-auth:AssumeRoleForPodIdentity
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource: "*"
+          # The only IAM the boundary permits, and all three are read-only or
+          # service-linked. The LBC policy needs the server certificate reads;
+          # CreateServiceLinkedRole is needed by both the LBC and the cluster
+          # role. Everything else under iam: is outside the ceiling, which is
+          # what stops a role written by this agent from granting itself more.
+          # Deliberately NOT autoscaling:*. Creating, scaling and deleting node
+          # groups is done by EKSManagerAdminRole through the eks: API -- EKS
+          # owns the Auto Scaling Group, and the node role has no part in it.
+          # The only thing that needs these is cluster-autoscaler running as a
+          # pod.
+          #
+          # AutoScalingFullAccess is attached to the node role (see awsapi.py
+          # create_eks_node_role) and grants autoscaling:* account-wide, which
+          # every pod that can reach IMDS inherits -- enough to zero the
+          # desired capacity of any Auto Scaling Group in the account, EKS or
+          # otherwise. This caps it to what cluster-autoscaler actually calls.
+          #
+          # If cluster-autoscaler is not deployed, the better fix is dropping
+          # AutoScalingFullAccess from the node role entirely; this ceiling
+          # then costs nothing and leaves room for a dedicated CA pod identity
+          # role later without a template change.
+          # UpdateAutoScalingGroup is not cluster-autoscaler's -- it is in
+          # AmazonEKSClusterPolicy, which is attached to
+          # EKSManager-<cluster>-control-plane. A ceiling tighter than an
+          # AWS-managed policy the roles legitimately carry breaks them, and
+          # the symptom is an EKS operation failing for a role whose attached
+          # policy plainly allows it.
+          #
+          # Still nothing like autoscaling:* -- no CreateAutoScalingGroup, no
+          # DeleteAutoScalingGroup, no PutScalingPolicy, no lifecycle hooks.
+          - Sid: ClusterAutoscalerAndControlPlane
+            Effect: Allow
+            Action:
+              - autoscaling:Describe*
+              - autoscaling:SetDesiredCapacity
+              - autoscaling:TerminateInstanceInAutoScalingGroup
+              - autoscaling:UpdateAutoScalingGroup
+              - autoscaling:CreateOrUpdateTags
+            Resource: "*"
+          - Sid: NarrowIAMOnly
+            Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+              - iam:GetServerCertificate
+              - iam:ListServerCertificates
+            Resource: "*"
+          # Only the cross-account ECR push hop. Without this constraint a role
+          # inside the ceiling could assume anything that trusted it, which is
+          # the escalation route reappearing one level down.
+          - Sid: EcrPushHopOnly
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: "arn:aws:iam::*:role/EKSManager-*"
+
   EKSManagerAdminRole:
     Type: AWS::IAM::Role
     Properties:
@@ -292,23 +421,51 @@ Resources:
               # any role in the account trusting ec2 or pods.eks could be
               # handed to a node group or pod identity association this role
               # controls, and its credentials read from there.
-              - Sid: AllowIAM
+              # Writes are scoped here rather than left on "*" and clawed back
+              # by DenyIAMOutsideEKSManagerPrefix below. Same effective
+              # permissions, but the constraint is stated where the grant is
+              # instead of two statements away -- a reader should not have to
+              # find a Deny to know that iam:PutRolePolicy is bounded.
+              #
+              # Every role the agent writes to is one it created:
+              # EKSManager-<cluster>-{control-plane,node,external-dns,ebs-csi,
+              # aws-lbc,push-ecr}. The Deny stays as defence in depth, so
+              # widening this statement later does not silently widen the
+              # blast radius.
+              #
+              # Note EKSManagerAdminRole itself does NOT match EKSManager-* --
+              # no hyphen -- so this role cannot rewrite its own policy.
+              - Sid: AllowIAMRoleWrites
                 Effect: Allow
                 Action:
                   - iam:CreateRole
-                  - iam:GetRole
                   - iam:TagRole
                   - iam:AttachRolePolicy
                   - iam:DetachRolePolicy
                   - iam:PutRolePolicy
                   - iam:DeleteRolePolicy
+                Resource: "arn:aws:iam::*:role/EKSManager-*"
+              # Reads stay unscoped on purpose. The agent inspects roles it did
+              # not create -- a pod identity association can point at a
+              # customer-supplied role, and reporting on one means reading it.
+              # Read-only, no resource exposure beyond policy text.
+              - Sid: AllowIAMRead
+                Effect: Allow
+                Action:
+                  - iam:GetRole
                   - iam:GetRolePolicy
                   - iam:ListRolePolicies
                   - iam:ListAttachedRolePolicies
                   - iam:GetPolicy
                   - iam:GetPolicyVersion
-                  - iam:CreateServiceLinkedRole
                 Resource: "*"
+              # Service-linked roles are created by AWS under a reserved path
+              # and cannot be named by the caller, so this is scoped to that
+              # path rather than to the EKSManager- prefix.
+              - Sid: AllowCreateServiceLinkedRole
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "arn:aws:iam::*:role/aws-service-role/*"
               # Every role passed is one the agent created with this prefix:
               # the control plane role, the node role, and the per-cluster pod
               # identity roles. Deliberately no iam:PassedToService condition
@@ -402,6 +559,35 @@ Resources:
                 Condition:
                   StringLike:
                     aws:userid: "*:eksmanager-prefix-lists-add-cluster"
+              # Every role this agent creates must carry the boundary. Without
+              # this, iam:PutRolePolicy on EKSManager-* is a privilege
+              # escalation: write "Action": "*" onto the node role, schedule a
+              # pod, read the credentials from IMDS.
+              #
+              # The condition is on CreateRole rather than PutRolePolicy
+              # because iam:PermissionsBoundary is only present on requests
+              # that SET a boundary -- there is no such key on PutRolePolicy.
+              # The boundary does not block the write; it caps what the role
+              # can do afterwards, which makes the write pointless.
+              #
+              # REQUIRES the agent to pass PermissionsBoundary on create_role.
+              # Deploy that first: this deny fails every role creation until it
+              # does, which means no cluster builds.
+              - Sid: DenyCreateRoleWithoutBoundary
+                Effect: Deny
+                Action: iam:CreateRole
+                Resource: "*"
+                Condition:
+                  StringNotEquals:
+                    iam:PermissionsBoundary: !Sub "arn:aws:iam::$${AWS::AccountId}:policy/EKSManagerRoleBoundary"
+              # Setting the boundary at creation is worth nothing if it can be
+              # removed a moment later. The agent never calls either of these.
+              - Sid: DenyBoundaryTampering
+                Effect: Deny
+                Action:
+                  - iam:DeleteRolePermissionsBoundary
+                  - iam:PutRolePermissionsBoundary
+                Resource: "*"
               - Sid: DenyEKSClusterDelete
                 Effect: Deny
                 Action: ["eks:DeleteCluster"]
@@ -434,7 +620,6 @@ Resources:
                       - "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
                       - "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
                       - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-                      - "arn:aws:iam::aws:policy/AutoScalingFullAccess"
                       - "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
               # What makes the EKSManager tag a boundary rather than a label. Without
               # this the conditions above cost an attacker one extra call:
