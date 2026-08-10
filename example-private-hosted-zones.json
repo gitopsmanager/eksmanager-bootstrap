@@ -1,6 +1,6 @@
 {
   "acme-email": "platform-team@acme.com",
-  "acme-staging": false,
+  "acme-staging": true,
   "hosted-zones": [
     {
       "private-hosted-zone": "dev.aws.acme.com",
