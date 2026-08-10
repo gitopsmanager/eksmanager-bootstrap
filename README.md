@@ -283,6 +283,109 @@ it only provisions the AWS infrastructure (CodeBuild project, IAM roles,
 S3 bucket, EventBridge rules), which is separate from the repo content
 these workflows read, zip, and upload.
 
+## eksmanager-lets-encrypt pipeline
+
+A third, independent CodeBuild project — issues one Let's Encrypt wildcard
+certificate per hosted zone and stores each in Secrets Manager, where the agent
+picks it up. Wired into `setup-pipeline.sh`/`.ps1` alongside the other two.
+
+**The `cert_manager` roles are not created here.** Each is yours to provision in
+the account that owns the zone, and each must trust
+`EKSManagerLetsEncryptRole` — the ARN `setup-pipeline` prints after applying.
+Without that trust, DNS-01 cannot write its challenge record; the build fails in
+`pre_build` naming the offending role.
+
+**Implemented:**
+- The CodeBuild project, its service role (`EKSManagerLetsEncryptRole`), the S3
+  bucket, and two EventBridge triggers: one on `lets-encrypt.zip` upload, one on
+  a weekly schedule for renewals.
+- `terraform/lets-encrypt/` — an `acme_certificate` per zone via DNS-01, plus a
+  Secrets Manager secret per zone named `dns-zone-certs-<zone>`, holding
+  `tls.crt` (full chain), `tls.key` and `ca.crt`.
+- `.github/workflows/lets-encrypt.yml` — validates `private-hosted-zones.json`,
+  then zips and uploads via OIDC, same pattern as `add-cluster.yml`.
+
+### private-hosted-zones.json
+
+Copy `example-private-hosted-zones.json` → `private-hosted-zones.json`, same
+"copy the example, fill in, commit" pattern as `topology.json`. Two settings sit
+at the top, above the zone list:
+
+```json
+{
+  "acme-email": "platform-team@example.com",
+  "acme-staging": true,
+  "hosted-zones": [ ... ]
+}
+```
+
+**`acme-email` — use a real, monitored address.** Let's Encrypt sends expiry
+warnings there, and that is the one alert which still arrives if this pipeline
+stops running altogether. Everything else that would tell you renewal has broken
+depends on the thing doing the renewing.
+
+Change it only when you have a reason to, and **read the plan before applying**.
+Changing the registration contact can cause the ACME account to be recreated,
+which in turn can force every certificate to be reissued — all zones at once,
+against Let's Encrypt's rate limits. If `terraform plan` in the build log shows
+certificates being replaced rather than a registration updated in place, stop
+and reconsider rather than letting it apply.
+
+**`acme-staging` — ships as `true` deliberately.** Staging issues from an
+untrusted root, so browsers warn and gRPC clients (including the ArgoCD CLI)
+fail outright — but its rate limits are vastly higher.
+
+The starting value is `true` because the two failure modes are not symmetric.
+Start on production and a few rebuilds exhaust the duplicate-certificate limit —
+5 per week for an identical set of hostnames — and you are locked out for a week
+with no way to hurry it. Start on staging and the failure is an obvious browser
+warning you fix by flipping one flag. Visible and recoverable beats invisible
+and blocking.
+
+So the intended order is:
+
+1. Leave `acme-staging` as `true`. Run the workflow. Confirm the whole path
+   works: the `cert_manager` roles are assumable, each zone's **public** hosted
+   zone is resolved, DNS-01 completes, and a secret appears per zone.
+2. Set `acme-staging` to `false` and run the workflow again. Real certificates
+   replace the staging ones.
+3. Leave it `false`. Zones added later issue real certificates with no further
+   thought.
+
+It is one flag for all zones, not per zone. Flipping it back to `true` on a live
+estate would reissue **every** certificate from the untrusted root — so treat
+step 2 as one-way. If you later need to test rebuilds heavily, do it on a zone
+you are willing to leave broken, or accept the 5-per-week ceiling on that zone.
+
+### Split-horizon zones
+
+`public-hosted-zone` and `private-hosted-zone` may legitimately be the same
+name. The pipeline resolves the **public** zone id explicitly, filtering on
+`PrivateZone == false`, and refuses to continue unless exactly one match is
+found. A lookup by name alone is ambiguous when both exist, and writing the
+challenge record into the private zone produces a validation timeout that says
+nothing about the cause.
+
+The same split is why `terraform/lets-encrypt` sets public resolvers for lego's
+DNS-01 pre-check: CodeBuild is VPC-attached, and if that VPC is associated with
+the private zone, the build would resolve internally and never see the record it
+had just written to the public zone.
+
+### Renewals
+
+Nothing to run. The weekly EventBridge schedule applies whatever artifact is in
+the bucket, and Terraform reissues only certificates inside `min_days_remaining`
+— 30 days of a 90-day certificate, so the first eligible run is around day 60
+and there are roughly four attempts before expiry. Most weekly runs change
+nothing.
+
+Every run prints `certificate_expiry` per zone in the build log. That is the
+cheapest confirmation renewal is still working, and the only one that does not
+depend on the renewer itself.
+
+`setup-pipeline.sh`/`.ps1` does not need re-running to add a zone or change
+these settings — edit the file, run the workflow.
+
 ## After bootstrap
 
 - `EKSManagerBootstrap` is scoped to the management-account permissions the bootstrap actually needs (not `AdministratorAccess`), so it's safe to leave in place for future re-runs or upgrades. Delete it if you'd rather minimize standing infrastructure
