@@ -90,7 +90,13 @@ This only touches the `aws/` module's own state (`state/terraform.tfstate` in th
 
 The StackSet in `aws/modules/stackset` targets OUs (`organizational_unit_ids`), not individual accounts — the `SERVICE_MANAGED` permission model only reliably supports OU-level targeting (see the account-scoped targeting attempts, and why they were abandoned, in `aws/modules/stackset/main.tf`'s comments). That means `EKSManagerAdminRole` gets created in **every account CloudFormation finds in that OU**, including any account that isn't listed in `org_config` at all.
 
-For an account in that position, the role is deliberately rendered useless rather than left with real access: the template's `AccountIsEnrolled` condition (`aws/modules/stackset/eksmanager-enable-account-stackset.yaml`) falls through to a `DefaultValue: "none"` region sentinel, which denies every service the role would otherwise use — EKS, EC2, ECR, KMS, SecretsManager, Logs, CloudWatch, AutoScaling, SSM, ELB — with one narrow exception: `ec2:DescribeRegions`, a read-only, no-resource-exposure lookup, kept only to satisfy IAM's requirement that a `NotAction` list can't be empty. The role exists, but there's nothing meaningful it can do.
+The role's abilities are the inline `EKSManagerAdminPolicy` in
+[eksmanager-enable-account-stackset.yaml](aws/modules/stackset/eksmanager-enable-account-stackset.yaml),
+bounded by [the SCP](aws/modules/scp/eksmanager-scp.json). This is the broadest
+role this repo creates — worth reading before the narrower pipeline roles, since
+it is what the agent actually uses day to day.
+
+For an account in that position, the role is deliberately rendered useless rather than left with real access: the template's `AccountIsEnrolled` condition ([same file](aws/modules/stackset/eksmanager-enable-account-stackset.yaml)) falls through to a `DefaultValue: "none"` region sentinel, which denies every service the role would otherwise use — EKS, EC2, ECR, KMS, SecretsManager, Logs, CloudWatch, AutoScaling, SSM, ELB — with one narrow exception: `ec2:DescribeRegions`, a read-only, no-resource-exposure lookup, kept only to satisfy IAM's requirement that a `NotAction` list can't be empty. The role exists, but there's nothing meaningful it can do.
 
 This is a safety net, not a substitute for the right fix: **the actual solution is keeping a dedicated OU containing only accounts you intend to enroll**, so this fallback case never arises in the first place rather than being relied on. If the OU an account lives in also holds accounts unrelated to EKS Manager, consider moving the approved accounts into their own OU before enabling them here.
 
@@ -168,13 +174,28 @@ eksmanager-bootstrap/
 ├── prefix-groups.json            # Created by you — environment -> prefix list names
 ├── example-clusters.json        # Reference copy for the prefix-lists pipeline
 ├── clusters.json                 # Created by you — GUI-maintained cluster selections
+├── example-hosted-zones.json    # Reference copy for the lets-encrypt pipeline
+├── hosted-zones.json             # Created by you — zones, cert_manager/external_dns roles, ACME settings
+├── example-cert-manager-trust-statement.json      # Reference — trust YOU add to each cert_manager role
+├── example-external-dns-pod-identity-trust.json   # Reference — trust YOU add to each external_dns role
 ├── buildspec.yml                # CodeBuild pipeline (S3-sourced, no git)
 ├── .github/
 │   └── workflows/
 │       ├── upload-to-s3.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
 │       ├── add-cluster.yml       # Manual, takes a cluster_name input
-│       └── destroy-cluster.yml    # Manual, takes account_id/region/cluster_name inputs
+│       ├── destroy-cluster.yml    # Manual, takes account_id/region/cluster_name inputs
+│       ├── lets-encrypt.yml        # Manual — validates hosted-zones.json, zips terraform/lets-encrypt to S3
+│       └── sync-hosted-zones.yml    # Automatic on hosted-zones.json push — writes the AssumeRole grant only
 ├── aws/                        # AWS infrastructure module
+│   └── modules/
+│       ├── stackset/           # Per-account enablement
+│       │   └── eksmanager-enable-account-stackset.yaml  # Defines EKSManagerAdminRole + EKSManagerAdminPolicy
+│       ├── scp/
+│       │   └── eksmanager-scp.json     # Guardrail bounding EKSManagerAdminRole
+│       ├── shared_services/    # Agent role and its policies
+│       ├── agent/              # Agent EC2 host
+│       ├── org/                # Organization wiring
+│       └── ssm/                # Parameters consumed by the agent
 ├── azure-saml/                  # Standalone SAML setup — NOT part of the Terraform install
 │   ├── create-saml-app.sh
 │   ├── create-saml-app.ps1
@@ -184,7 +205,13 @@ eksmanager-bootstrap/
 │   ├── generate_add_cluster.py   # clusters.json + prefix-groups.json -> buildspec + staged module
 │   └── generate_destroy_cluster.py  # account_id/region/cluster_name -> destroy-mode buildspec + staged module
 ├── terraform/
-│   └── add-cluster/                # SG rules for one cluster — one apply per cluster
+│   ├── add-cluster/                # SG rules for one cluster — one apply per cluster
+│   └── lets-encrypt/               # One acme_certificate + secret per zone; zipped by lets-encrypt.yml
+│       ├── main.tf
+│       ├── variables.tf
+│       ├── outputs.tf
+│       ├── providers.tf
+│       └── buildspec.yml           # Resolves public zone ids, then plan/apply
 └── iam/
     ├── codebuild-pipeline-tf/    # Terraform applied by setup-pipeline.sh/.ps1
     │   ├── main.tf
@@ -192,11 +219,28 @@ eksmanager-bootstrap/
     │   ├── outputs.tf
     │   └── policies/
     │       └── EKSManagerBootstrap-policy.json   # Scoped policy — not AdministratorAccess
-    └── prefix-lists-pipeline-tf/  # Also applied by setup-pipeline.sh/.ps1
+    ├── prefix-lists-pipeline-tf/  # Also applied by setup-pipeline.sh/.ps1
+    │   ├── main.tf
+    │   ├── variables.tf
+    │   └── outputs.tf
+    └── lets-encrypt-pipeline-tf/  # Also applied by setup-pipeline.sh/.ps1
         ├── main.tf
         ├── variables.tf
-        └── outputs.tf
+        ├── outputs.tf
+        └── policies/               # Read by Terraform — the deployed config, not a copy of it
+            ├── EKSManagerLetsEncryptRole-trust.json
+            ├── EKSManagerLetsEncryptRole-policy.json
+            └── EKSManagerLetsEncryptAssumeRoles-example.json  # Illustration — the real one is built from hosted-zones.json
 ```
+
+`aws/` holds the infrastructure module, including
+[the StackSet template that defines `EKSManagerAdminRole`](aws/modules/stackset/eksmanager-enable-account-stackset.yaml)
+— the per-account role the agent assumes to manage clusters, and the broadest
+role this repo creates. Its inline `EKSManagerAdminPolicy` is in that file, and
+[the SCP that bounds it](aws/modules/scp/eksmanager-scp.json) is the guardrail
+around it. See
+[`EKSManagerAdminRole` deploys to every account in a targeted OU](#eksmanageradminrole-deploys-to-every-account-in-a-targeted-ou-not-just-enrolled-ones)
+for what happens in an account that was never enrolled.
 
 ## eksmanager-prefix-lists pipeline
 
@@ -367,6 +411,12 @@ here; these are for review:
 | Its trust — who can assume it | [EKSManagerLetsEncryptRole-trust.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptRole-trust.json) |
 | Its permissions — logs, S3 state, secrets under `/EKSManagerZones/` | [EKSManagerLetsEncryptRole-policy.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptRole-policy.json) |
 | The AssumeRole grant `sync-hosted-zones` generates | [EKSManagerLetsEncryptAssumeRoles-example.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptAssumeRoles-example.json) |
+
+None of these grant Route53, EKS or EC2 access. The pipeline reaches DNS only by
+assuming a `cert_manager` role you control, and touches nothing else in your
+accounts. The broader per-account role the agent uses is
+[`EKSManagerAdminRole`](aws/modules/stackset/eksmanager-enable-account-stackset.yaml),
+which is separate from all of this and reviewed above.
 
 The first two are read by Terraform directly — `file()` and `templatefile()` —
 so they are the deployed configuration, not a description of it, and cannot
