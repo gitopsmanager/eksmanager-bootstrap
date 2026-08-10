@@ -16,11 +16,11 @@ version: 0.2
 phases:
   install:
     commands:
-      # Egress check first. This project is VPC-attached, so it reaches only
-      # what its subnet routes to. Without a NAT gateway everything outbound
-      # fails, and the first symptom would otherwise be an unresolvable host on
-      # the Terraform download -- which reads like a mirror problem rather than
-      # a network one.
+      # Egress check first. This project is NOT VPC-attached -- it needs no
+      # allowlisted NAT address, unlike the bootstrap and prefix-lists ones --
+      # so this should always pass. It stays because the first symptom of a
+      # network problem would otherwise be an unresolvable host on the Terraform
+      # download, which reads like a mirror problem rather than a network one.
       - |
         EGRESS_IP=$(curl -sS --connect-timeout 10 --max-time 20 https://checkip.amazonaws.com 2>/dev/null | tr -d ' \t\r\n')
         case "${EGRESS_IP}" in
@@ -28,8 +28,8 @@ phases:
             echo "=============================================================="
             echo "ERROR: no internet egress from this CodeBuild container."
             echo "  Needed for: the Terraform download, and Let's Encrypt itself."
-            echo "  Check the subnet has a 0.0.0.0/0 route to a NAT gateway in a"
-            echo "  public subnet, and that the security group allows outbound 443."
+            echo "  This project uses AWS-managed networking, so egress failing"
+            echo "  here is unexpected -- check for an SCP or VPC endpoint policy."
             echo "=============================================================="
             exit 1
             ;;
@@ -61,15 +61,19 @@ phases:
         python3 - <<'PY'
         import json, subprocess, sys
 
-        zones = json.load(open("private-hosted-zones.json"))["hosted-zones"]
+        zones = json.load(open("hosted-zones.json"))["hosted-zones"]
         out, failures = {}, []
 
         for z in zones:
             public = z["public-hosted-zone"]
             account = z["account"]
+            prefix = z.get("dns-zone-prefix", "")
             role = z.get("roles", {}).get("cert_manager")
+            if not prefix:
+                failures.append(f"{public}: no dns-zone-prefix -- it names the secret")
+                continue
             if not role:
-                failures.append(f"{public}: no roles.cert_manager in private-hosted-zones.json")
+                failures.append(f"{public}: no roles.cert_manager in hosted-zones.json")
                 continue
 
             try:
@@ -114,13 +118,17 @@ phases:
                 )
                 continue
 
-            out[public] = {
+            # Keyed on the prefix, not the DNS name: it is what names the
+            # secret, so a duplicate would silently make two zones fight over
+            # one secret rather than erroring.
+            out[prefix] = {
+                "dns_zone_prefix": prefix,
                 "public_hosted_zone": public,
                 "public_zone_id": public_zones[0]["Id"].split("/")[-1],
                 "account": account,
                 "cert_manager_role": role,
             }
-            print(f"OK: {public} -> {out[public]['public_zone_id']}")
+            print(f"OK: {prefix} ({public}) -> {out[prefix]['public_zone_id']}")
 
         if failures:
             print("\n==============================================================")
@@ -148,12 +156,12 @@ phases:
         python3 - <<'PY'
         import json, sys
 
-        doc = json.load(open("private-hosted-zones.json"))
+        doc = json.load(open("hosted-zones.json"))
 
         email = doc.get("acme-email", "")
         if not email:
             print("==============================================================")
-            print("ERROR: no 'acme-email' at the top of private-hosted-zones.json.")
+            print("ERROR: no 'acme-email' at the top of hosted-zones.json.")
             print("Let's Encrypt requires a registration contact, and it is where")
             print("expiry warnings go -- the one alert that still arrives if this")
             print("pipeline stops running. Add, alongside 'hosted-zones':")

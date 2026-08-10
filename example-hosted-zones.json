@@ -3,6 +3,7 @@
   "acme-staging": true,
   "hosted-zones": [
     {
+      "dns-zone-prefix": "dev",
       "private-hosted-zone": "dev.aws.acme.com",
       "public-hosted-zone": "dev.aws.acme.com",
       "account": "123456789012",
@@ -12,6 +13,7 @@
       }
     },
     {
+      "dns-zone-prefix": "we_prod",
       "private-hosted-zone": "prod.aws.acme.com",
       "public-hosted-zone": "prod.aws.acme.com",
       "account": "210987654321",

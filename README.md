@@ -300,14 +300,33 @@ Without that trust, DNS-01 cannot write its challenge record; the build fails in
   bucket, and two EventBridge triggers: one on `lets-encrypt.zip` upload, one on
   a weekly schedule for renewals.
 - `terraform/lets-encrypt/` — an `acme_certificate` per zone via DNS-01, plus a
-  Secrets Manager secret per zone named `dns-zone-certs-<zone>`, holding
-  `tls.crt` (full chain), `tls.key` and `ca.crt`.
-- `.github/workflows/lets-encrypt.yml` — validates `private-hosted-zones.json`,
+  Secrets Manager secret per zone named
+  `/EKSManagerZones/<dns-zone-prefix>-dns-zone-certs`, holding `tls.crt` (full
+  chain), `tls.key` and `ca.crt`.
+- `.github/workflows/lets-encrypt.yml` — validates `hosted-zones.json`,
   then zips and uploads via OIDC, same pattern as `add-cluster.yml`.
+- `.github/workflows/sync-hosted-zones.yml` — runs automatically whenever
+  `hosted-zones.json` changes. It writes one named inline policy,
+  `EKSManagerLetsEncryptAssumeRoles`, listing the exact `roles.cert_manager`
+  ARNs from that file, and does nothing else.
 
-### private-hosted-zones.json
+**Two workflows, two jobs.** `sync-hosted-zones.yml` grants the permission;
+`lets-encrypt.yml` uses it. The grant is a separate inline policy from the one
+Terraform owns, because `put-role-policy` replaces a policy wholesale — keeping
+them apart means neither owner overwrites the other.
 
-Copy `example-private-hosted-zones.json` → `private-hosted-zones.json`, same
+That split is what keeps the grant **exact**. It lists real ARNs rather than a
+name pattern or an account wildcard, and it stays current without a Terraform
+apply or a `setup-pipeline` re-run, because it is maintained by the file
+changing rather than by anyone remembering.
+
+Order matters when adding a zone: push `hosted-zones.json` (the sync
+runs on its own), then run `lets-encrypt.yml`. The other way round fails on
+AssumeRole, because the grant does not yet include the new role.
+
+### hosted-zones.json
+
+Copy `example-hosted-zones.json` → `hosted-zones.json`, same
 "copy the example, fill in, commit" pattern as `topology.json`. Two settings sit
 at the top, above the zone list:
 
@@ -318,6 +337,15 @@ at the top, above the zone list:
   "hosted-zones": [ ... ]
 }
 ```
+
+Each entry in `hosted-zones` needs a **`dns-zone-prefix`** — `dev`, `int`,
+`uat`, `we_prod` — which names that zone's secret:
+`/EKSManagerZones/<dns-zone-prefix>-dns-zone-certs`. It is stated explicitly
+rather than derived from the DNS name, because a prefix like `we_prod` isn't a
+label of `prod.aws.example.com`, and because the prefix should survive a zone
+being renamed or moved between regions. It must be unique across the file —
+two zones sharing one would mean two certificates fighting over one secret, so
+the workflow rejects it.
 
 **`acme-email` — use a real, monitored address.** Let's Encrypt sends expiry
 warnings there, and that is the one alert which still arrives if this pipeline

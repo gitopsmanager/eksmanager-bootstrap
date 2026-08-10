@@ -557,7 +557,7 @@ Pop-Location
 
 # ── iam/lets-encrypt-pipeline-tf ─────────────────────────────────────────────
 # Third pipeline, same pattern: its own bucket, CodeBuild project and role.
-# Issues one wildcard per hosted zone in private-hosted-zones.json and stores
+# Issues one wildcard per hosted zone in hosted-zones.json and stores
 # each in Secrets Manager, where the agent picks it up.
 #
 # Reuses this module's OIDC provider (an account can only have one per URL) and
@@ -565,7 +565,7 @@ Pop-Location
 #
 # Created unconditionally, like the other two. It needs no new inputs: the ACME
 # contact address and the staging toggle live at the top of
-# private-hosted-zones.json and travel in the artifact, so there is nothing to
+# hosted-zones.json and travel in the artifact, so there is nothing to
 # collect here and nothing to skip on.
 Write-Host ""
 Write-Host "================================================================"
@@ -584,18 +584,17 @@ $letsEncryptTfVars = @(
     "-var=github_owner_id=$GithubOwnerId"
     "-var=github_repo_id=$GithubRepoId"
     "-var=github_oidc_provider_arn=$oidcProviderArn"
-    "-var=vpc_id=$VpcId"
-    "-var=vpc_subnet_id=$VpcSubnetId"
 )
 
 terraform apply @letsEncryptTfVars
 $letsEncryptRoleArn = terraform output -raw github_actions_role_arn
 $letsEncryptBucket = terraform output -raw lets_encrypt_bucket
 $letsEncryptCodebuildRoleArn = terraform output -raw codebuild_role_arn
+$letsEncryptPolicySyncRoleArn = terraform output -raw policy_sync_role_arn
 Pop-Location
 
 # Printed because nothing automated can do this next step: every
-# roles.cert_manager in private-hosted-zones.json lives in a customer
+# roles.cert_manager in hosted-zones.json lives in a customer
 # account we do not control, and each must trust this ARN or DNS-01 cannot
 # write its challenge record. The pipeline fails in pre_build naming the
 # offending role if the trust is missing.
@@ -603,7 +602,7 @@ Write-Host ""
 Write-Host "================================================================"
 Write-Host "ACTION REQUIRED -- Let's Encrypt trust"
 Write-Host "================================================================"
-Write-Host "Each roles.cert_manager in private-hosted-zones.json must trust:"
+Write-Host "Each roles.cert_manager in hosted-zones.json must trust:"
 Write-Host "  $letsEncryptCodebuildRoleArn"
 Write-Host "================================================================"
 
@@ -682,6 +681,9 @@ Set-GithubVariable -Name "PREFIX_LISTS_S3_BUCKET" -Value $prefixListsBucket
 # third distinct role and bucket.
 Set-GithubVariable -Name "LETS_ENCRYPT_ROLE_ARN" -Value $letsEncryptRoleArn
 Set-GithubVariable -Name "LETS_ENCRYPT_S3_BUCKET" -Value $letsEncryptBucket
+# sync-hosted-zones.yml assumes this one -- a different identity from the
+# artifact upload above, because it writes an IAM policy rather than an object.
+Set-GithubVariable -Name "LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN" -Value $letsEncryptPolicySyncRoleArn
 
 # ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
 # Values the aws/ Terraform module needs but that must never come from

@@ -38,7 +38,7 @@ variable "min_days_remaining" {
 
 variable "hosted_zones" {
   description = <<-EOT
-    Resolved zone list, written by the buildspec from private-hosted-zones.json.
+    Resolved zone list, written by the buildspec from hosted-zones.json.
 
     public_zone_id is added there rather than looked up here: the zone lives in
     the customer's account, so reading it needs that account's credentials, and
@@ -49,6 +49,7 @@ variable "hosted_zones" {
   EOT
 
   type = map(object({
+    dns_zone_prefix    = string
     public_hosted_zone = string
     public_zone_id     = string
     account            = string
@@ -56,12 +57,20 @@ variable "hosted_zones" {
   }))
 }
 
-variable "secret_name_prefix" {
+variable "secret_path" {
   type        = string
-  default     = "dns-zone-certs"
+  default     = "/EKSManagerZones/"
   description = <<-EOT
-    Secrets Manager name prefix; the zone name is appended, giving
-    dns-zone-certs-dev.aws.acme.com. Dots are legal in secret names.
+    Path the certificate secrets live under. The zone's dns-zone-prefix and the
+    fixed "-dns-zone-certs" suffix are appended, giving
+    /EKSManagerZones/dev-dns-zone-certs.
+
+    Two things are doing work here. The path bounds the pipeline role's
+    Secrets Manager grant to an owned namespace rather than a bare name
+    prefix, matching /EKSManagerBootstrap/ already used in this account. And
+    the <prefix>-dns-zone-certs shape matches what the agent already looks for
+    -- task.py builds exactly that name from dns_zone_prefix -- so the naming
+    is one convention rather than two.
   EOT
 }
 

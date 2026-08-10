@@ -25,21 +25,12 @@ variable "shared_services_region" {
   default     = "eu-west-1"
 }
 
-# ── The zone list drives the AssumeRole policy ────────────────────────────────
-# prefix-lists can scope its AssumeRole to role/${var.client_account_role_name}
-# because that name is identical in every account. The cert_manager roles are
-# named by the customer -- acme-dev-cert-manager, acme-prod-cert-manager -- so
-# there is no single name to scope to.
-#
-# Reading the same private-hosted-zones.json the pipeline itself consumes means
-# the policy lists exactly those ARNs and nothing else, and adding a zone
-# updates the policy on the next apply rather than needing a wildcard that
-# would let this role assume anything, anywhere.
-variable "hosted_zones_file" {
-  description = "Path to private-hosted-zones.json, relative to this module. Its roles.cert_manager ARNs become the only roles EKSManagerLetsEncryptRole may assume."
-  type        = string
-  default     = "../../private-hosted-zones.json"
-}
+# The AssumeRole grant is not defined here at all. It is a separate inline
+# policy on EKSManagerLetsEncryptRole, written by
+# .github/workflows/sync-hosted-zones.yml from the cert_manager ARNs in
+# hosted-zones.json -- so adding a zone needs no Terraform apply and no
+# setup re-run, and the grant stays exact rather than a pattern or an account
+# wildcard.
 
 variable "renewal_schedule_expression" {
   description = <<-EOT
@@ -54,7 +45,7 @@ variable "renewal_schedule_expression" {
 }
 
 # acme-email and acme-staging are NOT inputs here. They live at the top of
-# private-hosted-zones.json, beside the zones they apply to, and travel in the
+# hosted-zones.json, beside the zones they apply to, and travel in the
 # artifact. That keeps this module to infrastructure only: setup creates the
 # bucket, roles, project and schedule unconditionally, with nothing to collect
 # and no reason to skip it. Changing the contact address or moving to staging
@@ -87,33 +78,9 @@ variable "github_oidc_provider_arn" {
   }
 }
 
-# ── Network ──────────────────────────────────────────────────────────────────
-# VPC-attached for consistency with the other two pipelines, which need it to
-# egress through an allowlisted NAT Gateway IP. This project does not call the
-# EKS Manager API, but it does need outbound 443 to Let's Encrypt and to
-# releases.hashicorp.com, so the subnet still needs a NAT route.
-#
-# Being VPC-attached is also why terraform/lets-encrypt sets public resolvers
-# for the DNS-01 pre-check: if this VPC is associated with the private hosted
-# zone, the build resolves the zone internally and never sees the challenge
-# record it just wrote to the public zone.
-
-variable "vpc_id" {
-  description = "VPC ID to attach the CodeBuild project to. Typically the same VPC as eksmanager-bootstrap's vpc_id."
-  type        = string
-
-  validation {
-    condition     = length(var.vpc_id) > 0
-    error_message = "vpc_id is required."
-  }
-}
-
-variable "vpc_subnet_id" {
-  description = "Private subnet ID for the CodeBuild project, routed through a NAT Gateway. Required — Let's Encrypt and the Terraform download are both outbound HTTPS."
-  type        = string
-
-  validation {
-    condition     = length(var.vpc_subnet_id) > 0
-    error_message = "vpc_subnet_id is required -- a private subnet routed through a NAT Gateway."
-  }
-}
+# No vpc_id / vpc_subnet_id. Unlike the bootstrap and prefix-lists pipelines,
+# this project is not VPC-attached: those call the IP-allowlisted EKS Manager
+# API and must egress through a known NAT address. This one talks only to
+# Let's Encrypt, STS, Route53 and Secrets Manager, none of which are
+# allowlisted. Attaching it would require granting the four ENI permissions
+# CodeBuild needs to place an interface in a subnet, for no benefit.

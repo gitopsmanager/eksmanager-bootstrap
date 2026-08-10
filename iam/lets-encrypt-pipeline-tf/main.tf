@@ -55,19 +55,6 @@ locals {
   # prefix-lists bucket.
   state_key = "state/lets-encrypt.tfstate"
 
-  # roles.cert_manager from private-hosted-zones.json. Every ARN listed becomes
-  # assumable by EKSManagerLetsEncryptRole and nothing else is. If the file is
-  # absent or has no zones yet, the list is empty and the AssumeRole statement
-  # is omitted entirely rather than falling back to a wildcard.
-  hosted_zones = try(
-    jsondecode(file("${path.module}/${var.hosted_zones_file}"))["hosted-zones"],
-    []
-  )
-
-  cert_manager_role_arns = distinct([
-    for z in local.hosted_zones : z.roles.cert_manager
-    if try(z.roles.cert_manager, "") != ""
-  ])
 }
 
 # ── S3 bucket for the lets-encrypt artifact and Terraform state ──────────────
@@ -168,14 +155,11 @@ resource "aws_iam_role" "codebuild" {
   provider = aws.shared
   name     = "EKSManagerLetsEncryptRole"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "codebuild.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
+  # Kept as a file rather than inline so it can be linked to and reviewed
+  # directly -- this ARN goes into customer trust policies, so the reviewer is
+  # often someone outside this repo. Same pattern as
+  # ../codebuild-pipeline-tf/policies/.
+  assume_role_policy = file("${path.module}/policies/EKSManagerLetsEncryptRole-trust.json")
 }
 
 resource "aws_iam_role_policy" "codebuild" {
@@ -183,115 +167,20 @@ resource "aws_iam_role_policy" "codebuild" {
   name     = "EKSManagerLetsEncryptRolePolicy"
   role     = aws_iam_role.codebuild.id
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = concat(
-      [
-        {
-          Sid    = "Logs"
-          Effect = "Allow"
-          Action = [
-            "logs:CreateLogGroup",
-            "logs:CreateLogStream",
-            "logs:PutLogEvents",
-          ]
-          Resource = "arn:aws:logs:${var.shared_services_region}:${var.shared_services_account_id}:log-group:/aws/codebuild/eksmanager-lets-encrypt*"
-        },
-        {
-          Sid      = "ArtifactAndState"
-          Effect   = "Allow"
-          Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
-          Resource = [aws_s3_bucket.lets_encrypt.arn, "${aws_s3_bucket.lets_encrypt.arn}/*"]
-        },
-        {
-          # Terraform S3 backend. use_lockfile writes a .tflock alongside the
-          # state, so Put and Delete are both needed on that prefix.
-          Sid    = "TerraformState"
-          Effect = "Allow"
-          Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-          Resource = [
-            "${aws_s3_bucket.lets_encrypt.arn}/${local.state_key}",
-            "${aws_s3_bucket.lets_encrypt.arn}/${local.state_key}.tflock",
-          ]
-        },
-        {
-          # The certificates. Scoped by name prefix so this role cannot read
-          # unrelated secrets in the shared services account -- notably the
-          # bootstrap module's client-m2m-cognito-secret and github-app.
-          Sid    = "CertificateSecrets"
-          Effect = "Allow"
-          Action = [
-            "secretsmanager:CreateSecret",
-            "secretsmanager:DescribeSecret",
-            "secretsmanager:GetSecretValue",
-            "secretsmanager:PutSecretValue",
-            "secretsmanager:TagResource",
-            "secretsmanager:UpdateSecret",
-            "secretsmanager:ListSecretVersionIds",
-          ]
-          Resource = "arn:aws:secretsmanager:${var.shared_services_region}:${var.shared_services_account_id}:secret:dns-zone-certs-*"
-        },
-        {
-          # ListSecrets has no resource-level scoping in IAM; Terraform needs it
-          # to refresh. Read-only over names, no values.
-          Sid      = "SecretsDiscovery"
-          Effect   = "Allow"
-          Action   = ["secretsmanager:ListSecrets"]
-          Resource = "*"
-        },
-        {
-          Sid    = "VpcNetworkInterfaces"
-          Effect = "Allow"
-          Action = [
-            "ec2:CreateNetworkInterface",
-            "ec2:DescribeNetworkInterfaces",
-            "ec2:DeleteNetworkInterface",
-            "ec2:DescribeSubnets",
-            "ec2:DescribeSecurityGroups",
-            "ec2:DescribeDhcpOptions",
-            "ec2:DescribeVpcs",
-          ]
-          Resource = "*"
-        },
-        {
-          Sid       = "VpcNetworkInterfacePermission"
-          Effect    = "Allow"
-          Action    = ["ec2:CreateNetworkInterfacePermission"]
-          Resource  = "arn:aws:ec2:${var.shared_services_region}:${var.shared_services_account_id}:network-interface/*"
-          Condition = { StringEquals = { "ec2:Subnet" = "arn:aws:ec2:${var.shared_services_region}:${var.shared_services_account_id}:subnet/${var.vpc_subnet_id}" } }
-        },
-      ],
-      # Enumerated from private-hosted-zones.json rather than wildcarded. With
-      # no zones configured this statement is absent entirely, so the role
-      # starts with no cross-account reach at all.
-      length(local.cert_manager_role_arns) > 0 ? [{
-        Sid      = "AssumeCertManagerRoles"
-        Effect   = "Allow"
-        Action   = ["sts:AssumeRole"]
-        Resource = local.cert_manager_role_arns
-      }] : []
-    )
+  # The cross-account sts:AssumeRole grant is NOT in this file. It lives in a
+  # second inline policy, EKSManagerLetsEncryptAssumeRoles, written by
+  # .github/workflows/sync-hosted-zones.yml from hosted-zones.json --
+  # see policies/EKSManagerLetsEncryptAssumeRoles-example.json.
+  #
+  # Separate because put-role-policy replaces an inline policy wholesale: if
+  # the workflow wrote this one it would erase everything in it, and if
+  # Terraform wrote that one they would overwrite each other on every run.
+  policy = templatefile("${path.module}/policies/EKSManagerLetsEncryptRole-policy.json", {
+    SHARED_SERVICES_REGION     = var.shared_services_region
+    SHARED_SERVICES_ACCOUNT_ID = var.shared_services_account_id
+    BUCKET_ARN                 = aws_s3_bucket.lets_encrypt.arn
+    STATE_KEY                  = local.state_key
   })
-}
-
-resource "aws_security_group" "codebuild" {
-  provider = aws.shared
-  name     = "eksmanager-lets-encrypt-codebuild-sg"
-  # Same charset restriction as the rule description below -- no apostrophe.
-  # The provider only validates the rule one locally, so this would pass
-  # `terraform validate` and fail at apply.
-  description = "Egress-only for the EKS Manager ACME certificate CodeBuild project"
-  vpc_id      = var.vpc_id
-
-  egress {
-    # No apostrophe: AWS rejects security group rule descriptions outside
-    # ^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$ and an apostrophe is not in it.
-    description = "Outbound HTTPS to ACME, Route53, Secrets Manager and the Terraform download"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 }
 
 resource "aws_codebuild_project" "lets_encrypt" {
@@ -331,22 +220,93 @@ resource "aws_codebuild_project" "lets_encrypt" {
     }
     # TF_VAR_acme_email and TF_VAR_acme_use_staging are deliberately absent.
     # The buildspec reads acme-email and acme-staging from the top of
-    # private-hosted-zones.json and exports them, so changing the contact or
+    # hosted-zones.json and exports them, so changing the contact or
     # switching to staging is a file edit plus a workflow run -- no Terraform
     # apply against this module, and nothing to supply at setup time.
   }
 
-  vpc_config {
-    vpc_id             = var.vpc_id
-    subnets            = [var.vpc_subnet_id]
-    security_group_ids = [aws_security_group.codebuild.id]
-  }
+  # Deliberately NOT VPC-attached, unlike the bootstrap and prefix-lists
+  # projects. Those must egress through a known NAT address because the EKS
+  # Manager API is IP-allowlisted. This one talks only to Let's Encrypt, STS,
+  # Route53 and Secrets Manager -- none allowlisted, all reachable from
+  # AWS-managed networking. Attaching it anyway would require the four ENI
+  # permissions CodeBuild needs to place an interface in the subnet, widening
+  # the role for no benefit.
 
   logs_config {
     cloudwatch_logs {
       group_name = "/aws/codebuild/eksmanager-lets-encrypt"
     }
   }
+}
+
+# ── Policy-sync role ────────────────────────────────────────────────────────
+# Assumed by .github/workflows/sync-hosted-zones.yml, which writes the
+# EKSManagerLetsEncryptAssumeRoles inline policy from the cert_manager ARNs in
+# hosted-zones.json. That is its only job.
+#
+# Separate from the upload role above because they do genuinely different
+# things: one puts an object in a bucket, this one writes an IAM policy. Sharing
+# an identity would mean the artifact upload also carried IAM write.
+
+resource "aws_iam_role" "policy_sync" {
+  provider = aws.shared
+  name     = "EKSManagerLetsEncryptPolicySyncRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = var.github_oidc_provider_arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = merge(
+          { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" },
+          var.github_owner_id != "" ? { "token.actions.githubusercontent.com:owner_id" = var.github_owner_id } : {},
+          var.github_repo_id != "" ? { "token.actions.githubusercontent.com:repository_id" = var.github_repo_id } : {},
+        )
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:*"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "policy_sync" {
+  provider = aws.shared
+  name     = "EKSManagerLetsEncryptPolicySyncPolicy"
+  role     = aws_iam_role.policy_sync.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # One role, and within it one named inline policy. It cannot touch
+        # EKSManagerLetsEncryptRolePolicy -- the statements Terraform owns --
+        # and cannot reach any other role in the account.
+        #
+        # PutRolePolicy on a role is a privilege-granting action, so the
+        # narrowness matters: the worst this identity can do is rewrite which
+        # cert_manager roles the certificate pipeline may assume. It cannot
+        # grant that pipeline anything else, because the policy name it may
+        # write is fixed and every other statement lives in the other one.
+        Sid    = "MaintainAssumeRolesPolicy"
+        Effect = "Allow"
+        Action = [
+          "iam:PutRolePolicy",
+          "iam:GetRolePolicy",
+          "iam:DeleteRolePolicy",
+        ]
+        Resource = aws_iam_role.codebuild.arn
+        Condition = {
+          StringEquals = {
+            "iam:PolicyName" = "EKSManagerLetsEncryptAssumeRoles"
+          }
+        }
+      },
+    ]
+  })
 }
 
 # ── EventBridge ──────────────────────────────────────────────────────────────

@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "EXAMPLE ONLY -- this policy is not applied from this file.",
+    "",
+    "It is generated at runtime by .github/workflows/sync-hosted-zones.yml from",
+    "the roles.cert_manager ARNs in hosted-zones.json, and written to",
+    "EKSManagerLetsEncryptRole as a second inline policy named",
+    "EKSManagerLetsEncryptAssumeRoles.",
+    "",
+    "Separate from EKSManagerLetsEncryptRole-policy.json because put-role-policy",
+    "replaces an inline policy wholesale -- two policies, two owners, so neither",
+    "overwrites the other. Terraform owns the other one; the workflow owns this.",
+    "",
+    "The Resource list is exact ARNs, one per zone. No name pattern, no account",
+    "wildcard. With no zones configured the policy is deleted rather than",
+    "written with an empty Resource, which IAM rejects.",
+    "",
+    "This role holds NO Route53 permission of its own. Every DNS action runs",
+    "under the customer's cert_manager role, bounded by what they grant it."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeCertManagerRoles",
+      "Effect": "Allow",
+      "Action": ["sts:AssumeRole"],
+      "Resource": [
+        "arn:aws:iam::123456789012:role/acme-dev-cert-manager",
+        "arn:aws:iam::210987654321:role/acme-prod-cert-manager"
+      ]
+    }
+  ]
+}

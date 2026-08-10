@@ -1,0 +1,48 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Logs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:${SHARED_SERVICES_REGION}:${SHARED_SERVICES_ACCOUNT_ID}:log-group:/aws/codebuild/eksmanager-lets-encrypt*"
+    },
+    {
+      "Sid": "ArtifactAndState",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"],
+      "Resource": [
+        "${BUCKET_ARN}",
+        "${BUCKET_ARN}/*"
+      ]
+    },
+    {
+      "Sid": "TerraformState",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "${BUCKET_ARN}/${STATE_KEY}",
+        "${BUCKET_ARN}/${STATE_KEY}.tflock"
+      ]
+    },
+    {
+      "Sid": "CertificateSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:TagResource",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:GetResourcePolicy",
+        "secretsmanager:ListSecretVersionIds"
+      ],
+      "Resource": "arn:aws:secretsmanager:${SHARED_SERVICES_REGION}:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerZones/*"
+    }
+  ]
+}

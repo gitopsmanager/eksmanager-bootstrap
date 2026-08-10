@@ -499,9 +499,7 @@ if $DESTROY; then
     -var="github_repo=${GITHUB_REPO}" \
     -var="github_owner_id=${GITHUB_OWNER_ID}" \
     -var="github_repo_id=${GITHUB_REPO_ID}" \
-    -var="github_oidc_provider_arn=${GITHUB_OIDC_PROVIDER_ARN:-}" \
-    -var="vpc_id=${VPC_ID}" \
-    -var="vpc_subnet_id=${SUBNET_ID}"
+    -var="github_oidc_provider_arn=${GITHUB_OIDC_PROVIDER_ARN:-}"
   cd "${SCRIPT_DIR}"
 
   echo ""
@@ -569,7 +567,7 @@ cd "${SCRIPT_DIR}"
 
 # ── Let's Encrypt pipeline ──────────────────────────────────────────────────
 # Third pipeline, same pattern: its own bucket, its own CodeBuild project, its
-# own role. Issues one wildcard per hosted zone in private-hosted-zones.json and
+# own role. Issues one wildcard per hosted zone in hosted-zones.json and
 # stores each in Secrets Manager, where the agent picks it up.
 #
 # Reuses this module's OIDC provider (an account can only have one per URL) and
@@ -577,7 +575,7 @@ cd "${SCRIPT_DIR}"
 #
 # Created unconditionally, like the other two. It needs no new inputs: the ACME
 # contact address and the staging toggle live at the top of
-# private-hosted-zones.json and travel in the artifact, so there is nothing to
+# hosted-zones.json and travel in the artifact, so there is nothing to
 # collect here and nothing to skip on.
 echo ""
 echo "================================================================"
@@ -596,18 +594,17 @@ LETS_ENCRYPT_TF_VARS=(
   -var="github_owner_id=${GITHUB_OWNER_ID}"
   -var="github_repo_id=${GITHUB_REPO_ID}"
   -var="github_oidc_provider_arn=${OIDC_PROVIDER_ARN}"
-  -var="vpc_id=${VPC_ID}"
-  -var="vpc_subnet_id=${SUBNET_ID}"
 )
 
 terraform apply "${LETS_ENCRYPT_TF_VARS[@]}"
 LETS_ENCRYPT_ROLE_ARN=$(terraform output -raw github_actions_role_arn)
 LETS_ENCRYPT_BUCKET=$(terraform output -raw lets_encrypt_bucket)
 LETS_ENCRYPT_CODEBUILD_ROLE_ARN=$(terraform output -raw codebuild_role_arn)
+LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN=$(terraform output -raw policy_sync_role_arn)
 cd "${SCRIPT_DIR}"
 
 # Printed rather than merely output, because nothing automated can do this next
-# step: every roles.cert_manager in private-hosted-zones.json lives in a
+# step: every roles.cert_manager in hosted-zones.json lives in a
 # customer account we do not control, and each must trust this ARN or DNS-01
 # cannot write its challenge record. The pipeline fails in pre_build naming the
 # offending role if the trust is missing.
@@ -615,7 +612,7 @@ echo ""
 echo "================================================================"
 echo "ACTION REQUIRED -- Let's Encrypt trust"
 echo "================================================================"
-echo "Each roles.cert_manager in private-hosted-zones.json must trust:"
+echo "Each roles.cert_manager in hosted-zones.json must trust:"
 echo "  ${LETS_ENCRYPT_CODEBUILD_ROLE_ARN}"
 echo "================================================================"
 
@@ -699,6 +696,9 @@ set_github_variable "PREFIX_LISTS_S3_BUCKET" "$PREFIX_LISTS_BUCKET"
 # third distinct role and bucket.
 set_github_variable "LETS_ENCRYPT_ROLE_ARN" "$LETS_ENCRYPT_ROLE_ARN"
 set_github_variable "LETS_ENCRYPT_S3_BUCKET" "$LETS_ENCRYPT_BUCKET"
+# sync-hosted-zones.yml assumes this one -- a different identity from the
+# artifact upload above, because it writes an IAM policy rather than an object.
+set_github_variable "LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN" "$LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN"
 
 # ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
 # Values the aws/ Terraform module needs but that must never come from

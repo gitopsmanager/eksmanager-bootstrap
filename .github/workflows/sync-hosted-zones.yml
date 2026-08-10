@@ -1,0 +1,134 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+name: sync-hosted-zones
+
+# Keeps EKSManagerLetsEncryptRole's AssumeRole grant in step with
+# hosted-zones.json, and does nothing else.
+#
+# It writes ONE named inline policy — EKSManagerLetsEncryptAssumeRoles — listing
+# the exact roles.cert_manager ARNs from that file. The rest of the role's
+# permissions live in a separate inline policy owned by Terraform, which this
+# never touches.
+#
+# Split from lets-encrypt.yml deliberately: that one issues and renews
+# certificates, this one grants the permission to do so. Different jobs,
+# different identities, and this one runs automatically on the file changing so
+# the grant cannot fall behind the zone list.
+#
+# Runs before certificates are issued. Push the zone list, this syncs the grant,
+# then run lets-encrypt.yml. Doing it the other way round fails on AssumeRole.
+#
+# Requires (from iam/lets-encrypt-pipeline-tf outputs):
+#   LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN - policy_sync_role_arn
+#   AWS_REGION                        - the shared services region
+
+on:
+  push:
+    paths:
+      - "hosted-zones.json"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the policy document
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+
+          try:
+              doc = json.load(open("hosted-zones.json"))
+          except FileNotFoundError:
+              sys.exit("hosted-zones.json not found -- nothing to sync.")
+          except json.JSONDecodeError as e:
+              sys.exit(f"hosted-zones.json is not valid JSON: {e}")
+
+          zones = doc.get("hosted-zones") or []
+          arns, problems = [], []
+
+          for i, z in enumerate(zones):
+              where = z.get("public-hosted-zone") or f"entry {i}"
+              arn = z.get("roles", {}).get("cert_manager", "")
+              if not arn:
+                  problems.append(f"{where}: missing roles.cert_manager")
+                  continue
+              # Validated rather than trusted: this string becomes an IAM policy
+              # resource, and a malformed one either fails the API call with an
+              # opaque error or, worse, widens the grant.
+              if not re.fullmatch(r"arn:aws:iam::\d{12}:role/[\w+=,.@/-]+", arn):
+                  problems.append(f"{where}: '{arn}' is not a valid IAM role ARN")
+                  continue
+              arns.append(arn)
+
+          if problems:
+              print("Cannot sync -- hosted-zones.json has problems:")
+              for p in problems:
+                  print(f"  - {p}")
+              sys.exit(1)
+
+          arns = sorted(set(arns))
+
+          # No zones is a legitimate state, not an error -- a fresh clone, or
+          # every zone removed. The policy is deleted rather than written empty,
+          # because IAM rejects a statement with an empty Resource list and a
+          # stale grant is worse than none.
+          json.dump({"arns": arns}, open("arns.json", "w"))
+
+          if arns:
+              policy = {
+                  "Version": "2012-10-17",
+                  "Statement": [{
+                      "Sid": "AssumeCertManagerRoles",
+                      "Effect": "Allow",
+                      "Action": ["sts:AssumeRole"],
+                      "Resource": arns,
+                  }],
+              }
+              json.dump(policy, open("policy.json", "w"), indent=2)
+              print(f"Granting sts:AssumeRole on {len(arns)} role(s):")
+              for a in arns:
+                  print(f"  {a}")
+          else:
+              print("No zones configured -- the grant will be removed.")
+          PY
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Apply to EKSManagerLetsEncryptRole
+        run: |
+          set -eu
+          ROLE="EKSManagerLetsEncryptRole"
+          POLICY="EKSManagerLetsEncryptAssumeRoles"
+
+          if [ -s policy.json ]; then
+            aws iam put-role-policy \
+              --role-name "$ROLE" \
+              --policy-name "$POLICY" \
+              --policy-document file://policy.json
+            echo "Wrote $POLICY on $ROLE."
+          else
+            # --ignore-unmatched has no equivalent here, so tolerate NoSuchEntity:
+            # deleting a policy that was never created is the expected state on a
+            # first run with no zones.
+            aws iam delete-role-policy --role-name "$ROLE" --policy-name "$POLICY" 2>/dev/null \
+              && echo "Removed $POLICY from $ROLE." \
+              || echo "$POLICY not present on $ROLE -- nothing to remove."
+          fi
+
+      - name: Show what the role can now assume
+        run: |
+          aws iam get-role-policy \
+            --role-name EKSManagerLetsEncryptRole \
+            --policy-name EKSManagerLetsEncryptAssumeRoles \
+            --query 'PolicyDocument.Statement[0].Resource' \
+            --output json 2>/dev/null \
+            || echo "No AssumeRole grant -- no zones configured."

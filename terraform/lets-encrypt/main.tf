@@ -75,14 +75,19 @@ resource "acme_certificate" "wildcard" {
 resource "aws_secretsmanager_secret" "wildcard" {
   for_each = var.hosted_zones
 
-  name        = "${var.secret_name_prefix}-${each.value.public_hosted_zone}"
-  description = "Let's Encrypt wildcard for *.${each.value.public_hosted_zone} (account ${each.value.account})"
+  # <path><prefix>-dns-zone-certs, e.g. /EKSManagerZones/dev-dns-zone-certs.
+  # Keyed on the zone's dns-zone-prefix rather than its DNS name: the prefix is
+  # the environment identity the rest of the system already uses (dev, int,
+  # uat, we_prod), and it survives a zone being renamed or moved regions.
+  name        = "${var.secret_path}${each.value.dns_zone_prefix}-dns-zone-certs"
+  description = "Let's Encrypt wildcard for *.${each.value.public_hosted_zone} (${each.value.dns_zone_prefix}, account ${each.value.account})"
 
   recovery_window_in_days = var.secret_recovery_window_days
 
   tags = {
     ManagedBy = "EKSManager"
     Zone      = each.value.public_hosted_zone
+    Prefix    = each.value.dns_zone_prefix
   }
 
   # The zone list is loose data rather than reviewed code, so a careless edit
@@ -118,5 +123,6 @@ resource "aws_secretsmanager_secret_version" "wildcard" {
 
     "not_after" = acme_certificate.wildcard[each.key].certificate_not_after
     "zone"      = each.value.public_hosted_zone
+    "prefix"    = each.value.dns_zone_prefix
   })
 }

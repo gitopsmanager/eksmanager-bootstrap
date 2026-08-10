@@ -13,7 +13,7 @@ output "github_actions_role_arn" {
 output "codebuild_role_arn" {
   description = <<-EOT
     EKSManagerLetsEncryptRole. Every roles.cert_manager in
-    private-hosted-zones.json must trust this ARN, or DNS-01 cannot write the
+    hosted-zones.json must trust this ARN, or DNS-01 cannot write the
     challenge record. The buildspec fails in pre_build with the offending role
     named if that trust is missing.
   EOT
@@ -25,7 +25,7 @@ output "codebuild_project_name" {
   value       = aws_codebuild_project.lets_encrypt.name
 }
 
-output "assumable_cert_manager_roles" {
-  description = "The cert_manager roles read from private-hosted-zones.json. This is the complete set EKSManagerLetsEncryptRole may assume — anything absent here cannot be reached."
-  value       = local.cert_manager_role_arns
+output "policy_sync_role_arn" {
+  description = "Role sync-hosted-zones.yml assumes via OIDC. Set as the LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN repository variable. It may write one named inline policy on one role and nothing else."
+  value       = aws_iam_role.policy_sync.arn
 }
