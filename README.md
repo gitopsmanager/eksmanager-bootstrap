@@ -324,6 +324,68 @@ Order matters when adding a zone: push `hosted-zones.json` (the sync
 runs on its own), then run `lets-encrypt.yml`. The other way round fails on
 AssumeRole, because the grant does not yet include the new role.
 
+### Roles and policies
+
+Issuing a certificate crosses an account boundary, so it takes two roles that
+trust each other: one in shared services that runs the pipeline, and one in the
+account that owns the zone which can write DNS records. Neither is useful alone.
+
+| Role | Created by | Assumed by | Does |
+|---|---|---|---|
+| `EKSManagerLetsEncryptRole` | `setup-pipeline` | the CodeBuild service | Runs Terraform, writes the secrets, hops into each zone account |
+| `EKSManagerLetsEncryptGithubActionsRole` | `setup-pipeline` | `lets-encrypt.yml` via OIDC | Uploads `lets-encrypt.zip` to S3 |
+| `EKSManagerLetsEncryptPolicySyncRole` | `setup-pipeline` | `sync-hosted-zones.yml` via OIDC | Writes one named inline policy on one role, nothing else |
+| `roles.cert_manager` (per zone) | **you** | `EKSManagerLetsEncryptRole` | Writes the `_acme-challenge` TXT record in the public zone |
+| `roles.external_dns` (per zone) | **you** | the external-dns pod, via EKS Pod Identity | Writes A and CNAME records — unrelated to certificates |
+
+The chain runs: EventBridge starts CodeBuild → CodeBuild assumes
+`EKSManagerLetsEncryptRole` → that assumes each zone's `cert_manager` →
+lego writes the TXT record → Let's Encrypt validates → the certificate lands in
+`/EKSManagerZones/<prefix>-dns-zone-certs`. A missing trust breaks it at the
+third step, which `pre_build` reports by name rather than letting it surface
+later as a validation timeout.
+
+**Policies you create**, in the account that owns the zone. These two files are
+the whole ask; everything below them is this repo's own configuration:
+
+| What | File |
+|---|---|
+| Trust statement each `cert_manager` role needs, so shared services can assume it | [example-cert-manager-trust-statement.json](example-cert-manager-trust-statement.json) |
+| Trust policy each `external_dns` role needs — Pod Identity, not cross-account | [example-external-dns-pod-identity-trust.json](example-external-dns-pod-identity-trust.json) |
+
+Their *permissions* are yours to decide. `cert_manager` needs only TXT writes on
+the one zone, which is the tightest role in the system. `external_dns` genuinely
+needs A and CNAME writes, so it cannot be constrained the same way — a real
+difference in blast radius, and the reason they are separate roles rather than
+one.
+
+**Policies this repo applies** to `EKSManagerLetsEncryptRole`. Nothing to do
+here; these are for review:
+
+| What | File |
+|---|---|
+| Its trust — who can assume it | [EKSManagerLetsEncryptRole-trust.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptRole-trust.json) |
+| Its permissions — logs, S3 state, secrets under `/EKSManagerZones/` | [EKSManagerLetsEncryptRole-policy.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptRole-policy.json) |
+| The AssumeRole grant `sync-hosted-zones` generates | [EKSManagerLetsEncryptAssumeRoles-example.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptAssumeRoles-example.json) |
+
+The first two are read by Terraform directly — `file()` and `templatefile()` —
+so they are the deployed configuration, not a description of it, and cannot
+drift. Note the trust names only `codebuild.amazonaws.com`: no human and no
+GitHub workflow can assume this role, so the certificate private keys are
+reachable only by the pipeline.
+
+The third is different, and worth knowing before relying on it. The real
+`EKSManagerLetsEncryptAssumeRoles` policy is built from `hosted-zones.json` and
+written straight to IAM; nothing writes it back here. That file is a
+hand-maintained illustration of the shape, with example ARNs. For the live
+version:
+
+```bash
+aws iam get-role-policy \
+  --role-name EKSManagerLetsEncryptRole \
+  --policy-name EKSManagerLetsEncryptAssumeRoles
+```
+
 ### hosted-zones.json
 
 Copy `example-hosted-zones.json` → `hosted-zones.json`, same
