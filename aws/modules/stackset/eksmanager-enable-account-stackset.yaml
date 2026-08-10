@@ -113,11 +113,24 @@ Resources:
                   StringEquals:
                     aws:ResourceTag/EKSManager: 'Managed'
                     aws:RequestTag/EKSManager: 'Managed'
-              - Sid: AllowEKSClusterScopedWrite
+              # Creating something INSIDE a cluster: the cluster must be ours,
+              # and the new resource must be born tagged. Kept apart from the
+              # cluster Update* actions below precisely because of that second
+              # condition -- UpdateClusterConfig sends no tags, so folding it
+              # in here would deny it outright.
+              - Sid: AllowEKSCreateInCluster
                 Effect: Allow
                 Action:
                   - eks:CreateAddon
                   - eks:CreatePodIdentityAssociation
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+                    aws:RequestTag/EKSManager: 'Managed'
+              - Sid: AllowEKSClusterUpdate
+                Effect: Allow
+                Action:
                   - eks:UpdateClusterConfig
                   - eks:UpdateClusterVersion
                 Resource: "*"
@@ -134,25 +147,36 @@ Resources:
                 Condition:
                   StringEquals:
                     aws:ResourceTag/EKSManager: 'Managed'
-              # Add-ons and pod identity associations are not tagged by the
-              # agent, so there is nothing here to match on. Left unconditioned
-              # deliberately rather than keyed to a tag that is never set --
-              # that would fail closed and break add-on upgrades. Tagging them
-              # at creation is the follow-up that closes this.
-              #
-              # UpdatePodIdentityAssociation repoints an existing association
-              # at a new role, which is how a cluster built before the roles
-              # became per-cluster is reconciled. Only one association may
-              # exist per service account, so without it the only route is
-              # delete and recreate by hand.
-              - Sid: AllowEKSUntaggedResourceWrite
+              # Scoped against the ADD-ON's own tags, not the cluster's. The
+              # install path deletes the existing add-on before recreating it,
+              # so DeleteAddon runs against one the agent tagged on the way in.
+              # An add-on predating that tag cannot be deleted here -- there
+              # are none, since every cluster is rebuilt on this code.
+              - Sid: AllowEKSAddonWrite
                 Effect: Allow
                 Action:
                   - eks:UpdateAddon
                   - eks:DeleteAddon
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+              # UpdatePodIdentityAssociation repoints an existing association
+              # at a new role, which is how a cluster built before the roles
+              # became per-cluster is reconciled. Only one association may
+              # exist per service account, so without it the only route is
+              # delete and recreate by hand. It is scoped against the
+              # association's own tags, so the ones it repoints must have been
+              # created by this code.
+              - Sid: AllowEKSPodIdentityWrite
+                Effect: Allow
+                Action:
                   - eks:UpdatePodIdentityAssociation
                   - eks:DeletePodIdentityAssociation
                 Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
               - Sid: AllowEKSTagging
                 Effect: Allow
                 Action:
