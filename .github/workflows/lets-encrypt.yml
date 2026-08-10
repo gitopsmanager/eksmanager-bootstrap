@@ -125,7 +125,12 @@ jobs:
           set -eu
           BUILD_DIR=build/lets-encrypt
           mkdir -p "$BUILD_DIR"
-          cp terraform/lets-encrypt/* "$BUILD_DIR"/
+          # `/.` not `/*` -- the glob skips dotfiles, which would silently
+          # leave .terraform.lock.hcl behind. Without it CodeBuild resolves
+          # whatever provider version is newest that day, so the acme provider
+          # could change under a renewal run with nothing in the diff to show
+          # it. The add-cluster module gets this right via shutil.copytree.
+          cp -r terraform/lets-encrypt/. "$BUILD_DIR"/
           cp hosted-zones.json "$BUILD_DIR"/
 
           echo "--- artifact contents ---"

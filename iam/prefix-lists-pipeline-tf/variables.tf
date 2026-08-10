@@ -26,7 +26,7 @@ variable "shared_services_region" {
 }
 
 variable "client_account_role_name" {
-  description = "IAM role name this project's CodeBuild service role assumes into each client account to manage prefix lists and security group rules. Must exist in every account already (created by the aws/ bootstrap module's org submodule) — this variable only supplies the role NAME, scoped as a wildcard across account IDs, so adding or removing client accounts never requires a Terraform change here."
+  description = "IAM role name this project's CodeBuild service role assumes into each client account to add security group ingress rules referencing existing prefix lists. It does not create or modify the prefix lists themselves — those are looked up by name via a data source. Must exist in every account already (created by the aws/ bootstrap module's StackSet) — this variable only supplies the role NAME, scoped as a wildcard across account IDs, so adding or removing client accounts never requires a Terraform change here."
   type        = string
   default     = "EKSManagerAdminRole"
 }

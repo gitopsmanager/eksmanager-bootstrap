@@ -24,9 +24,9 @@ terraform {
   # bucket/region/key supplied via -backend-config at `terraform init` time
   # (buildspec.yml), keyed per cluster:
   # accounts/<account>/clusters/<cluster>/terraform.tfstate -- deliberately
-  # Keyed per cluster, so a cluster's SG-rule changes never lock
-  # against, or get locked out by, an org-wide granular-list rollout
-  # running in the same account.
+  # per cluster rather than per account, so two clusters in the same account
+  # can have their SG rules changed concurrently without one waiting on, or
+  # being locked out by, the other's state lock.
   backend "s3" {
     encrypt      = true
     use_lockfile = true

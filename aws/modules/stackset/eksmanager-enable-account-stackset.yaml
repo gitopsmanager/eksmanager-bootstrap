@@ -40,14 +40,19 @@ Resources:
               # Trusts two roles in the shared-services account, neither of
               # which is the spoke account this stack is deployed into:
               #   - EKSManagerAgentRole: the ongoing runtime agent
-              #   - EKSManagerPrefixListsSharedRole: the prefix-lists/
-              #     add-cluster CodeBuild pipeline. Interim -- this role
-              #     currently gets EKSManagerAdminRole's full ec2:*/eks:*
-              #     policy just to manage prefix lists and SG rules, wider
-              #     than it needs. Tightening this (either a narrower
-              #     policy on EKSManagerAdminRole itself, or splitting the
-              #     pipeline onto its own dedicated role) is a deliberate
-              #     follow-up, not an oversight.
+              #   - EKSManagerPrefixListsSharedRole: the add-cluster
+              #     CodeBuild pipeline. Interim, and the wider of the two by
+              #     a long way -- all that pipeline does is look prefix
+              #     lists up by name and add ingress rules to the EKS and
+              #     NLB security groups (see terraform/add-cluster), which
+              #     needs roughly eight ec2 actions. Assuming this role
+              #     hands it the whole policy: iam:*, eks: writes,
+              #     sts:AssumeRole and Route53 it has no use for. Splitting
+              #     it onto a dedicated, narrow role in this template is a
+              #     deliberate follow-up, not an oversight.
+              #     It does NOT create or modify prefix lists -- that path
+              #     was removed, and no ec2:*ManagedPrefixList write is
+              #     granted below.
               AWS:
                 - !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerAgentRole"
                 - !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerPrefixListsSharedRole"
@@ -74,27 +79,83 @@ Resources:
                   - eks:Describe*
                   - eks:List*
                 Resource: "*"
-              - Sid: AllowEKSWrite
+              # EKS writes are scoped by the EKSManager tag the agent sets at
+              # creation (awsapi.py, managed_tags_cli_fragment). Which resource
+              # aws:ResourceTag reads is NOT uniform, which is why these are
+              # split rather than one statement:
+              #   - CreateNodegroup, CreateAddon, CreatePodIdentityAssociation
+              #     and the cluster Update* actions evaluate it against the
+              #     CLUSTER
+              #   - DeleteNodegroup and the nodegroup Update* actions evaluate
+              #     it against the NODE GROUP
+              # Tag only one of the two and half these actions stay open on
+              # every cluster in the account.
+              #
+              # A cluster or node group created before the agent set this tag
+              # carries no EKSManager tag and cannot be managed until someone adds
+              # it by hand. That is the intended behaviour -- adoption is a
+              # human action, see DenyEKSManagerTagWrites below.
+              - Sid: AllowEKSCreateCluster
+                Effect: Allow
+                Action: eks:CreateCluster
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/EKSManager: 'Managed'
+              # Both conditions apply: the cluster must already be ours, and
+              # the new node group must be born with the tag -- otherwise the
+              # agent could create one it is then unable to delete.
+              - Sid: AllowEKSCreateNodegroup
+                Effect: Allow
+                Action: eks:CreateNodegroup
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+                    aws:RequestTag/EKSManager: 'Managed'
+              - Sid: AllowEKSClusterScopedWrite
                 Effect: Allow
                 Action:
-                  - eks:CreateCluster
-                  - eks:CreateNodegroup
                   - eks:CreateAddon
                   - eks:CreatePodIdentityAssociation
-                  # Repointing an existing association at a new role, which is
-                  # how a cluster built before the roles became per-cluster is
-                  # reconciled. Only one association may exist per service
-                  # account, so without this the only route is delete and
-                  # recreate by hand.
-                  - eks:UpdatePodIdentityAssociation
-                  - eks:DeleteNodegroup
-                  - eks:DeleteAddon
-                  - eks:DeletePodIdentityAssociation
                   - eks:UpdateClusterConfig
                   - eks:UpdateClusterVersion
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+              - Sid: AllowEKSNodegroupScopedWrite
+                Effect: Allow
+                Action:
+                  - eks:DeleteNodegroup
                   - eks:UpdateNodegroupConfig
                   - eks:UpdateNodegroupVersion
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+              # Add-ons and pod identity associations are not tagged by the
+              # agent, so there is nothing here to match on. Left unconditioned
+              # deliberately rather than keyed to a tag that is never set --
+              # that would fail closed and break add-on upgrades. Tagging them
+              # at creation is the follow-up that closes this.
+              #
+              # UpdatePodIdentityAssociation repoints an existing association
+              # at a new role, which is how a cluster built before the roles
+              # became per-cluster is reconciled. Only one association may
+              # exist per service account, so without it the only route is
+              # delete and recreate by hand.
+              - Sid: AllowEKSUntaggedResourceWrite
+                Effect: Allow
+                Action:
                   - eks:UpdateAddon
+                  - eks:DeleteAddon
+                  - eks:UpdatePodIdentityAssociation
+                  - eks:DeletePodIdentityAssociation
+                Resource: "*"
+              - Sid: AllowEKSTagging
+                Effect: Allow
+                Action:
                   - eks:TagResource
                   - eks:UntagResource
                 Resource: "*"
@@ -116,14 +177,63 @@ Resources:
                   - servicequotas:GetServiceQuota
                   - servicequotas:ListServiceQuotas
                 Resource: "*"
-              - Sid: AllowEC2Write
+              # The agent creates exactly one security group -- the Traefik NLB
+              # frontend -- and tags it at creation. Requiring the tag on the
+              # request means it cannot create an untagged group it would then
+              # be unable to modify.
+              - Sid: AllowEC2CreateSecurityGroup
+                Effect: Allow
+                Action: ec2:CreateSecurityGroup
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/EKSManager: 'Managed'
+              # Tagging a security group is allowed only as part of creating
+              # it. Without ec2:CreateAction this statement would hand back
+              # what the conditions below are for: tag any group in the
+              # account, then modify it.
+              - Sid: AllowEC2TagSecurityGroupOnCreate
+                Effect: Allow
+                Action: ec2:CreateTags
+                Resource: "arn:aws:ec2:*:*:security-group/*"
+                Condition:
+                  StringEquals:
+                    ec2:CreateAction: CreateSecurityGroup
+              # Subnets are tagged after the fact (kubernetes.io/role/* for
+              # load balancer discovery), and rule tags are written by the
+              # add-cluster pipeline's provider. Neither is a resource type
+              # anything here keys an access decision off.
+              - Sid: AllowEC2TagExistingResources
+                Effect: Allow
+                Action: ec2:CreateTags
+                Resource:
+                  - "arn:aws:ec2:*:*:subnet/*"
+                  - "arn:aws:ec2:*:*:security-group-rule/*"
+              # Two statements, not one with two conditions -- conditions
+              # within a statement are ANDed, and these are alternatives.
+              #
+              # The EKS cluster security group is created by EKS, not by us, so
+              # it carries no EKSManager tag. It does carry aws:eks:cluster-name,
+              # which is better: keys beginning with "aws:" are reserved, so no
+              # principal can write one to adopt a group it does not own.
+              - Sid: AllowIngressOnEKSClusterSecurityGroups
                 Effect: Allow
                 Action:
-                  - ec2:CreateTags
-                  - ec2:CreateSecurityGroup
                   - ec2:AuthorizeSecurityGroupIngress
                   - ec2:RevokeSecurityGroupIngress
                 Resource: "*"
+                Condition:
+                  "Null":
+                    aws:ResourceTag/aws:eks:cluster-name: "false"
+              - Sid: AllowIngressOnManagedSecurityGroups
+                Effect: Allow
+                Action:
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
               - Sid: AllowIAM
                 Effect: Allow
                 Action:
@@ -180,6 +290,30 @@ Resources:
                 Effect: Deny
                 Action: ["eks:DeleteCluster"]
                 Resource: "*"
+              # What makes the EKSManager tag a boundary rather than a label. Without
+              # this the conditions above cost an attacker one extra call:
+              # tag someone else's node group, then delete it. The agent can
+              # still set the tag at CREATION -- that path goes through
+              # aws:RequestTag on CreateCluster/CreateNodegroup, not through
+              # TagResource, so it is unaffected.
+              #
+              # UntagResource is included for the reverse: removing the tag
+              # would orphan a resource out of every condition above, leaving
+              # it unmanageable and invisible to the same policy that is
+              # supposed to govern it.
+              #
+              # Adopting an untagged cluster or node group is therefore a
+              # human action -- add EKSManager=Managed by hand and the agent
+              # picks it up.
+              - Sid: DenyEKSManagerTagWrites
+                Effect: Deny
+                Action:
+                  - eks:TagResource
+                  - eks:UntagResource
+                Resource: "*"
+                Condition:
+                  "ForAnyValue:StringEquals":
+                    aws:TagKeys: EKSManager
               - Sid: DenyDestructiveEC2
                 Effect: Deny
                 Action:
