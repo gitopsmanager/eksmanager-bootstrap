@@ -109,8 +109,15 @@ Resources:
               - eks:Describe*
               - eks:List*
               - eks-auth:AssumeRoleForPodIdentity
-              - ssm:GetParameter
-              - ssm:GetParameters
+              # AmazonSSMManagedInstanceCore, attached to the node role, is what
+              # gives Session Manager and SSM agent registration. It needs the
+              # whole ssm agent surface plus the two message services, not the
+              # two parameter reads this originally allowed -- a ceiling tighter
+              # than an AWS-managed policy the role legitimately carries breaks
+              # it, and presents as the attached policy not working.
+              - ssm:*
+              - ssmmessages:*
+              - ec2messages:*
             Resource: "*"
           # The only IAM the boundary permits, and all three are read-only or
           # service-linked. The LBC policy needs the server certificate reads;
@@ -630,6 +637,7 @@ Resources:
                       - "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
                       - "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
                       - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+                      - "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
                       - "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
               # What makes the EKSManager tag a boundary rather than a label. Without
               # this the conditions above cost an attacker one extra call:
