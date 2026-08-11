@@ -39,9 +39,17 @@ variable "renewal_schedule_expression" {
     first eligible run is around day 60 and a weekly cadence leaves roughly
     four attempts before expiry. At 30-day intervals a single failed run would
     push the next attempt to expiry day itself.
+
+    Friday rather than Sunday, so a renewal that fails or produces a
+    certificate needing attention surfaces before the weekend rather than
+    during it -- leaving Saturday to act on it with several weeks of validity
+    still in hand.
+
+    Times are UTC; EventBridge cron has no timezone. 03:00 UTC is 04:00 BST,
+    so a summer run still lands on Friday morning.
   EOT
   type        = string
-  default     = "cron(0 3 ? * SUN *)"
+  default     = "cron(0 3 ? * FRI *)"
 }
 
 # acme-email and acme-staging are NOT inputs here. They live at the top of

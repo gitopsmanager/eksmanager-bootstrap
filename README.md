@@ -513,11 +513,17 @@ had just written to the public zone.
 
 ### Renewals
 
-Nothing to run. The weekly EventBridge schedule applies whatever artifact is in
-the bucket, and Terraform reissues only certificates inside `min_days_remaining`
-— 30 days of a 90-day certificate, so the first eligible run is around day 60
-and there are roughly four attempts before expiry. Most weekly runs change
-nothing.
+Nothing to run. The EventBridge schedule — **Fridays at 03:00 UTC** — applies
+whatever artifact is in the bucket, and Terraform reissues only certificates
+inside `min_days_remaining` — 30 days of a 90-day certificate, so the first
+eligible run is around day 60 and there are roughly four attempts before expiry.
+Most weekly runs change nothing.
+
+Friday deliberately: a renewal that fails, or produces a certificate needing
+attention, surfaces before the weekend rather than during it, leaving Saturday
+to act on it with weeks of validity still in hand. Change it with
+`renewal_schedule_expression` if that doesn't suit — EventBridge cron is UTC
+and has no timezone, so a summer run at 03:00 UTC lands at 04:00 BST.
 
 Every run prints `certificate_expiry` per zone in the build log. That is the
 cheapest confirmation renewal is still working, and the only one that does not
