@@ -380,13 +380,29 @@ Resources:
               # frontend -- and tags it at creation. Requiring the tag on the
               # request means it cannot create an untagged group it would then
               # be unable to modify.
+              # Two statements, because ec2:CreateSecurityGroup authorises
+              # against TWO resources: the group being created, and the VPC it
+              # is created in. aws:RequestTag only exists for the resource being
+              # tagged -- the VPC is not tagged by this call, so a single
+              # statement with the tag condition denies the VPC leg and the call
+              # fails with:
+              #   not authorized to perform: ec2:CreateSecurityGroup on
+              #   resource: arn:aws:ec2:<region>:<account>:vpc/vpc-...
+              # which names the VPC and reads like a VPC permission problem.
               - Sid: AllowEC2CreateSecurityGroup
                 Effect: Allow
                 Action: ec2:CreateSecurityGroup
-                Resource: "*"
+                Resource: "arn:aws:ec2:*:*:security-group/*"
                 Condition:
                   StringEquals:
                     aws:RequestTag/EKSManager: 'Managed'
+              # The VPC leg. No tag condition is possible here, but this permits
+              # only "create a security group in a VPC" -- the group itself still
+              # has to carry the tag, per the statement above.
+              - Sid: AllowEC2CreateSecurityGroupInVpc
+                Effect: Allow
+                Action: ec2:CreateSecurityGroup
+                Resource: "arn:aws:ec2:*:*:vpc/*"
               # Tagging a security group is allowed only as part of creating
               # it. Without ec2:CreateAction this statement would hand back
               # what the conditions below are for: tag any group in the
