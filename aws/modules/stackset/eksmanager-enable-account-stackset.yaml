@@ -670,11 +670,27 @@ Resources:
               # Adopting an untagged cluster or node group is therefore a
               # human action -- add EKSManager=Managed by hand and the agent
               # picks it up.
-              - Sid: DenyEKSManagerTagWrites
+              # UntagResource only. eks:TagResource was here too, and it broke
+              # cluster creation: EKS authorises `CreateCluster --tags` as TWO
+              # actions -- eks:CreateCluster AND eks:TagResource on the cluster
+              # being created -- so a deny keyed on aws:TagKeys fires on the
+              # create itself, with "not authorized to perform: eks:TagResource
+              # ... explicit deny".
+              #
+              # There is no eks:CreateAction key to distinguish create-time
+              # tagging the way EC2 allows, and conditioning on aws:ResourceTag
+              # does not help: the resource does not exist yet, so it evaluates
+              # null and the deny still fires.
+              #
+              # What is lost: the agent can tag an untagged cluster or node
+              # group and thereby adopt it. That is one extra API call for a
+              # compromised agent, and a visible one -- the tag appears on the
+              # resource. What is kept is the more important half: it cannot
+              # REMOVE the tag, so it cannot orphan a resource out of every
+              # condition above and leave it unmanageable.
+              - Sid: DenyEKSManagerTagRemoval
                 Effect: Deny
-                Action:
-                  - eks:TagResource
-                  - eks:UntagResource
+                Action: eks:UntagResource
                 Resource: "*"
                 Condition:
                   "ForAnyValue:StringEquals":
