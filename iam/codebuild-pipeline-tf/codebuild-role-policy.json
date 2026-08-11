@@ -63,20 +63,6 @@
       "Resource": "*"
     },
     {
-      "_comment": [
-        "CloudFormation authorises StackSet operations against every RESOURCE",
-        "TYPE the template contains, separately from the stackset ARN granted",
-        "in DelegatedStackSetOperations above. Adding a resource type to",
-        "aws/modules/stackset/eksmanager-enable-account-stackset.yaml therefore",
-        "needs a matching entry here, or the apply fails with:",
-        "  not authorized to perform: cloudformation:UpdateStackSet on resource:",
-        "  arn:aws:cloudformation:<region>::type/resource/AWS-IAM-ManagedPolicy",
-        "which names the type rather than the stackset and reads like a",
-        "stackset permission problem.",
-        "",
-        "AWS-IAM-ManagedPolicy is EKSManagerRoleBoundary, the permissions",
-        "boundary every EKSManager-* role is created with."
-      ],
       "Sid": "StackSetTemplateResourceTypes",
       "Effect": "Allow",
       "Action": [

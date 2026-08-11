@@ -460,6 +460,23 @@ resource "aws_iam_role" "codebuild" {
   })
 }
 
+# The StackSetTemplateResourceTypes statement in the policy file below needs an
+# entry for every RESOURCE TYPE the StackSet template contains -- CloudFormation
+# authorises against those separately from the stackset ARN. Add a resource to
+# aws/modules/stackset/eksmanager-enable-account-stackset.yaml and this needs
+# updating too, or the bootstrap apply fails with:
+#
+#   not authorized to perform: cloudformation:UpdateStackSet on resource:
+#   arn:aws:cloudformation:<region>::type/resource/AWS-IAM-ManagedPolicy
+#
+# which names the type rather than the stackset and reads like a stackset
+# permission problem. AWS-IAM-ManagedPolicy is EKSManagerRoleBoundary, the
+# permissions boundary every EKSManager-* role is created with.
+#
+# The note lives here because JSON has no comments, and a "_comment" key inside
+# a Statement is rejected outright: MalformedPolicyDocument. IAM tolerates it at
+# the document top level -- which is why the documentation-only policy files
+# under policies/ can carry one -- but not inside a statement.
 resource "aws_iam_role_policy" "codebuild" {
   provider = aws.shared
   name     = "EKSManagerBootstrapSharedRolePolicy"

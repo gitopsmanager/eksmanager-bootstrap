@@ -63,7 +63,17 @@ Resources:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: EKSManagerRoleBoundary
-      Description: >
+      # >- not > : the folded scalar keeps a trailing newline, and IAM validates
+      # a managed policy description against [\p{L}\p{M}\p{Z}\p{S}\p{N}\p{P}]*
+      # -- letters, marks, separators, symbols, numbers, punctuation. A newline
+      # is a control character and matches none of those, so the StackSet
+      # operation fails per account with "Value at 'description' failed to
+      # satisfy constraint", which reads like the text is wrong rather than the
+      # whitespace after it.
+      #
+      # The template's own Description above uses > safely: CloudFormation does
+      # not apply this constraint to itself, only IAM does to this field.
+      Description: >-
         Ceiling for roles created by EKSManagerAdminRole. Caps what any
         EKSManager-* role can do regardless of the policies attached to it.
       PolicyDocument:
