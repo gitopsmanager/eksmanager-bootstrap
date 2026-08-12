@@ -89,3 +89,18 @@ variable "ingress_protocol" {
   type        = string
   default     = "tcp"
 }
+
+# The DNS zone this cluster lives under, e.g. "dev". Becomes Environment=<prefix>
+# on the rules this module creates, matching what the agent tags the cluster and
+# its node groups with.
+#
+# Optional: a clusters.json entry written before this existed has no
+# dns_zone_prefix, and an untagged rule is a gap in a cost report rather than a
+# reason to fail the build. Empty omits the tag entirely -- an empty tag VALUE
+# is legal in AWS but says nothing, and reads in a cost report as though the
+# cluster genuinely has no environment.
+variable "dns_zone_prefix" {
+  description = "DNS zone prefix for the Environment tag. Empty omits the tag."
+  type        = string
+  default     = ""
+}

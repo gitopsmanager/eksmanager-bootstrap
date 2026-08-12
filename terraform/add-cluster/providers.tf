@@ -33,6 +33,14 @@ terraform {
   }
 }
 
+locals {
+  # Omitted rather than set empty when no prefix is configured -- see
+  # variables.tf. merge() with an empty map adds nothing.
+  environment_tag = var.dns_zone_prefix == "" ? {} : {
+    "Environment" = var.dns_zone_prefix
+  }
+}
+
 provider "aws" {
   region = var.target_region
 
@@ -46,16 +54,17 @@ provider "aws" {
   # actually creates them is this module, and the tag names the creator so that
   # "who do I ask to change this" has one answer.
   #
-  # No "Environment" here yet. These rules belong to one cluster, so theirs is
-  # that cluster's DNS zone prefix rather than the flat "production" the
-  # install-wide modules use -- and the prefix has to be plumbed through
-  # generate_add_cluster.py first.
+  # "Environment" is this cluster's DNS zone prefix rather than the flat
+  # "production" the install-wide modules use: these rules belong to exactly one
+  # cluster. The value arrives via clusters.json -> generate_add_cluster.py ->
+  # cluster.auto.tfvars.json, and matches what the agent tagged the cluster and
+  # its node groups with, so a cost report groups all of it together.
   default_tags {
-    tags = {
+    tags = merge({
       "Deployed By" = "GitOpsManager"
       "Managed By"  = "Terraform"
       "Module"      = "terraform-add-cluster"
       "Cluster"     = var.cluster_name
-    }
+    }, local.environment_tag)
   }
 }

@@ -8,7 +8,8 @@ Generates everything CodeBuild needs for a single add-cluster run:
   <output_dir>/terraform/add-cluster/cluster.auto.tfvars.json
                                              -- this cluster's account,
                                                region, expanded prefix
-                                               list names, and SG IDs
+                                               list names, SG IDs, and DNS
+                                               zone prefix
 
 The buildspec's `finally` block reports success/failure back to the EKS
 Manager API regardless of how the apply went (CODEBUILD_BUILD_SUCCEEDING),
@@ -212,6 +213,11 @@ def main():
             "prefix_list_names": prefix_list_names,
             "eks_sg_ids": eks_sg_ids,
             "nlb_sg_ids": nlb_sg_ids,
+            # Tags the rules Environment=<prefix>, matching what the agent put
+            # on the cluster itself. Optional and defaulted: entries written
+            # before dns_zone_prefix existed simply omit the tag rather than
+            # failing a build over a cost-reporting field.
+            "dns_zone_prefix": cluster.get("dns_zone_prefix", ""),
         },
     )
     print(f"Staged add-cluster/ (module + cluster.auto.tfvars.json) into {output_dir}")
