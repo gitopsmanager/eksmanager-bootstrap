@@ -48,9 +48,33 @@ locals {
     (var.resource_tag_name) = var.resource_tag_value
   }
 
+  # Keys are spaced because that is the form the customer's AWS reseller asked
+  # for. Unusual, and awkward in IAM conditions -- "aws:RequestTag/Managed By"
+  # -- but no condition anywhere keys off these, so the cost is only cosmetic.
+  # The access boundary uses the separate EKSManager tag, which is untouched.
+  #
+  # "Managed By" names what CREATED the resource, not what asked for it. Every
+  # resource in this module is Terraform's, so it is Terraform here. Resources
+  # the agent creates directly through boto3 -- the EKS cluster, its node
+  # groups -- carry EKSManagerAgent instead, and are tagged by the agent rather
+  # than from here. The distinction matters for the prefix list rules: the
+  # server dispatches that build, but Terraform is what creates them, so they
+  # are Terraform too.
+  #
+  # "Environment" is production for everything in this module. These resources
+  # -- the buckets, the pipelines, the shared roles -- serve every cluster the
+  # installation manages, whatever environment each of those is. This IS the
+  # production installation for the client. Per-cluster resources carry the DNS
+  # zone prefix instead, set where they are created.
+  #
+  # ManagedBy (unspaced, "EKSManager") was removed in favour of "Managed By".
+  # Keeping both left two near-identical keys with different values, which is a
+  # trap in a cost report. Module stays -- it says something these do not.
   common_tags = merge({
-    ManagedBy = "EKSManager"
-    Module    = "terraform-aws-eksmanager"
+    "Deployed By" = "GitOpsManager"
+    "Managed By"  = "Terraform"
+    "Environment" = "production"
+    "Module"      = "terraform-aws-eksmanager"
   }, local.extra_tags)
 }
 

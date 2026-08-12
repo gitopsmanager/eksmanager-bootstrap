@@ -39,8 +39,10 @@ provider "aws" {
 
   default_tags {
     tags = {
-      ManagedBy = "EKSManager"
-      Module    = "eksmanager-lets-encrypt-pipeline"
+      "Deployed By" = "GitOpsManager"
+      "Managed By"  = "Terraform"
+      "Environment" = "production"
+      "Module"      = "eksmanager-lets-encrypt-pipeline"
     }
   }
 }

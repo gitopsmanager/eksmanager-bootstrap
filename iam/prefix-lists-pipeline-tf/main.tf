@@ -42,8 +42,10 @@ provider "aws" {
 
   default_tags {
     tags = {
-      ManagedBy = "EKSManager"
-      Module    = "eksmanager-prefix-lists-pipeline"
+      "Deployed By" = "GitOpsManager"
+      "Managed By"  = "Terraform"
+      "Environment" = "production"
+      "Module"      = "eksmanager-prefix-lists-pipeline"
     }
   }
 }

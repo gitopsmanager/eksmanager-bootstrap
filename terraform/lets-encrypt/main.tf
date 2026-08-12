@@ -84,10 +84,21 @@ resource "aws_secretsmanager_secret" "wildcard" {
 
   recovery_window_in_days = var.secret_recovery_window_days
 
+  # "Environment" is the zone prefix rather than the flat "production" the
+  # install-wide modules use. Unlike a bucket or a pipeline role, this secret
+  # belongs to exactly one zone -- the dev certificate is not a production
+  # resource -- and the prefix is already in hand here, so it needs none of the
+  # plumbing the per-cluster resources do.
+  #
+  # Prefix stays alongside it, duplicating the value. Environment is the key
+  # the reseller asked for and reads in a cost report; Prefix is what this
+  # system already keys off, including the secret's own name.
   tags = {
-    ManagedBy = "EKSManager"
-    Zone      = each.value.public_hosted_zone
-    Prefix    = each.value.dns_zone_prefix
+    "Deployed By" = "GitOpsManager"
+    "Managed By"  = "Terraform"
+    "Environment" = each.value.dns_zone_prefix
+    "Zone"        = each.value.public_hosted_zone
+    "Prefix"      = each.value.dns_zone_prefix
   }
 
   # The zone list is loose data rather than reviewed code, so a careless edit

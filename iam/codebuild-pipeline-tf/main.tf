@@ -50,8 +50,10 @@ provider "aws" {
 
   default_tags {
     tags = {
-      ManagedBy = "EKSManager"
-      Module    = "eksmanager-codebuild-pipeline"
+      "Deployed By" = "GitOpsManager"
+      "Managed By"  = "Terraform"
+      "Environment" = "production"
+      "Module"      = "eksmanager-codebuild-pipeline"
     }
   }
 }
@@ -68,8 +70,10 @@ provider "aws" {
 
   default_tags {
     tags = {
-      ManagedBy = "EKSManager"
-      Module    = "eksmanager-codebuild-pipeline"
+      "Deployed By" = "GitOpsManager"
+      "Managed By"  = "Terraform"
+      "Environment" = "production"
+      "Module"      = "eksmanager-codebuild-pipeline"
     }
   }
 }

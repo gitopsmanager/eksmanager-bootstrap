@@ -41,11 +41,21 @@ provider "aws" {
     session_name = "eksmanager-prefix-lists-add-cluster"
   }
 
+  # "Managed By" is Terraform, not the agent or the server. The server
+  # dispatches this build and the agent never touches these rules -- but what
+  # actually creates them is this module, and the tag names the creator so that
+  # "who do I ask to change this" has one answer.
+  #
+  # No "Environment" here yet. These rules belong to one cluster, so theirs is
+  # that cluster's DNS zone prefix rather than the flat "production" the
+  # install-wide modules use -- and the prefix has to be plumbed through
+  # generate_add_cluster.py first.
   default_tags {
     tags = {
-      ManagedBy = "EKSManager"
-      Module    = "terraform-add-cluster"
-      Cluster   = var.cluster_name
+      "Deployed By" = "GitOpsManager"
+      "Managed By"  = "Terraform"
+      "Module"      = "terraform-add-cluster"
+      "Cluster"     = var.cluster_name
     }
   }
 }
