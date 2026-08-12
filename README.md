@@ -6,6 +6,60 @@ Terraform bootstrap for EKS Manager — provisions AWS infrastructure
 
 - Terraform >= 1.5.0, plus `bash` (if using `setup-pipeline.sh`) or PowerShell 7.1+ (if using `setup-pipeline.ps1` — not Windows PowerShell 5.1, and not PowerShell 7.0 either; the GitHub App JWT signing needs .NET 5's `RSA.ImportFromPem`)
 
+### Customer-owned infrastructure
+
+EKS Manager deploys **into** your network and DNS; it does not create either. The
+following are yours to provide and to run, and the bootstrap assumes they already
+exist.
+
+**Networking.** The VPC and subnets are supplied as inputs (`vpc_id`,
+`agent_subnet_id`) and are never created here. Use a private subnet routed through
+a NAT Gateway, and allowlist that NAT Gateway's Elastic IP before the first build.
+Neither the CodeBuild container nor the agent accepts any inbound traffic — both
+security groups have zero ingress rules — and their egress is limited to HTTPS
+plus DNS to your VPC resolver.
+
+**DNS.** Public and private hosted zones are yours. EKS Manager writes records
+into them; it does not create the zones, and it does not own the delegation from
+your parent domain. A cluster's hostnames resolve only once that delegation is in
+place. Both are needed where clusters use split-horizon DNS: the public zone is
+where Let's Encrypt reads the DNS-01 challenge, the private zone is what makes an
+internal load balancer reachable by name from inside the VPC.
+
+**Certificate roles.** Each zone needs two IAM roles in the account that owns it —
+one for DNS-01 challenge writes, one for external-dns. Both are customer-owned by
+design; see `example-cert-manager-trust-statement.json` and
+`example-external-dns-pod-identity-trust.json`.
+
+### Recommended: VPC endpoints
+
+Because the VPC is yours, so are its endpoints — this bootstrap cannot create them
+in a network it does not own, and adding interface endpoints would put a recurring
+charge on your account without your say-so. They are worth adding:
+
+| Endpoint | Type | Approx. cost | Takes off the internet |
+|---|---|---|---|
+| `s3` | Gateway | **free** | bootstrap artifacts, config, logs, Terraform state |
+| `ecr.api` + `ecr.dkr` | Interface | ~$7/mo per AZ each | container image pulls |
+| `secretsmanager` | Interface | ~$7/mo per AZ | M2M secret, GitHub App credentials, wildcard certificates |
+| `ssm` | Interface | ~$7/mo per AZ | the `/EKSManager/config/*` parameters |
+
+The **S3 gateway endpoint is the one to start with**: no hourly charge, and it
+covers the highest-volume traffic this system generates.
+
+Some outbound HTTPS remains regardless of endpoints, and this is a deliberate,
+documented exception rather than an oversight: `releases.hashicorp.com` for the
+Terraform binary, `registry.terraform.io` for providers, the Let's Encrypt ACME
+API, GitHub, and Cognito. All are CDN-backed with no stable address ranges, so an
+IP allowlist for them would be fiction that breaks on the next CDN change.
+
+### Not deployed here: account-level detective controls
+
+EKS Manager does not provision CloudTrail, AWS Config, GuardDuty, Security Hub or
+VPC Flow Logs. These are account-wide and belong with whoever owns the account and
+its compliance posture. They are stated here so the boundary is explicit — this
+bootstrap is not silently assuming controls that may not exist.
+
 ## Setup
 
 Paste the env var block from the **Terraform tile** in your EKS Manager Settings page into your shell — it already includes a GitHub App scoped to your fork with the right permissions — then run:

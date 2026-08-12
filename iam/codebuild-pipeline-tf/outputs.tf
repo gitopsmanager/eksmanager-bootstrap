@@ -53,3 +53,8 @@ output "github_oidc_provider_arn" {
   description = "ARN of the GitHub Actions OIDC provider — either the one this module created, or the pre-existing one it was pointed at via github_oidc_provider_arn. Other modules (e.g. iam/prefix-lists-pipeline-tf) reuse this rather than creating a second provider, since an AWS account can only have one per URL."
   value       = local.github_oidc_provider_final_arn
 }
+
+output "ecr_push_trust_sync_role_arn" {
+  description = "ARN to set as the ECR_PUSH_TRUST_SYNC_ROLE_ARN repository variable, for .github/workflows/sync-ecr-push-trust.yml."
+  value       = aws_iam_role.ecr_push_trust_sync.arn
+}

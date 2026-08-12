@@ -528,6 +528,9 @@ IDENTITY_CENTER_ROLE_ARN=$(terraform output -raw eks_manager_identity_center_rol
 IDENTITY_STORE_ID=$(terraform output -raw identity_store_id)
 IDENTITY_CENTER_RESOLVED_REGION=$(terraform output -raw identity_center_region)
 OIDC_PROVIDER_ARN=$(terraform output -raw github_oidc_provider_arn)
+# Rebuilds EKSManager-push-ecr's trust from clusters.json -- see
+# .github/workflows/sync-ecr-push-trust.yml.
+ECR_PUSH_TRUST_SYNC_ROLE_ARN=$(terraform output -raw ecr_push_trust_sync_role_arn)
 
 # ── iam/prefix-lists-pipeline-tf — the eksmanager-prefix-lists CodeBuild
 # project ─────────────────────────────────────────────────────────────────
@@ -699,6 +702,11 @@ set_github_variable "LETS_ENCRYPT_S3_BUCKET" "$LETS_ENCRYPT_BUCKET"
 # sync-hosted-zones.yml assumes this one -- a different identity from the
 # artifact upload above, because it writes an IAM policy rather than an object.
 set_github_variable "LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN" "$LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN"
+
+# sync-ecr-push-trust.yml assumes this to rewrite EKSManager-push-ecr's trust
+# whenever clusters.json changes. Its own identity, holding one action on one
+# role, rather than reusing an upload role that also writes to S3.
+set_github_variable "ECR_PUSH_TRUST_SYNC_ROLE_ARN" "$ECR_PUSH_TRUST_SYNC_ROLE_ARN"
 
 # ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
 # Values the aws/ Terraform module needs but that must never come from

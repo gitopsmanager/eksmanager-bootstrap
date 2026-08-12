@@ -302,6 +302,68 @@ resource "aws_iam_role_policy" "identity_center" {
   })
 }
 
+# ── EKSManagerCMK ────────────────────────────────────────────────────────────
+# One customer-managed key per installation, encrypting everything this system
+# stores at rest: the bootstrap artifact bucket and both secrets below, plus the
+# config and log buckets created later by aws/modules/shared_services, which
+# find it by alias.
+#
+# Created HERE rather than in aws/ because of ordering. setup-pipeline.sh
+# applies this module first, to stand the pipeline up; aws/ is applied later by
+# the CodeBuild project this module creates. A key defined there would not exist
+# when these buckets and secrets are created.
+#
+# The policy grants the account root full access and nothing else. That is the
+# AWS-recommended shape, not laziness: it delegates authorisation to IAM, so a
+# reader is granted by its own role policy rather than by editing this key every
+# time a principal is added. Naming principals here as well would mean a key
+# policy and an IAM policy that must agree, and the failure when they do not is
+# an opaque AccessDenied on a decrypt.
+#
+# Anything WRITING to an encrypted bucket needs kms:GenerateDataKey* as well as
+# kms:Decrypt. Granting Decrypt alone is the usual mistake -- reads work, writes
+# fail later, and it reads as a bug somewhere else entirely.
+resource "aws_kms_key" "eksmanager" {
+  provider = aws.shared
+
+  description = "EKS Manager: encrypts bootstrap artifacts, config, logs and secrets"
+
+  # Rotation is a Well-Architected expectation and costs nothing. Old material
+  # is retained, so objects encrypted under a previous year still decrypt.
+  enable_key_rotation = true
+
+  # The maximum AWS allows. Deliberately the longest possible: everything this
+  # key protects becomes permanently unreadable once deletion completes, and
+  # terraform/README documents a `terraform destroy -auto-approve` path. Thirty
+  # days is the difference between a recoverable mistake and an unrecoverable
+  # one.
+  deletion_window_in_days = 30
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "EnableIAMPolicies"
+      Effect    = "Allow"
+      Principal = { AWS = "arn:aws:iam::${var.shared_services_account_id}:root" }
+      Action    = "kms:*"
+      Resource  = "*"
+    }]
+  })
+
+  # The key outlives any single teardown. Destroying it orphans every object in
+  # three buckets and both secrets with no way back, so removing it has to be a
+  # deliberate act rather than a side effect of destroying this module.
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_kms_alias" "eksmanager" {
+  provider      = aws.shared
+  name          = "alias/EKSManagerCMK"
+  target_key_id = aws_kms_key.eksmanager.key_id
+}
+
 # ── S3 bucket for bootstrap release artifacts ───────────────────────────────
 # Terraform-owned — setup-pipeline.sh/.ps1 only sets up infrastructure, it
 # doesn't clone, zip, or upload anything, so there's no ordering conflict
@@ -310,6 +372,16 @@ resource "aws_iam_role_policy" "identity_center" {
 resource "aws_s3_bucket" "bootstrap" {
   provider = aws.shared
   bucket   = local.bootstrap_bucket
+
+  # Holds the bootstrap artifact and, more importantly, is where a destroy would
+  # take the only copy of anything not re-uploadable.
+  #
+  # terraform/README documents a destroy path. This makes removing it a
+  # deliberate act -- comment the block out -- rather than a side effect of
+  # tearing the module down.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket_versioning" "bootstrap" {
@@ -317,6 +389,22 @@ resource "aws_s3_bucket_versioning" "bootstrap" {
   bucket   = aws_s3_bucket.bootstrap.id
   versioning_configuration {
     status = "Enabled"
+  }
+}
+
+# bucket_key_enabled cuts KMS calls by caching a data key per bucket rather than
+# per object -- the artifact is uploaded whole on every release, so without it
+# each upload is a separate KMS request and a separate charge.
+resource "aws_s3_bucket_server_side_encryption_configuration" "bootstrap" {
+  provider = aws.shared
+  bucket   = aws_s3_bucket.bootstrap.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.eksmanager.arn
+    }
+    bucket_key_enabled = true
   }
 }
 
@@ -339,6 +427,20 @@ resource "aws_secretsmanager_secret" "eksmanager_client_secret" {
   provider    = aws.shared
   name        = "/EKSManagerBootstrap/client-m2m-cognito-secret"
   description = "M2M client secret for the EKS Manager bootstrap pipeline"
+
+  # Without this the secret uses the aws/secretsmanager AWS-managed key, which
+  # cannot be audited or restricted per installation.
+  kms_key_id = aws_kms_key.eksmanager.arn
+
+  # The M2M credential. Recoverable only by re-running setup with the value to
+  # hand, which is not something to discover during a teardown.
+  #
+  # terraform/README documents a destroy path. This makes removing it a
+  # deliberate act -- comment the block out -- rather than a side effect of
+  # tearing the module down.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_secretsmanager_secret_version" "eksmanager_client_secret" {
@@ -361,6 +463,20 @@ resource "aws_secretsmanager_secret" "github_app" {
   provider    = aws.shared
   name        = "/EKSManagerBootstrap/github-app"
   description = "GitHub App credentials (appId, installId, base64 privateKey) used to clone the eksmanager-bootstrap fork"
+
+  # Without this the secret uses the aws/secretsmanager AWS-managed key, which
+  # cannot be audited or restricted per installation.
+  kms_key_id = aws_kms_key.eksmanager.arn
+
+  # The GitHub App private key. If this is the only copy, destroying it means
+  # generating a new key pair and re-installing the App.
+  #
+  # terraform/README documents a destroy path. This makes removing it a
+  # deliberate act -- comment the block out -- rather than a side effect of
+  # tearing the module down.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_secretsmanager_secret_version" "github_app" {
@@ -408,6 +524,78 @@ locals {
   github_sub_repo = (var.github_owner_id != "" && var.github_repo_id != "") ? (
     "${split("/", var.github_repo)[0]}@${var.github_owner_id}/${split("/", var.github_repo)[1]}@${var.github_repo_id}"
   ) : var.github_repo
+}
+
+# ── ECR push trust sync ──────────────────────────────────────────────────────
+# EKSManager-push-ecr in shared services is assumed by each cluster's
+# EKSManager-<cluster>-push-ecr role, chained into by Pod Identity so ARC
+# runners can push images. Its trust used to name the account root with an
+# ArnLike wildcard on "EKSManager-*-push-ecr", which meant anyone able to create
+# a role matching that name in a trusted account could assume it.
+#
+# The fix is an exact list of source role ARNs, which has to come from
+# clusters.json -- the only place that knows which clusters exist. This role
+# lets .github/workflows/sync-ecr-push-trust.yml rebuild that trust whenever the
+# file changes.
+#
+# Same shape and the same reasoning as EKSManagerLetsEncryptPolicySyncRole: a
+# list in a JSON file drives one policy on one role, written by one identity, so
+# nothing races and a removal is handled by rebuilding the whole document.
+#
+# Why not do it in terraform/add-cluster, which already runs per cluster: a
+# trust policy is a single document and add-cluster keeps per-cluster state, so
+# two clusters added at once would each rewrite it from their own state and the
+# second would drop the first. It also runs in the workload account with no
+# shared services access, so it would need a grant larger than the thing being
+# protected.
+resource "aws_iam_role" "ecr_push_trust_sync" {
+  provider = aws.shared
+  name     = "EKSManagerEcrPushTrustSyncRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = local.github_oidc_provider_final_arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        # Push-triggered on clusters.json, so the sub carries a ref claim.
+        # Same immutable-subject handling as every other OIDC role here.
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:*"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "ecr_push_trust_sync" {
+  provider = aws.shared
+  name     = "EKSManagerEcrPushTrustSyncPolicy"
+  role     = aws_iam_role.ecr_push_trust_sync.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      # One role, one action. UpdateAssumeRolePolicy rewrites a trust document
+      # wholesale, so this identity can decide who may assume EKSManager-push-ecr
+      # -- and nothing else. It cannot touch that role's permissions, which are
+      # Terraform's, nor any other role in the account.
+      #
+      # GetRole so the workflow can show the before and after in its log; a trust
+      # policy change that reports nothing is a change nobody can audit.
+      Sid    = "MaintainEcrPushTrust"
+      Effect = "Allow"
+      Action = [
+        "iam:UpdateAssumeRolePolicy",
+        "iam:GetRole",
+      ]
+      Resource = "arn:aws:iam::${var.shared_services_account_id}:role/EKSManager-push-ecr"
+    }]
+  })
 }
 
 resource "aws_iam_role" "github_actions_upload" {
@@ -502,18 +690,62 @@ resource "aws_iam_role_policy" "codebuild" {
 # vpc_id and vpc_subnet_id are required, not optional. AWS-managed networking
 # would give CodeBuild a different, unpredictable IP on every run.
 
+# The VPC's own CIDR, so DNS egress can be scoped to the Amazon-provided
+# resolver (VPC base + 2) rather than to the internet. Without a rule for it
+# name resolution fails and every outbound call dies as an unresolvable host,
+# which reads like a proxy or firewall problem rather than a missing SG rule.
+data "aws_vpc" "bootstrap" {
+  provider = aws.shared
+  id       = var.vpc_id
+}
+
 resource "aws_security_group" "codebuild" {
   provider    = aws.shared
   name        = "eksmanager-bootstrap-codebuild-sg"
   description = "Network perimeter for the EKS Manager bootstrap CodeBuild container - no inbound, egress via VPC routing"
   vpc_id      = var.vpc_id
 
+  # Was every protocol on every port to anywhere. Narrowed to what is actually
+  # used: HTTPS out, and DNS to the VPC resolver.
+  #
+  # 443 stays open to 0.0.0.0/0 rather than to a list of addresses because the
+  # destinations are CDN-backed and have no stable ranges to pin --
+  # releases.hashicorp.com for the Terraform binary, registry.terraform.io for
+  # providers, the ACME API, GitHub, Cognito, and every AWS API endpoint. An
+  # allowlist here would be fiction that breaks on the next CDN change.
+  #
+  # Narrowing this further is a VPC endpoint job, and the VPC belongs to the
+  # customer -- see the prerequisites doc. Endpoints for S3, ECR, Secrets
+  # Manager and SSM would take that traffic off the internet entirely.
+  #
+  # No port 80. Nothing here is known to need it; if a package install turns
+  # out to, it fails loudly as a connection timeout rather than silently
+  # downgrading, which is the right way round.
   egress {
-    description = "All outbound - restrict further via VPC route tables / NACLs if needed"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "HTTPS to AWS APIs, the Terraform registry, and other public endpoints"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS to the VPC resolver (UDP)"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = [data.aws_vpc.bootstrap.cidr_block]
+  }
+
+  # TCP as well as UDP: a response over 512 bytes is returned truncated and the
+  # resolver retries over TCP. Rare, but it fails as an intermittent DNS error
+  # that is very hard to attribute.
+  egress {
+    description = "DNS to the VPC resolver (TCP, for truncated responses)"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.bootstrap.cidr_block]
   }
 }
 
@@ -523,12 +755,47 @@ resource "aws_security_group" "agent" {
   description = "EKS Manager agent VM - no inbound, egress only. Agent polls out; nothing connects in."
   vpc_id      = var.vpc_id
 
+  # Was every protocol on every port to anywhere. Narrowed to what is actually
+  # used: HTTPS out, and DNS to the VPC resolver.
+  #
+  # 443 stays open to 0.0.0.0/0 rather than to a list of addresses because the
+  # destinations are CDN-backed and have no stable ranges to pin --
+  # releases.hashicorp.com for the Terraform binary, registry.terraform.io for
+  # providers, the ACME API, GitHub, Cognito, and every AWS API endpoint. An
+  # allowlist here would be fiction that breaks on the next CDN change.
+  #
+  # Narrowing this further is a VPC endpoint job, and the VPC belongs to the
+  # customer -- see the prerequisites doc. Endpoints for S3, ECR, Secrets
+  # Manager and SSM would take that traffic off the internet entirely.
+  #
+  # No port 80. Nothing here is known to need it; if a package install turns
+  # out to, it fails loudly as a connection timeout rather than silently
+  # downgrading, which is the right way round.
   egress {
-    description = "All outbound - restrict further via VPC route tables / NACLs if needed"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "HTTPS to AWS APIs, the Terraform registry, and other public endpoints"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS to the VPC resolver (UDP)"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = [data.aws_vpc.bootstrap.cidr_block]
+  }
+
+  # TCP as well as UDP: a response over 512 bytes is returned truncated and the
+  # resolver retries over TCP. Rare, but it fails as an intermittent DNS error
+  # that is very hard to attribute.
+  egress {
+    description = "DNS to the VPC resolver (TCP, for truncated responses)"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.bootstrap.cidr_block]
   }
 }
 

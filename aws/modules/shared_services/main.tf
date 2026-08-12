@@ -12,6 +12,17 @@
 
 data "aws_caller_identity" "shared" {}
 
+# EKSManagerCMK, created by iam/codebuild-pipeline-tf during setup-pipeline.sh.
+# Looked up rather than declared: that module runs first, and two modules
+# declaring one alias would fight over it on every apply.
+#
+# A hard dependency, deliberately. If the key is missing this fails here with
+# "alias/EKSManagerCMK not found" rather than quietly creating unencrypted
+# buckets that nothing later notices.
+data "aws_kms_key" "eksmanager" {
+  key_id = "alias/EKSManagerCMK"
+}
+
 # --- ECR ---------------------------------------------------------------------
 
 resource "aws_ecr_repository" "app" {
@@ -80,6 +91,25 @@ resource "aws_iam_role" "ecr_push" {
       }
     }]
   })
+
+  # Terraform seeds this trust and then stops touching it.
+  # .github/workflows/sync-ecr-push-trust.yml owns it from the first run,
+  # rebuilding it from clusters.json as an exact ArnEquals list -- which is what
+  # closes the wildcard hole the ArnLike above leaves open.
+  #
+  # A trust policy is one document, so unlike the Let's Encrypt split there is
+  # no way to give Terraform one half and the workflow the other. Without this
+  # they overwrite each other on alternate runs: the wildcard comes back on
+  # every bootstrap apply, and the tightening looks like it keeps regressing for
+  # no reason.
+  #
+  # The seeded value matters only on a fresh install, where no clusters exist
+  # yet and there is nothing to trust. On an existing one Terraform leaves the
+  # live document alone, so nothing breaks between this landing and the
+  # workflow's first run.
+  lifecycle {
+    ignore_changes = [assume_role_policy]
+  }
 }
 
 resource "aws_iam_role_policy" "ecr_push" {
@@ -129,12 +159,36 @@ resource "aws_iam_role_policy" "ecr_push" {
 
 resource "aws_s3_bucket" "config" {
   bucket = var.config_bucket_name
+
+  # allowed_regions.json lives here and is the source for every account/region
+  # decision the agent makes.
+  #
+  # terraform/README documents a destroy path. This makes removing it a
+  # deliberate act -- comment the block out -- rather than a side effect of
+  # tearing the module down.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket_versioning" "config" {
   bucket = aws_s3_bucket.config.id
   versioning_configuration {
     status = "Enabled"
+  }
+}
+
+# Holds allowed_regions.json, which the agent reads on every cache cycle.
+# bucket_key_enabled keeps that from becoming a KMS call per read.
+resource "aws_s3_bucket_server_side_encryption_configuration" "config" {
+  bucket = aws_s3_bucket.config.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = data.aws_kms_key.eksmanager.arn
+    }
+    bucket_key_enabled = true
   }
 }
 
@@ -165,6 +219,33 @@ resource "aws_s3_object" "allowed_regions" {
 
 resource "aws_s3_bucket" "logs" {
   bucket = "eksmanager-logs-${data.aws_caller_identity.shared.account_id}"
+
+  # The entire agent log history. Nothing regenerates it, and it is the record
+  # you want most when investigating whatever prompted the teardown.
+  #
+  # terraform/README documents a destroy path. This makes removing it a
+  # deliberate act -- comment the block out -- rather than a side effect of
+  # tearing the module down.
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Written by agent_log_shipper in 5-minute batches, so this is the
+# highest-volume KMS consumer here -- bucket_key_enabled matters most on this one.
+#
+# Safe to encrypt with a CMK because the agent PUTs these through the API. S3
+# server access logging cannot deliver to an SSE-KMS bucket; this is not that.
+resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = data.aws_kms_key.eksmanager.arn
+    }
+    bucket_key_enabled = true
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "logs" {
@@ -242,6 +323,7 @@ resource "aws_iam_role_policy" "agent" {
 
   policy = templatefile("${path.module}/agent-role-policy.json", {
     SHARED_SERVICES_ACCOUNT_ID = data.aws_caller_identity.shared.account_id
+    SHARED_SERVICES_REGION     = var.shared_services_region
     IDENTITY_CENTER_ROLE_ARN   = var.eks_manager_identity_center_role_arn
   })
 }

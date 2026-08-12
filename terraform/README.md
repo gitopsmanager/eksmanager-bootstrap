@@ -84,6 +84,23 @@ Set `DESTROY_MODE=true` as a plaintext environment variable on the `eksmanager-b
 
 **Unset `DESTROY_MODE` before the next normal build** — it doesn't self-disable, and a build left with it set will destroy again instead of applying.
 
+#### What a destroy will refuse to remove
+
+Several resources carry `lifecycle { prevent_destroy = true }`, so a destroy **fails rather than removing them**. That is deliberate: each holds something no re-run can recreate.
+
+| resource | why |
+|---|---|
+| `EKSManagerCMK` (`aws_kms_key.eksmanager`) | Encrypts the artifact, config and log buckets and both secrets. Deleting it makes all of them permanently unreadable after the 30-day window. |
+| Bootstrap artifact bucket | Only copy of anything not re-uploadable. |
+| M2M client secret | Recoverable only by re-running setup with the value to hand. |
+| GitHub App secret | If this is the only copy, replacing it means a new key pair and re-installing the App. |
+| Config bucket | Holds `allowed_regions.json`, the source for every account and region decision the agent makes. |
+| Log bucket | The whole agent log history — usually what you most want when investigating whatever prompted the teardown. |
+
+To remove one deliberately, comment out its `lifecycle` block, apply, then destroy. The extra step is the point: it makes discarding this data a decision someone made rather than a side effect of a teardown.
+
+Note the CMK in particular. `terraform destroy -auto-approve` with no guard would schedule key deletion, and once that window elapses every object in three buckets and both secrets is unrecoverable — including backups of them, since the ciphertext is worthless without the key.
+
 This only touches the `aws/` module's own state (`state/terraform.tfstate` in the `eksmanager-bootstrap-<account-id>` bucket) — it has no effect on the pipeline infrastructure itself (the CodeBuild project, IAM roles, the bucket). For that, use `setup-pipeline.sh --destroy` instead, documented above — the two are separate Terraform configurations with separate state, and neither tears down the other.
 
 ### `EKSManagerAdminRole` deploys to every account in a targeted OU, not just enrolled ones

@@ -48,10 +48,38 @@ resource "aws_instance" "agent" {
   vpc_security_group_ids = [data.aws_security_group.agent.id]
   iam_instance_profile   = var.agent_role_name
 
+  # Encrypted with the account's default EBS key rather than EKSManagerCMK.
+  # The CMK lives in this same account and would work, but the volume is
+  # attached at launch by EC2 itself -- a key policy mistake there is not a
+  # failed read, it is an instance that never boots and an agent that never
+  # comes back. The data on it is a checkout and a log tail, not secrets;
+  # everything that matters is in Secrets Manager or S3, which do use the CMK.
+  #
+  # Changing this on an existing instance REPLACES it. The agent's local state
+  # under /home/ubuntu/.af7 (.subdomain.txt, .vmName.txt) is rebuilt by
+  # user_data, so that is a rebuild rather than a data loss -- but it is an
+  # outage for that agent, not an in-place update.
   root_block_device {
     volume_size           = 75
     volume_type           = "gp3"
     delete_on_termination = true
+    encrypted             = true
+  }
+
+  # IMDSv2 only. Every metadata caller in the agent already does the two-step
+  # token exchange -- af7signalr.py and awsapi.py both PUT /latest/api/token
+  # before reading anything -- so requiring it breaks nothing.
+  #
+  # Unlike the volume above, this updates IN PLACE via
+  # ModifyInstanceMetadataOptions. No replacement.
+  #
+  # hop_limit stays at 1: the agent reads its own metadata directly, and a
+  # higher limit is what lets a container on the host reach the instance role.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+    instance_metadata_tags      = "disabled"
   }
 
   user_data = templatefile("${path.module}/agent-install.sh.tpl", {

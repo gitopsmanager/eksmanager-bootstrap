@@ -1,0 +1,155 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+name: sync-ecr-push-trust
+
+# Keeps EKSManager-push-ecr's TRUST POLICY in step with clusters.json, and does
+# nothing else.
+#
+# That role lives in shared services and owns the registry. Each cluster's
+# EKSManager-<cluster>-push-ecr role chains into it through Pod Identity, so an
+# ARC runner can push images to an account it otherwise has no access to.
+#
+# The trust used to name the account root with an ArnLike wildcard on
+# "EKSManager-*-push-ecr". Any principal able to create a role matching that
+# name in a trusted account could assume it -- and session tags do not fix that,
+# because IAM cannot tell a tag set by EKS Pod Identity from one the caller
+# passed on the AssumeRole call. A principal ARN, unlike a session tag, cannot
+# be forged. So the trust is an exact list, rebuilt from clusters.json.
+#
+# Split from add-cluster deliberately. A trust policy is a single document, and
+# add-cluster keeps per-cluster Terraform state -- two clusters added at once
+# would each rewrite it from their own state and the second would silently drop
+# the first. One writer, whole document, every time.
+#
+# Runs before the cluster's runners exist. BootstrapClusterRegistry writes
+# clusters.json and then dispatches add-cluster, so this fires on the push in
+# between and the trust is in place before anything tries to use it.
+#
+# Requires (from iam/codebuild-pipeline-tf outputs):
+#   ECR_PUSH_TRUST_SYNC_ROLE_ARN - ecr_push_trust_sync_role_arn
+#   AWS_REGION                   - the shared services region
+
+on:
+  push:
+    paths:
+      - "clusters.json"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the trust policy
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+
+          try:
+              clusters = json.load(open("clusters.json"))
+          except FileNotFoundError:
+              sys.exit("clusters.json not found -- nothing to sync.")
+          except json.JSONDecodeError as e:
+              sys.exit(f"clusters.json is not valid JSON: {e}")
+
+          if not isinstance(clusters, dict):
+              sys.exit("clusters.json must be an object keyed by cluster name.")
+
+          arns, problems = [], []
+
+          for name, entry in clusters.items():
+              if not isinstance(entry, dict):
+                  problems.append(f"{name}: not an object")
+                  continue
+
+              account = str(entry.get("account", ""))
+              if not re.fullmatch(r"\d{12}", account):
+                  problems.append(f"{name}: account '{account}' is not a 12-digit AWS account id")
+                  continue
+
+              # Must match create_ecr_push_pod_identity_for_github_arc's default
+              # in awsapi.py. If that naming ever changes, this list stops
+              # matching the roles that actually exist and every push fails on
+              # AssumeRole -- which is the loud failure, not a silent one.
+              arns.append(f"arn:aws:iam::{account}:role/EKSManager-{name}-push-ecr")
+
+          if problems:
+              print("Cannot sync -- clusters.json has problems:")
+              for p in problems:
+                  print(f"  - {p}")
+              sys.exit(1)
+
+          arns = sorted(set(arns))
+
+          # No clusters is a legitimate state: a fresh install, or every cluster
+          # removed. The trust cannot be written empty -- IAM rejects a statement
+          # with no principal and an empty condition list -- so it is written to
+          # match nothing instead. Leaving the previous list in place would keep
+          # trusting roles for clusters that no longer exist.
+          if arns:
+              print(f"Trusting {len(arns)} cluster role(s):")
+              for a in arns:
+                  print(f"  {a}")
+              condition = {"ArnEquals": {"aws:PrincipalArn": arns}}
+          else:
+              print("No clusters configured -- writing a trust that matches nothing.")
+              condition = {"ArnEquals": {"aws:PrincipalArn": []}}
+
+          # Principal stays the account root with the real constraint in the
+          # condition, rather than naming the role ARNs directly. IAM validates
+          # principals on write: a role listed there that does not exist yet --
+          # a cluster registered before its ARC deployment created the role --
+          # fails the whole update with MalformedPolicyDocument. Conditions are
+          # not validated that way, so this stays correct whatever order things
+          # are created in.
+          accounts = sorted({a.split(":")[4] for a in arns})
+          policy = {
+              "Version": "2012-10-17",
+              "Statement": [{
+                  "Sid": "AllowClusterPushEcrRoles",
+                  "Effect": "Allow",
+                  "Principal": {"AWS": [f"arn:aws:iam::{acct}:root" for acct in accounts]},
+                  # TagSession as well as AssumeRole: Pod Identity carries
+                  # session tags through the chain and the hop fails without it.
+                  "Action": ["sts:AssumeRole", "sts:TagSession"],
+                  "Condition": condition,
+              }],
+          }
+
+          # With no clusters there is no account to name as a principal either,
+          # so the statement cannot be written at all. Deleting the role is not
+          # this workflow's job, so it is left alone and reported.
+          if not accounts:
+              print("No trusted accounts -- leaving the existing trust untouched.")
+              open("skip", "w").write("1")
+          else:
+              json.dump(policy, open("trust.json", "w"), indent=2)
+          PY
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        if: hashFiles('skip') == ''
+        with:
+          role-to-assume: ${{ vars.ECR_PUSH_TRUST_SYNC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Apply to EKSManager-push-ecr
+        if: hashFiles('skip') == ''
+        run: |
+          set -eu
+          ROLE="EKSManager-push-ecr"
+
+          echo "--- trust before ---"
+          aws iam get-role --role-name "$ROLE" \
+            --query 'Role.AssumeRolePolicyDocument' --output json || true
+
+          aws iam update-assume-role-policy \
+            --role-name "$ROLE" \
+            --policy-document file://trust.json
+
+          echo "--- trust after ---"
+          aws iam get-role --role-name "$ROLE" \
+            --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition' --output json

@@ -36,6 +36,25 @@
       "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerZones/*"
     },
     {
+      "Sid": "EKSManagerCMK",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext"
+      ],
+      "Resource": "arn:aws:kms:*:${SHARED_SERVICES_ACCOUNT_ID}:key/*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "s3.${SHARED_SERVICES_REGION}.amazonaws.com",
+            "secretsmanager.${SHARED_SERVICES_REGION}.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "ParameterStoreReadConfig",
       "Effect": "Allow",
       "Action": [

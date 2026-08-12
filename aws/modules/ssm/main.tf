@@ -3,6 +3,42 @@
 # modules/ssm — Step 7
 # Write EKSManager configuration to Parameter Store in shared services.
 # -----------------------------------------------------------------------------
+#
+# Why every parameter here is String and not SecureString
+# -------------------------------------------------------
+# A Well-Architected review (August 2026) flagged these as a finding, on the
+# reasonable prior that a bootstrap system's Parameter Store usually holds
+# something sensitive. Reviewed parameter by parameter, none of these do.
+#
+# What is actually stored: the shared services and management account ids and
+# their regions, the agent role ARN, the account StackSet name, two Identity
+# Center permission set ARNs, the identity store id and its region, the
+# Identity Center role ARN, a secrets-editing feature flag, the app URL, the
+# Cognito client id and token endpoint, and the customer's cost-allocation tag
+# name and value.
+#
+# Every one is configuration. Several are already public knowledge to anyone
+# holding an ARN from this account. None is a credential, and none grants
+# anything on its own -- an account id or a role ARN is an identifier, not a
+# key. Access still has to be granted by IAM, which it is: read is scoped to
+# /EKSManager/config/* and all writes are explicitly denied to the agent.
+#
+# The things that ARE secret are not here. The M2M client secret and the GitHub
+# App private key live in Secrets Manager, encrypted with EKSManagerCMK, in
+# iam/codebuild-pipeline-tf. That separation is the point: this module is where
+# configuration goes precisely so that a reader can tell at a glance that it
+# holds none.
+#
+# Converting these to SecureString would not be neutral. Every reader would
+# then need kms:Decrypt, which means widening the agent's KMS grant and adding
+# one to anything else that reads config, in exchange for encrypting values
+# that are not secret. It would trade a real increase in permission surface for
+# a nominal control.
+#
+# If a genuine secret ever needs to live in Parameter Store, use SecureString
+# with EKSManagerCMK for that parameter -- and update this note, because its
+# claim is that no such parameter exists.
+# -----------------------------------------------------------------------------
 
 resource "aws_ssm_parameter" "shared_services_account" {
   name  = "/EKSManager/config/shared-services-account"
