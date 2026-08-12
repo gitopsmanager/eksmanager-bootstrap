@@ -205,6 +205,29 @@ resource "aws_s3_bucket_lifecycle_configuration" "logs" {
 # Policy: agent-role-policy.json with substitutions:
 #   MGMT_ACCOUNT_ID            → management account ID
 #   SHARED_SERVICES_ACCOUNT_ID → shared services account ID
+#
+# That file is applied verbatim as an IAM policy, so it carries no _comment
+# keys -- IAM rejects unknown keys in a statement with MalformedPolicyDocument,
+# unlike the example-*.json files in the repo root which are documentation and
+# never applied. Anything needing explanation is explained here instead.
+#
+# Two Secrets Manager statements, deliberately not one:
+#
+#   SecretsManager               /EKSManager/*       read and write
+#   SecretsManagerZoneCertsRead  /EKSManagerZones/*  read only
+#
+# The second covers the wildcard certificates issued by terraform/lets-encrypt,
+# one secret per zone (<dns-zone-prefix>-dns-zone-certs), which the agent reads
+# and pushes into every namespace holding a dns-zone-certs secret. Read only
+# because Terraform owns them: an agent write would be reverted by the next
+# weekly renewal, and the value is a wildcard private key nothing else needs to
+# replace.
+#
+# The split in paths is not cosmetic. The ProtectEKSManagerOperationalSecrets
+# SCP denies secret writes under /EKSManager/* to everything except this role,
+# OrganizationAccountAccessRole and EKSManagerBootstrapSharedRole -- so a
+# certificate secret stored there could not be written by
+# EKSManagerLetsEncryptRole at all.
 
 resource "aws_iam_role" "agent" {
   name        = "EKSManagerAgentRole"

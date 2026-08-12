@@ -27,6 +27,15 @@
       "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManager/*"
     },
     {
+      "Sid": "SecretsManagerZoneCertsRead",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerZones/*"
+    },
+    {
       "Sid": "ParameterStoreReadConfig",
       "Effect": "Allow",
       "Action": [
