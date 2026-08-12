@@ -55,6 +55,20 @@ locals {
   # prefix-lists bucket.
   state_key = "state/lets-encrypt.tfstate"
 
+  # GitHub's immutable subject-claim format (auto-enforced for repos created
+  # after July 15, 2026): repo:OWNER@OWNER-ID/REPO@REPO-ID -- falls back to
+  # the legacy repo:OWNER/REPO format when either ID is unset, for repos
+  # that predate the change and haven't opted in.
+  #
+  # The IDs belong in the sub, not in conditions of their own. There is no
+  # owner_id claim in a GitHub OIDC token -- the claim is repository_owner_id
+  # -- and StringEquals on a claim the token does not carry evaluates false,
+  # so a condition naming it denies every assume with no indication why.
+  # Identical to the local of the same name in codebuild-pipeline-tf and
+  # prefix-lists-pipeline-tf, which is what those two get right.
+  github_sub_repo = (var.github_owner_id != "" && var.github_repo_id != "") ? (
+    "${split("/", var.github_repo)[0]}@${var.github_owner_id}/${split("/", var.github_repo)[1]}@${var.github_repo_id}"
+  ) : var.github_repo
 }
 
 # ── S3 bucket for the lets-encrypt artifact and Terraform state ──────────────
@@ -119,13 +133,15 @@ resource "aws_iam_role" "github_actions_upload" {
       Principal = { Federated = var.github_oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
-        StringEquals = merge(
-          { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" },
-          var.github_owner_id != "" ? { "token.actions.githubusercontent.com:owner_id" = var.github_owner_id } : {},
-          var.github_repo_id != "" ? { "token.actions.githubusercontent.com:repository_id" = var.github_repo_id } : {},
-        )
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        # Dispatched from any branch, unlike the other two pipelines which pin
+        # refs/heads/main. lets-encrypt.yml is workflow_dispatch and
+        # sync-hosted-zones.yml triggers on push, so both carry a ref sub claim
+        # -- the wildcard covers either without caring which branch.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:*"
+          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:*"
         }
       }
     }]
@@ -260,13 +276,14 @@ resource "aws_iam_role" "policy_sync" {
       Principal = { Federated = var.github_oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
-        StringEquals = merge(
-          { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" },
-          var.github_owner_id != "" ? { "token.actions.githubusercontent.com:owner_id" = var.github_owner_id } : {},
-          var.github_repo_id != "" ? { "token.actions.githubusercontent.com:repository_id" = var.github_repo_id } : {},
-        )
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        # See the upload role above -- same reasoning, same claim shape. This
+        # one is reached by push rather than dispatch, but the sub claim is
+        # built the same way either way.
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:*"
+          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:*"
         }
       }
     }]
