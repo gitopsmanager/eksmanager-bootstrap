@@ -17,6 +17,19 @@ name: sync-hosted-zones
 # Runs before certificates are issued. Push the zone list, this syncs the grant,
 # then run lets-encrypt.yml. Doing it the other way round fails on AssumeRole.
 #
+# On the scope of the identity this assumes: it is bounded to one ROLE, not to
+# one policy on that role. IAM cannot express the latter -- an inline policy
+# has no ARN, so iam:PutRolePolicy takes the role as its resource and there is
+# no iam:PolicyName condition key. Writing one anyway denies every call, since
+# a condition on an absent key is false.
+#
+# Moving EKSManagerLetsEncryptAssumeRoles from an inline policy to a
+# customer-managed policy would fix that properly: managed policies have ARNs,
+# so iam:CreatePolicyVersion scopes to exactly one document. The costs are a
+# 6,144-character limit instead of 10,240, a five-version cap that has to be
+# pruned on every write, and no way to express "no zones" by deletion -- the
+# policy is attached, so it would need a placeholder statement instead.
+#
 # Requires (from iam/lets-encrypt-pipeline-tf outputs):
 #   LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN - policy_sync_role_arn
 #   AWS_REGION                        - the shared services region

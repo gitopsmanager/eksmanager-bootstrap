@@ -299,15 +299,30 @@ resource "aws_iam_role_policy" "policy_sync" {
     Version = "2012-10-17"
     Statement = [
       {
-        # One role, and within it one named inline policy. It cannot touch
-        # EKSManagerLetsEncryptRolePolicy -- the statements Terraform owns --
-        # and cannot reach any other role in the account.
+        # One role, and no further. This identity cannot reach any other role
+        # in the account.
         #
-        # PutRolePolicy on a role is a privilege-granting action, so the
-        # narrowness matters: the worst this identity can do is rewrite which
-        # cert_manager roles the certificate pipeline may assume. It cannot
-        # grant that pipeline anything else, because the policy name it may
-        # write is fixed and every other statement lives in the other one.
+        # It CAN write any inline policy on that one role, including
+        # EKSManagerLetsEncryptRolePolicy, which Terraform owns. That is not
+        # the intent -- sync-hosted-zones only ever writes
+        # EKSManagerLetsEncryptAssumeRoles -- but it is the tightest bound IAM
+        # can actually express. An inline policy has no ARN, so PutRolePolicy
+        # takes the ROLE as its resource, and there is no condition key for the
+        # policy name. A StringEquals on iam:PolicyName looks like it works and
+        # does the opposite: the key is absent from the request context, the
+        # condition evaluates false, and every call is denied with "no
+        # identity-based policy allows the iam:PutRolePolicy action".
+        #
+        # What limits the damage is the threat model rather than this grant.
+        # Reaching this identity means write access to the client repo, and
+        # that already allows editing terraform/lets-encrypt, which CodeBuild
+        # then runs AS the role in question. Anyone able to abuse this can
+        # already run arbitrary Terraform with the same credentials, so scoping
+        # the policy name would buy nothing even if AWS allowed it.
+        #
+        # To make it a real boundary, the grant has to move to a
+        # customer-managed policy -- those do have ARNs, so CreatePolicyVersion
+        # scopes to exactly one document. See the note in sync-hosted-zones.yml.
         Sid    = "MaintainAssumeRolesPolicy"
         Effect = "Allow"
         Action = [
@@ -316,11 +331,6 @@ resource "aws_iam_role_policy" "policy_sync" {
           "iam:DeleteRolePolicy",
         ]
         Resource = aws_iam_role.codebuild.arn
-        Condition = {
-          StringEquals = {
-            "iam:PolicyName" = "EKSManagerLetsEncryptAssumeRoles"
-          }
-        }
       },
     ]
   })
