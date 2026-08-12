@@ -188,6 +188,92 @@ phases:
           -backend-config="region=${AWS_REGION}"
       - "echo 'OK: terraform init complete'"
 
+      # ── Reconcile state with the ACME endpoint in use ─────────────────────
+      # Flipping acme-staging changes which ACME server the provider talks to,
+      # and the account key is only registered on the one it was created
+      # against. Terraform refreshes before it plans, so the FIRST thing that
+      # happens after a flip is acme_certificate's read authenticating to the
+      # new server with a key it has never seen:
+      #
+      #   Error: acme: error: 400 :: POST :: .../acme/new-acct ::
+      #   urn:ietf:params:acme:error:accountDoesNotExist
+      #
+      # The plan dies there, so nothing downstream -- lifecycle rules,
+      # replace_triggered_by, anything expressed in the configuration -- ever
+      # gets a chance to run. It has to be fixed before plan, which is why it
+      # lives here rather than in main.tf.
+      #
+      # acme_registration recovers on its own (its read returns "gone" and
+      # Terraform recreates it), but acme_certificate errors instead, so both
+      # are dropped together: keeping a certificate issued by an account that
+      # no longer applies would leave the plan referring to an identity the
+      # server does not recognise.
+      #
+      # state rm, deliberately not destroy. Destroying would honour
+      # revoke_certificate_on_destroy and try to revoke the old certificate
+      # against the NEW server, which cannot work -- the certificate belongs to
+      # the other one. The superseded certificate is simply left to expire.
+      #
+      # tls_private_key.acme_account is kept. One key can hold an account on
+      # both servers, and ACME new-acct returns the existing account rather
+      # than erroring, so switching back later is idempotent.
+      - |
+        set -eu
+        python3 - <<'PY'
+        import json, subprocess, sys
+
+        def tf(*args):
+            return subprocess.run(["terraform", *args],
+                                  capture_output=True, text=True, check=True).stdout
+
+        want_staging = bool(json.load(open("acme.auto.tfvars.json"))["acme_use_staging"])
+        wanted = "staging" if want_staging else "production"
+
+        raw = tf("state", "pull").strip()
+        state = json.loads(raw) if raw else {}
+
+        # The registration's id IS the account URL, so the endpoint currently
+        # recorded in state can be read straight off it -- no extra bookkeeping
+        # resource, and nothing to fall out of step with reality.
+        recorded_url = None
+        for r in state.get("resources", []):
+            if r.get("type") == "acme_registration":
+                for i in r.get("instances", []):
+                    a = i.get("attributes") or {}
+                    recorded_url = a.get("registration_url") or a.get("id")
+
+        if not recorded_url:
+            print(f"OK: no ACME registration in state -- first run on {wanted}.")
+            sys.exit(0)
+
+        # "acme-staging-v02" vs "acme-v02" -- distinct substrings, so this does
+        # not need to know either full URL.
+        have_staging = "acme-staging" in recorded_url
+        if have_staging == want_staging:
+            print(f"OK: state is already on the {wanted} endpoint.")
+            sys.exit(0)
+
+        have = "staging" if have_staging else "production"
+        print(f"ACME endpoint changed: {have} -> {wanted}.")
+        print(f"  state holds an account on {have}: {recorded_url}")
+
+        stale = [a for a in tf("state", "list").splitlines()
+                 if a.startswith(("acme_certificate.", "acme_registration."))]
+
+        if not stale:
+            print("  nothing to remove.")
+            sys.exit(0)
+
+        # Passed as argv entries rather than through a shell, so an address
+        # like acme_certificate.wildcard["dev"] needs no quoting.
+        for addr in stale:
+            print(f"  removing {addr} from state (not destroying it)")
+            tf("state", "rm", addr)
+
+        print(f"OK: state reconciled -- these will be recreated against {wanted}.")
+        print("NOTE: the superseded certificate is left to expire, not revoked.")
+        PY
+
   build:
     commands:
       - terraform plan -input=false -out=tfplan
