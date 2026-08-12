@@ -74,17 +74,36 @@ phases:
           | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
         if [ -z "${{TOKEN}}" ]; then
-          echo "ERROR: no access token -- cannot report ${{STATUS}} for ${{CLUSTER_NAME}}." >&2
-          exit 1
+          echo "WARNING: no access token -- cannot report ${{STATUS}} for ${{CLUSTER_NAME}}." >&2
+          exit 0
         fi
 
-        # -f, so an HTTP error fails the phase instead of being swallowed. A
-        # rejected callback is exactly as bad as no callback: the app keeps
-        # whatever status it had, which is the bug this block exists to avoid.
-        curl -fsS -X POST "${{EKSMANAGER_API_URL}}/clusters/${{CLUSTER_NAME}}/prefix-list-status" \\
+        # Reports the HTTP code and body rather than failing on them. This
+        # block is telemetry: the build's outcome is the terraform apply above,
+        # and a rejected callback must not turn a cluster whose rules ARE in
+        # place into a red build -- that is worse than the silence it replaced,
+        # because it is wrong in the confident direction.
+        #
+        # Not `curl -f` for the same reason: -f exits 22 and prints nothing
+        # useful, so a 401 and a 404 look identical. Capturing the code names
+        # which one it is.
+        HTTP=$(curl -sS -o /tmp/callback-body.txt -w '%{{http_code}}' \\
+          -X POST "${{EKSMANAGER_API_URL}}/clusters/${{CLUSTER_NAME}}/prefix-list-status" \\
           -H "Authorization: Bearer ${{TOKEN}}" \\
           -H "Content-Type: application/json" \\
-          -d "{{\\"status\\": \\"${{STATUS}}\\"}}"
+          -d "{{\\"status\\": \\"${{STATUS}}\\"}}" || echo "000")
+
+        case "${{HTTP}}" in
+          2*) echo "Reported ${{STATUS}} for ${{CLUSTER_NAME}} (HTTP ${{HTTP}})." ;;
+          000) echo "WARNING: status callback could not reach ${{EKSMANAGER_API_URL}}." >&2 ;;
+          *)
+            echo "WARNING: status callback rejected -- HTTP ${{HTTP}}." >&2
+            echo "  POST ${{EKSMANAGER_API_URL}}/clusters/${{CLUSTER_NAME}}/prefix-list-status" >&2
+            sed -n '1,20p' /tmp/callback-body.txt >&2
+            echo "  The apply result above stands; only the report failed." >&2
+            ;;
+        esac
+        exit 0
 """
 
 
