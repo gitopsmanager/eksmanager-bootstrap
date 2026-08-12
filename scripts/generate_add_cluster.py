@@ -57,15 +57,31 @@ phases:
           -backend-config="key=accounts/${{TARGET_ACCOUNT}}/clusters/${{CLUSTER_NAME}}/terraform.tfstate"
       - terraform apply -input=false -auto-approve -var="target_account_id=${{TARGET_ACCOUNT}}" -var="target_region=${{TARGET_REGION}}" -var="cluster_name=${{CLUSTER_NAME}}"
     finally:
+      # ONE command, deliberately. Each CodeBuild `commands:` entry runs in
+      # its own shell -- AWS documents this, and terraform/lets-encrypt's
+      # buildspec works around the same trap for its tfvars. Split across
+      # three entries, STATUS and TOKEN both arrive empty here: the callback
+      # posts {{"status": ""}} with a bare "Authorization: Bearer", so a failed
+      # apply is never reported as failed. That is silent -- the build log
+      # shows all three commands running and nothing looks wrong.
       - |
         if [ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ]; then STATUS="success"; else STATUS="failed"; fi
-      - |
+        echo "Reporting ${{STATUS}} for ${{CLUSTER_NAME}}."
+
         TOKEN=$(curl -fsSL -X POST "${{EKSMANAGER_COGNITO_URL}}/oauth2/token" \\
           -H "Content-Type: application/x-www-form-urlencoded" \\
           -d "grant_type=client_credentials&client_id=${{EKSMANAGER_CLIENT_ID}}&client_secret=${{EKSMANAGER_CLIENT_SECRET}}" \\
           | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-      - |
-        curl -s -X POST "${{EKSMANAGER_API_URL}}/clusters/${{CLUSTER_NAME}}/prefix-list-status" \\
+
+        if [ -z "${{TOKEN}}" ]; then
+          echo "ERROR: no access token -- cannot report ${{STATUS}} for ${{CLUSTER_NAME}}." >&2
+          exit 1
+        fi
+
+        # -f, so an HTTP error fails the phase instead of being swallowed. A
+        # rejected callback is exactly as bad as no callback: the app keeps
+        # whatever status it had, which is the bug this block exists to avoid.
+        curl -fsS -X POST "${{EKSMANAGER_API_URL}}/clusters/${{CLUSTER_NAME}}/prefix-list-status" \\
           -H "Authorization: Bearer ${{TOKEN}}" \\
           -H "Content-Type: application/json" \\
           -d "{{\\"status\\": \\"${{STATUS}}\\"}}"

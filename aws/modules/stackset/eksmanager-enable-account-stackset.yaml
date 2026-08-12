@@ -436,7 +436,8 @@ Resources:
                 Action:
                   - ec2:AuthorizeSecurityGroupIngress
                   - ec2:RevokeSecurityGroupIngress
-                Resource: "*"
+                  - ec2:ModifySecurityGroupRules
+                Resource: "arn:aws:ec2:*:*:security-group/*"
                 Condition:
                   "Null":
                     aws:ResourceTag/aws:eks:cluster-name: "false"
@@ -445,10 +446,29 @@ Resources:
                 Action:
                   - ec2:AuthorizeSecurityGroupIngress
                   - ec2:RevokeSecurityGroupIngress
-                Resource: "*"
+                  - ec2:ModifySecurityGroupRules
+                Resource: "arn:aws:ec2:*:*:security-group/*"
                 Condition:
                   StringEquals:
                     aws:ResourceTag/EKSManager: 'Managed'
+              # The rule leg of the same calls. AuthorizeSecurityGroupIngress
+              # authorises against TWO resources -- the group, and the rule it
+              # creates -- and the two statements above cover only the group.
+              # A rule being created has no tags yet, so their aws:ResourceTag
+              # conditions cannot match it and the whole call is denied with
+              # "not authorized ... on resource: security-group-rule/*".
+              #
+              # Unconditioned, and that grants nothing on its own: a rule
+              # cannot be created, revoked or modified without naming a group,
+              # and the group is still gated above. This is the second half of
+              # a call already authorised, not a second way in.
+              - Sid: AllowIngressRuleResourceLeg
+                Effect: Allow
+                Action:
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:ModifySecurityGroupRules
+                Resource: "arn:aws:ec2:*:*:security-group-rule/*"
               # PassRole is NOT in this list -- see AllowPassRoleToEKSManager
               # below. On Resource "*" it is a privilege-escalation primitive:
               # any role in the account trusting ec2 or pods.eks could be
