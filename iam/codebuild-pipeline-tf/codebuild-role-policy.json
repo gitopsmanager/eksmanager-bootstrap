@@ -4,7 +4,11 @@
     {
       "Sid": "S3Bootstrap",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"],
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:ListBucket"
+      ],
       "Resource": [
         "${BOOTSTRAP_BUCKET_ARN}",
         "${BOOTSTRAP_BUCKET_ARN}/*"
@@ -13,14 +17,19 @@
     {
       "Sid": "TerraformStateBackend",
       "Effect": "Allow",
-      "Action": ["s3:PutObject", "s3:DeleteObject"],
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
       "Resource": "${BOOTSTRAP_BUCKET_ARN}/state/*"
     },
     {
       "Sid": "SecretsManager",
       "Effect": "Allow",
       "Action": "secretsmanager:GetSecretValue",
-      "Resource": ["${CLIENT_SECRET_ARN}"]
+      "Resource": [
+        "${CLIENT_SECRET_ARN}"
+      ]
     },
     {
       "Sid": "AssumeManagementAccountBootstrapRole",
@@ -31,7 +40,11 @@
     {
       "Sid": "CloudWatchLogs",
       "Effect": "Allow",
-      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
       "Resource": "arn:aws:logs:*:${SHARED_SERVICES_ACCOUNT_ID}:log-group:/aws/codebuild/*"
     },
     {
@@ -277,6 +290,24 @@
         "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}",
         "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}/*"
       ]
+    },
+    {
+      "Sid": "EKSManagerCMK",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "arn:aws:kms:*:${SHARED_SERVICES_ACCOUNT_ID}:key/*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "s3.${SHARED_SERVICES_REGION}.amazonaws.com",
+            "secretsmanager.${SHARED_SERVICES_REGION}.amazonaws.com"
+          ]
+        }
+      }
     }
   ]
 }

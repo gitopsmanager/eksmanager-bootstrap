@@ -627,12 +627,29 @@ resource "aws_iam_role_policy" "github_actions_upload" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid      = "UploadBootstrapZip"
-      Effect   = "Allow"
-      Action   = "s3:PutObject"
-      Resource = "${aws_s3_bucket.bootstrap.arn}/eksmanager-bootstrap.zip"
-    }]
+    Statement = [
+      {
+        Sid      = "UploadBootstrapZip"
+        Effect   = "Allow"
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.bootstrap.arn}/eksmanager-bootstrap.zip"
+      },
+      {
+        # The bucket is SSE-KMS now, so a PUT needs the key as well as the
+        # bucket. GenerateDataKey, not just Decrypt: S3 asks KMS for a fresh
+        # data key on write, and a role holding only Decrypt uploads nothing --
+        # it fails as AccessDenied on the PUT, which reads like a bucket policy
+        # problem rather than a KMS one.
+        Sid    = "EKSManagerCMK"
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+          "kms:DescribeKey",
+        ]
+        Resource = aws_kms_key.eksmanager.arn
+      },
+    ]
   })
 }
 
@@ -679,6 +696,7 @@ resource "aws_iam_role_policy" "codebuild" {
     CLIENT_SECRET_ARN             = aws_secretsmanager_secret.eksmanager_client_secret.arn
     MANAGEMENT_BOOTSTRAP_ROLE_ARN = aws_iam_role.management_bootstrap.arn
     SHARED_SERVICES_ACCOUNT_ID    = var.shared_services_account_id
+    SHARED_SERVICES_REGION        = var.shared_services_region
     MANAGEMENT_ACCOUNT_ID         = var.management_account_id
   })
 }
