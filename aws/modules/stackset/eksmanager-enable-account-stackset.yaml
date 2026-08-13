@@ -532,10 +532,21 @@ Resources:
               # ListHostedZones only -- the cluster's own DNS records are
               # written by external-dns under its own Pod Identity role, not
               # by this one.
+              # ListHostedZonesByVPC is what the CheckDNSHostedZoneResolution
+              # step uses to find the private zones a cluster's VPC resolves,
+              # before checking the agent's own VPC is associated with each. It
+              # is a separate action from ListHostedZones and is not implied by
+              # it, so the step fails with an explicit AccessDenied without it.
+              #
+              # Read-only, like the rest of this statement. Nothing here writes
+              # DNS: records are written by external-dns under its own Pod
+              # Identity role, and zone associations are a customer
+              # prerequisite this product deliberately does not create.
               - Sid: AllowRoute53Read
                 Effect: Allow
                 Action:
                   - route53:ListHostedZones
+                  - route53:ListHostedZonesByVPC
                   - route53:GetHostedZone
                   - route53:ListResourceRecordSets
                 Resource: "*"
