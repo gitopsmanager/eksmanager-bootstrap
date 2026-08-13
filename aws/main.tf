@@ -36,11 +36,11 @@ module "shared_services" {
     aws = aws.shared
   }
 
-  shared_services_account_id = var.shared_services_account_id
-  shared_services_region     = var.shared_services_region
-  config_bucket_name         = local.config_bucket_name
-  allowed_regions_json       = local.allowed_regions_json
-  secrets_editing            = var.secrets_editing
+  shared_services_account_id           = var.shared_services_account_id
+  shared_services_region               = var.shared_services_region
+  config_bucket_name                   = local.config_bucket_name
+  allowed_regions_json                 = local.allowed_regions_json
+  secrets_editing                      = var.secrets_editing
   eks_manager_identity_center_role_arn = var.eks_manager_identity_center_role_arn
 }
 
@@ -55,22 +55,22 @@ module "ssm" {
     aws = aws.shared
   }
 
-  shared_services_account_id = var.shared_services_account_id
-  shared_services_region     = var.shared_services_region
-  management_account_id      = var.management_account_id
-  management_account_region  = var.management_account_region
-  agent_role_arn             = module.shared_services.agent_role_arn
-  secrets_editing            = var.secrets_editing
-  app_url                    = var.app_url
-  client_id                  = var.client_id
-  cognito_url                = var.cognito_url
+  shared_services_account_id                = var.shared_services_account_id
+  shared_services_region                    = var.shared_services_region
+  management_account_id                     = var.management_account_id
+  management_account_region                 = var.management_account_region
+  agent_role_arn                            = module.shared_services.agent_role_arn
+  secrets_editing                           = var.secrets_editing
+  app_url                                   = var.app_url
+  client_id                                 = var.client_id
+  cognito_url                               = var.cognito_url
   eks_manager_user_view_permission_set_arn  = var.eks_manager_user_view_permission_set_arn
   eks_manager_user_admin_permission_set_arn = var.eks_manager_user_admin_permission_set_arn
   identity_store_id                         = var.identity_store_id
   resource_tag_name                         = var.resource_tag_name
   resource_tag_value                        = var.resource_tag_value
-  eks_manager_identity_center_role_arn       = var.eks_manager_identity_center_role_arn
-  identity_center_resolved_region            = var.identity_center_resolved_region
+  eks_manager_identity_center_role_arn      = var.eks_manager_identity_center_role_arn
+  identity_center_resolved_region           = var.identity_center_resolved_region
 
   depends_on = [module.shared_services]
 }
@@ -113,15 +113,15 @@ module "agent" {
     aws = aws.shared
   }
 
-  agent_name              = var.agent_name
-  agent_instance_type     = var.agent_instance_type
-  agent_ami               = var.agent_ami
-  agent_subnet_id         = var.agent_subnet_id
-  agent_role_name         = module.shared_services.agent_role_name
-  af7_bundle_download_url = var.af7_bundle_download_url
+  agent_name                 = var.agent_name
+  agent_instance_type        = var.agent_instance_type
+  agent_ami                  = var.agent_ami
+  agent_subnet_id            = var.agent_subnet_id
+  agent_role_name            = module.shared_services.agent_role_name
+  af7_bundle_download_url    = var.af7_bundle_download_url
   agent_upgrade_download_url = var.agent_upgrade_download_url
-  agent_download_url      = var.agent_download_url
-  agent_upload_url        = var.agent_upload_url
+  agent_download_url         = var.agent_download_url
+  agent_upload_url           = var.agent_upload_url
 
   depends_on = [module.shared_services]
 }

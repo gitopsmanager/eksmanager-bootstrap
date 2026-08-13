@@ -67,10 +67,24 @@ locals {
   # production installation for the client. Per-cluster resources carry the DNS
   # zone prefix instead, set where they are created.
   #
-  # ManagedBy (unspaced, "EKSManager") was removed in favour of "Managed By".
-  # Keeping both left two near-identical keys with different values, which is a
-  # trap in a cost report. Module stays -- it says something these do not.
+  # ManagedBy (unspaced) stays alongside "Managed By". They look alike and are
+  # not: ManagedBy=EKSManager says which system OWNS the resource, "Managed
+  # By"=Terraform says which mechanism CREATED it. Both are true and neither
+  # implies the other.
+  #
+  # It was briefly dropped as a near-duplicate. Adding tags needs only Tag*,
+  # which the CodeBuild role has; REMOVING one needs Untag*, which it does not
+  # -- so the apply failed on iam:UntagInstanceProfile and
+  # cloudformation:UntagResource with nothing pointing at a tag change. The
+  # stackset template writes ManagedBy onto EKSManagerAdminRole in every spoke
+  # account too, so dropping it here would also have split that convention in
+  # half.
+  #
+  # Worth knowing before changing this map again: any future REMOVAL hits the
+  # same wall, and the missing permissions are iam:UntagInstanceProfile and
+  # cloudformation:UntagResource.
   common_tags = merge({
+    "ManagedBy"   = "EKSManager"
     "Deployed By" = "GitOpsManager"
     "Managed By"  = "Terraform"
     "Environment" = "production"

@@ -94,6 +94,7 @@ resource "aws_secretsmanager_secret" "wildcard" {
   # the reseller asked for and reads in a cost report; Prefix is what this
   # system already keys off, including the secret's own name.
   tags = {
+    "ManagedBy"   = "EKSManager"
     "Deployed By" = "GitOpsManager"
     "Managed By"  = "Terraform"
     "Environment" = each.value.dns_zone_prefix

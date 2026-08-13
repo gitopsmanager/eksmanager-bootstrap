@@ -61,6 +61,7 @@ provider "aws" {
   # its node groups with, so a cost report groups all of it together.
   default_tags {
     tags = merge({
+      "ManagedBy"   = "EKSManager"
       "Deployed By" = "GitOpsManager"
       "Managed By"  = "Terraform"
       "Module"      = "terraform-add-cluster"

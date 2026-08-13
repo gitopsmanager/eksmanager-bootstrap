@@ -50,6 +50,7 @@ provider "aws" {
 
   default_tags {
     tags = {
+      "ManagedBy"   = "EKSManager"
       "Deployed By" = "GitOpsManager"
       "Managed By"  = "Terraform"
       "Environment" = "production"
@@ -70,6 +71,7 @@ provider "aws" {
 
   default_tags {
     tags = {
+      "ManagedBy"   = "EKSManager"
       "Deployed By" = "GitOpsManager"
       "Managed By"  = "Terraform"
       "Environment" = "production"

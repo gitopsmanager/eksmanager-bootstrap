@@ -42,6 +42,7 @@ provider "aws" {
 
   default_tags {
     tags = {
+      "ManagedBy"   = "EKSManager"
       "Deployed By" = "GitOpsManager"
       "Managed By"  = "Terraform"
       "Environment" = "production"
@@ -117,9 +118,9 @@ resource "aws_iam_role_policy" "github_actions_upload" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid    = "UploadPrefixListsArtifacts"
-      Effect = "Allow"
-      Action = "s3:PutObject"
+      Sid      = "UploadPrefixListsArtifacts"
+      Effect   = "Allow"
+      Action   = "s3:PutObject"
       Resource = "${aws_s3_bucket.prefix_lists.arn}/add-cluster.zip"
     }]
   })
@@ -155,9 +156,9 @@ resource "aws_iam_role_policy" "codebuild" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "S3PrefixListsArtifacts"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
+        Sid    = "S3PrefixListsArtifacts"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
         Resource = [
           aws_s3_bucket.prefix_lists.arn,
           "${aws_s3_bucket.prefix_lists.arn}/*"
@@ -332,8 +333,8 @@ resource "aws_iam_role_policy" "eventbridge_codebuild" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
-      Action = "codebuild:StartBuild"
+      Effect   = "Allow"
+      Action   = "codebuild:StartBuild"
       Resource = aws_codebuild_project.eksmanager_prefix_lists.arn
     }]
   })
