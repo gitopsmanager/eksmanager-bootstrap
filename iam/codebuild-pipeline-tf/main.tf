@@ -817,6 +817,30 @@ resource "aws_security_group" "agent" {
     protocol    = "tcp"
     cidr_blocks = [data.aws_vpc.bootstrap.cidr_block]
   }
+
+  # Port 80, for the agent VM only. Not an oversight in the narrowing above.
+  #
+  # agent-install.sh.tpl runs `apt-get install unzip` under `set -euxo
+  # pipefail`, and Ubuntu's EC2 mirrors are plain HTTP:
+  # eu-west-1.ec2.archive.ubuntu.com:80 and security.ubuntu.com:80. With 443
+  # only, apt times out, the script aborts, and the instance comes up with no
+  # agent on it -- while `terraform apply` reports success, because it waits
+  # for the instance to be RUNNING and never sees cloud-init fail.
+  #
+  # curl is already in the image; unzip is not, and it is needed to unpack both
+  # the af7 bundle and the upgrade bundle. Extracting with python3's zipfile
+  # instead would drop the apt dependency, but zipfile does not restore Unix
+  # permission bits, so the agent binaries would land non-executable.
+  #
+  # CodeBuild deliberately does NOT get this: its managed image already carries
+  # everything the buildspec uses, and that build passes on 443 alone.
+  egress {
+    description = "HTTP to Ubuntu package mirrors - apt has no HTTPS source on the stock AMI"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 # ── CodeBuild project ────────────────────────────────────────────────────────
