@@ -292,11 +292,16 @@
       ]
     },
     {
-      "Sid": "EKSManagerCMK",
+      "Sid": "EKSManagerCMKDescribe",
+      "Effect": "Allow",
+      "Action": "kms:DescribeKey",
+      "Resource": "arn:aws:kms:*:${SHARED_SERVICES_ACCOUNT_ID}:key/*"
+    },
+    {
+      "Sid": "EKSManagerCMKUse",
       "Effect": "Allow",
       "Action": [
         "kms:Decrypt",
-        "kms:DescribeKey",
         "kms:GenerateDataKey"
       ],
       "Resource": "arn:aws:kms:*:${SHARED_SERVICES_ACCOUNT_ID}:key/*",
