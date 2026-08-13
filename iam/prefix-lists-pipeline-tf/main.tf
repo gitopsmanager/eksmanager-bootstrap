@@ -55,6 +55,14 @@ locals {
   prefix_lists_bucket = "eksmanager-prefix-lists-${var.shared_services_account_id}"
 }
 
+# EKSManagerCMK, created by iam/codebuild-pipeline-tf. setup-pipeline.sh applies
+# that module before this one, so the alias resolves. Looked up rather than
+# declared -- one key, one owner.
+data "aws_kms_key" "eksmanager" {
+  provider = aws.shared
+  key_id   = "alias/EKSManagerCMK"
+}
+
 # ── S3 bucket for prefix-lists / add-cluster release artifacts ─────────────
 
 resource "aws_s3_bucket" "prefix_lists" {
@@ -67,6 +75,27 @@ resource "aws_s3_bucket_versioning" "prefix_lists" {
   bucket   = aws_s3_bucket.prefix_lists.id
   versioning_configuration {
     status = "Enabled"
+  }
+}
+
+# Holds add-cluster.zip and, under accounts/<acct>/clusters/<cluster>/, the
+# Terraform state for every cluster's security group rules. That state names
+# security groups and prefix lists, so it is worth the same key as everything
+# else rather than the account default it had.
+#
+# Existing objects keep whatever they were written with -- S3 does not
+# re-encrypt in place. Both kinds here are rewritten on every run anyway: the
+# zip on each dispatch, the state on each apply.
+resource "aws_s3_bucket_server_side_encryption_configuration" "prefix_lists" {
+  provider = aws.shared
+  bucket   = aws_s3_bucket.prefix_lists.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = data.aws_kms_key.eksmanager.arn
+    }
+    bucket_key_enabled = true
   }
 }
 
@@ -117,12 +146,23 @@ resource "aws_iam_role_policy" "github_actions_upload" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid      = "UploadPrefixListsArtifacts"
-      Effect   = "Allow"
-      Action   = "s3:PutObject"
-      Resource = "${aws_s3_bucket.prefix_lists.arn}/add-cluster.zip"
-    }]
+    Statement = [
+      {
+        Sid      = "UploadPrefixListsArtifacts"
+        Effect   = "Allow"
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.prefix_lists.arn}/add-cluster.zip"
+      },
+      {
+        # S3 asks KMS for a fresh data key on every write. A role holding only
+        # Decrypt uploads nothing and fails as AccessDenied on the PUT, which
+        # reads like a bucket policy fault rather than a KMS one.
+        Sid      = "EKSManagerCMK"
+        Effect   = "Allow"
+        Action   = ["kms:GenerateDataKey", "kms:Decrypt", "kms:DescribeKey"]
+        Resource = data.aws_kms_key.eksmanager.arn
+      },
+    ]
   })
 }
 
@@ -177,6 +217,25 @@ resource "aws_iam_role_policy" "codebuild" {
         Effect   = "Allow"
         Action   = ["s3:PutObject", "s3:DeleteObject"]
         Resource = "${aws_s3_bucket.prefix_lists.arn}/accounts/*"
+      },
+      {
+        # This role both READS add-cluster.zip and READS/WRITES the per-cluster
+        # Terraform state in the same bucket, so it needs a data key for the
+        # writes as well as Decrypt for the reads.
+        #
+        # ViaService bounds it to S3: the role cannot decrypt anything with this
+        # key by calling KMS directly. DescribeKey is deliberately absent -- S3
+        # resolves the key itself, and nothing here does a Terraform-style alias
+        # lookup at runtime.
+        Sid      = "EKSManagerCMK"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource = data.aws_kms_key.eksmanager.arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "s3.${var.shared_services_region}.amazonaws.com"
+          }
+        }
       },
       {
         # M2M secret is the same one iam/codebuild-pipeline-tf created --
