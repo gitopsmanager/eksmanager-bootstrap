@@ -26,6 +26,42 @@ place. Both are needed where clusters use split-horizon DNS: the public zone is
 where Let's Encrypt reads the DNS-01 challenge, the private zone is what makes an
 internal load balancer reachable by name from inside the VPC.
 
+**Private zone association for the agent.** Each cluster's **private** hosted zone
+must have the shared services VPC — the one holding `agent_subnet_id` — added as
+an associated VPC. This is a standard cross-account VPC association, the same
+pattern most landing zones already use for a networking hub VPC; no RAM share and
+no Route 53 Profile is needed.
+
+Without it the agent cannot resolve the cluster's ingress hostnames. A private
+hosted zone answers only through the VPC resolver of a VPC associated with it, and
+association is not implied by anything else: VPC peering carries packets, not
+names, so a peered agent still resolves nothing and falls through to public DNS.
+
+Both are required, and they are separate. Association makes the name resolve;
+routing (peering, or a Transit Gateway) makes the address reachable. Neither
+substitutes for the other.
+
+Deliberately a prerequisite rather than something the pipeline creates. In most
+organisations these associations are owned by a networking team as standing
+practice, and a Terraform resource here would compete with a process that already
+manages them — a drift correction or a destroy could remove an association the
+network owners believe is theirs.
+
+The symptom when it is missing is an ingress check that fails on DNS resolution
+long after the cluster itself built correctly, so it is worth confirming before the
+first upgrade rather than during one. To check and to add it:
+
+```bash
+# Which VPCs can resolve this zone
+aws route53 get-hosted-zone --id <private-zone-id> --query 'VPCs'
+
+# Authorise in the account owning the zone, then accept in shared services
+aws route53 create-vpc-association-authorization \
+  --hosted-zone-id <private-zone-id> --vpc VPCRegion=<region>,VPCId=<shared-services-vpc>
+aws route53 associate-vpc-with-hosted-zone \
+  --hosted-zone-id <private-zone-id> --vpc VPCRegion=<region>,VPCId=<shared-services-vpc>
+```
+
 **Certificate roles.** Each zone needs two IAM roles in the account that owns it —
 one for DNS-01 challenge writes, one for external-dns. Both are customer-owned by
 design; see `example-cert-manager-trust-statement.json` and
