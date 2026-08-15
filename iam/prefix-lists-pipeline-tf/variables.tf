@@ -32,7 +32,7 @@ variable "client_account_role_name" {
 }
 
 variable "github_repo" {
-  description = "GitHub org/repo of the fork, e.g. your-org/eksmanager-bootstrap. Scopes both the GitHub Actions OIDC role's trust policy and the chain-trigger Lambda's repository_dispatch target."
+  description = "GitHub org/repo of your private copy, e.g. your-org/eksmanager-bootstrap. Scopes both the GitHub Actions OIDC role's trust policy and the chain-trigger Lambda's repository_dispatch target."
   type        = string
 }
 

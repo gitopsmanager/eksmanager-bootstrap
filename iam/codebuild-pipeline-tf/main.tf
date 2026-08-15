@@ -454,7 +454,7 @@ resource "aws_secretsmanager_secret_version" "eksmanager_client_secret" {
 # ── GitHub App credentials ──────────────────────────────────────────────────
 # setup-pipeline.sh/.ps1 doesn't clone anything itself — it just passes
 # these straight through to Terraform to persist here, so whatever later
-# clones the fork and uploads eksmanager-bootstrap.zip to S3 has a
+# clones your private copy and uploads eksmanager-bootstrap.zip to S3 has a
 # credential to use. Stored as one JSON secret; privateKey is base64,
 # matching the GITHUB_APP_PRIVATE_KEY env var format.
 # CodeBuild's own role is NOT granted access to this secret — CodeBuild never
@@ -464,7 +464,7 @@ resource "aws_secretsmanager_secret_version" "eksmanager_client_secret" {
 resource "aws_secretsmanager_secret" "github_app" {
   provider    = aws.shared
   name        = "/EKSManagerBootstrap/github-app"
-  description = "GitHub App credentials (appId, installId, base64 privateKey) used to clone the eksmanager-bootstrap fork"
+  description = "GitHub App credentials (appId, installId, base64 privateKey) used to clone your private copy of eksmanager-bootstrap"
 
   # Without this the secret uses the aws/secretsmanager AWS-managed key, which
   # cannot be audited or restricted per installation.
@@ -491,7 +491,7 @@ resource "aws_secretsmanager_secret_version" "github_app" {
   })
 }
 
-# ── GitHub Actions OIDC — .github/workflows/upload-to-s3.yml in the fork ────
+# ── GitHub Actions OIDC — .github/workflows/upload-to-s3.yml in your private copy ────
 # Coexists with the persisted GitHub App credentials above (two independent
 # ways to get eksmanager-bootstrap.zip into S3, not a replacement for
 # either). No long-lived secret: GitHub mints a short-lived token per
@@ -845,7 +845,7 @@ resource "aws_security_group" "agent" {
 
 # ── CodeBuild project ────────────────────────────────────────────────────────
 # Sourced from S3 — never touches GitHub. setup-pipeline.sh/.ps1 only sets
-# up this infrastructure; it doesn't clone the fork or upload anything
+# up this infrastructure; it doesn't clone your private copy or upload anything
 # here. Whatever later uploads eksmanager-bootstrap.zip can use the GitHub
 # App credentials persisted in Secrets Manager (below) to do that clone.
 

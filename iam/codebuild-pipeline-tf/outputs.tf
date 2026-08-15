@@ -45,7 +45,7 @@ output "bootstrap_bucket" {
 }
 
 output "github_actions_role_arn" {
-  description = "ARN to set as the AWS_ROLE_ARN repository variable on the fork, for .github/workflows/upload-to-s3.yml."
+  description = "ARN to set as the AWS_ROLE_ARN repository variable on your private copy, for .github/workflows/upload-to-s3.yml."
   value       = aws_iam_role.github_actions_upload.arn
 }
 

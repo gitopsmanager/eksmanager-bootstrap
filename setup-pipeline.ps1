@@ -7,7 +7,7 @@
     Run once per client, from the MANAGEMENT account — with credentials for
     that account already active in your shell (SSO login, exported access
     keys, whatever your normal method is). This script only stands up
-    infrastructure — it does not clone your fork, does not create or
+    infrastructure — it does not clone your private copy, does not create or
     upload anything to S3, and does not start or trigger a build. The
     eksmanager-bootstrap CodeBuild project stays idle until something else
     uploads eksmanager-bootstrap.zip to the bucket this creates (which
@@ -25,7 +25,7 @@
         everything else: the S3 bucket, EKSManagerBootstrapSharedRole,
         the CodeBuild project (S3-sourced — CodeBuild never touches
         GitHub), the EventBridge rule that starts a build on upload, a
-        GitHub Actions OIDC role for the fork's manual
+        GitHub Actions OIDC role for your private copy's manual
         .github/workflows/upload-to-s3.yml, and persists the GitHub App
         credentials to Secrets Manager for whatever else uploads the zip
       - If the aws.shared assume_role fails, apply fails clearly on its
@@ -34,7 +34,7 @@
       - Mints a GitHub App installation token (assumes the App has the
         Variables: Read & Write permission) and sets AWS_ROLE_ARN,
         AWS_REGION, S3_BUCKET as repository variables on GITHUB_REPO, so
-        the fork's upload-to-s3.yml workflow works with no manual setup
+        your private copy's upload-to-s3.yml workflow works with no manual setup
 
     Idempotent — safe to re-run.
 

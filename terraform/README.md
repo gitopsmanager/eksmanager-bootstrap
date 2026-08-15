@@ -8,7 +8,7 @@ Terraform bootstrap for EKS Manager — provisions AWS infrastructure
 
 ## Setup
 
-Paste the env var block from the **Terraform tile** in your EKS Manager Settings page into your shell — it already includes a GitHub App scoped to your fork with the right permissions — then run:
+Paste the env var block from the **Terraform tile** in your EKS Manager Settings page into your shell — it already includes a GitHub App scoped to your private copy with the right permissions — then run:
 
 ```bash
 ./setup-pipeline.sh
@@ -59,7 +59,7 @@ The secret lives under `/EKSManagerBootstrap/` rather than `/EKSManager/` — de
 
 Nothing in this repo uploads `eksmanager-bootstrap.zip` automatically — two independent, coexisting options exist once the script above has run:
 
-- **`.github/workflows/upload-to-s3.yml`** in the fork — manually triggered (`workflow_dispatch`) from the GitHub Actions tab. `setup-pipeline.sh`/`.ps1` already set the three repository variables it needs (`AWS_ROLE_ARN`, `AWS_REGION`, `S3_BUCKET` — not secrets, none of these are sensitive) via the GitHub API, using the persisted GitHub App credentials (assumes that App has the Variables: Read & Write permission). Nothing to set up by hand. Uses OIDC — no long-lived AWS credential is stored in the fork.
+- **`.github/workflows/upload-to-s3.yml`** in your private copy — manually triggered (`workflow_dispatch`) from the GitHub Actions tab. `setup-pipeline.sh`/`.ps1` already set the three repository variables it needs (`AWS_ROLE_ARN`, `AWS_REGION`, `S3_BUCKET` — not secrets, none of these are sensitive) via the GitHub API, using the persisted GitHub App credentials (assumes that App has the Variables: Read & Write permission). Nothing to set up by hand. Uses OIDC — no long-lived AWS credential is stored in your private copy.
 - The GitHub App credentials persisted in Secrets Manager (above) — for whatever other automation you build later.
 
 Either way, the upload starts a build automatically via the EventBridge rule.
@@ -125,13 +125,13 @@ then set `GITHUB_OIDC_PROVIDER_ARN` to its ARN (`arn:aws:iam::<account-id>:oidc-
 
 ## Architecture — what's confirmed
 
-`setup-pipeline.sh`/`.ps1` is a one-time, one-shot script run from the management account — pure Terraform underneath, one `apply`, no manual role creation or credential switching. Terraform's default provider creates `EKSManagerBootstrap` directly in the management account (your ambient credentials); a second `aws.shared` provider assumes a single, static role (see "Shared services account access" below) to create everything else: the S3 bucket, `EKSManagerBootstrapSharedRole`, the CodeBuild project, and the EventBridge trigger. The script does not clone your fork, does not create or upload anything to S3, and does not start or trigger a build. CloudFormation StackSets trusted access and delegated admin registration happen later, as Terraform (`aws/modules/org`), when CodeBuild actually runs the root `aws/` bootstrap module — not as part of this script, so it isn't registered by two separate mechanisms.
+`setup-pipeline.sh`/`.ps1` is a one-time, one-shot script run from the management account — pure Terraform underneath, one `apply`, no manual role creation or credential switching. Terraform's default provider creates `EKSManagerBootstrap` directly in the management account (your ambient credentials); a second `aws.shared` provider assumes a single, static role (see "Shared services account access" below) to create everything else: the S3 bucket, `EKSManagerBootstrapSharedRole`, the CodeBuild project, and the EventBridge trigger. The script does not clone your private copy, does not create or upload anything to S3, and does not start or trigger a build. CloudFormation StackSets trusted access and delegated admin registration happen later, as Terraform (`aws/modules/org`), when CodeBuild actually runs the root `aws/` bootstrap module — not as part of this script, so it isn't registered by two separate mechanisms.
 
-The **GitHub App** credentials (`GITHUB_APP_ID` / `GITHUB_APP_INSTALL_ID` / `GITHUB_APP_PRIVATE_KEY`, all environment variables) are passed to Terraform, which persists them to Secrets Manager for whatever later clones the fork and uploads `eksmanager-bootstrap.zip` — that upload is what actually starts a build (via the EventBridge rule). The script also uses these credentials itself, right after `terraform apply`, to mint an installation token and set the `AWS_ROLE_ARN`/`AWS_REGION`/`S3_BUCKET` repository variables on the fork (assumes the App has the Variables: Read & Write permission — see "Getting a zip into S3" below). The CodeBuild project itself is **S3-sourced** and never touches GitHub. There is no GitHub PAT anywhere in this repo.
+The **GitHub App** credentials (`GITHUB_APP_ID` / `GITHUB_APP_INSTALL_ID` / `GITHUB_APP_PRIVATE_KEY`, all environment variables) are passed to Terraform, which persists them to Secrets Manager for whatever later clones your private copy and uploads `eksmanager-bootstrap.zip` — that upload is what actually starts a build (via the EventBridge rule). The script also uses these credentials itself, right after `terraform apply`, to mint an installation token and set the `AWS_ROLE_ARN`/`AWS_REGION`/`S3_BUCKET` repository variables on your private copy (assumes the App has the Variables: Read & Write permission — see "Getting a zip into S3" below). The CodeBuild project itself is **S3-sourced** and never touches GitHub. There is no GitHub PAT anywhere in this repo.
 
 ## Entra SAML SSO
 
-Set up separately via `azure-saml/` — it does not have a `topology.json` flag since it is not part of the Terraform install. See `azure-saml/README.md` for full instructions.
+Set up separately from the **gitopsmanager-identity-bootstrap** repository — it does not have a `topology.json` flag since it is not part of the Terraform install. These applications live in your identity provider, not in AWS, so they are independent of which cloud your clusters run in.
 
 ## Structure
 
@@ -141,13 +141,12 @@ eksmanager-bootstrap/
 ├── main.tf                    # Root module — wires aws
 ├── variables.tf                # All input variables
 ├── example-topology.json       # Reference copy — pre-filled for an AWS license
-├── topology.json                # Created by you per client — copy of the example, filled in, committed to your fork
+├── topology.json                # Created by you per client — copy of the example, filled in, committed to your private copy
 ├── buildspec.yml                # CodeBuild pipeline (S3-sourced, no git)
 ├── .github/
 │   └── workflows/
 │       └── upload-to-s3.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
 ├── aws/                        # AWS infrastructure module
-├── azure-saml/                  # Standalone SAML setup — NOT part of the Terraform install
 │   ├── create-saml-app.sh
 │   ├── create-saml-app.ps1
 │   └── README.md

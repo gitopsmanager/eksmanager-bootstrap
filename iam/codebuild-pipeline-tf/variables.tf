@@ -96,7 +96,7 @@ variable "github_oidc_provider_arn" {
 }
 
 variable "github_repo" {
-  description = "GitHub org/repo of the fork, e.g. your-org/eksmanager-bootstrap. Scopes the GitHub Actions OIDC role's trust policy to this repo only."
+  description = "GitHub org/repo of your private copy, e.g. your-org/eksmanager-bootstrap. Scopes the GitHub Actions OIDC role's trust policy to this repo only."
   type        = string
 }
 

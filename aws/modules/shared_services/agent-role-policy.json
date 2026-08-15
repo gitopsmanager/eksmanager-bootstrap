@@ -36,6 +36,15 @@
       "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerZones/*"
     },
     {
+      "Sid": "SecretsManagerHeadlampIdentityRead",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerBootstrap/headlamp-*"
+    },
+    {
       "Sid": "EKSManagerCMK",
       "Effect": "Allow",
       "Action": [

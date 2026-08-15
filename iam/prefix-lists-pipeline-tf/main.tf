@@ -108,7 +108,7 @@ resource "aws_s3_bucket_public_access_block" "prefix_lists" {
   restrict_public_buckets = true
 }
 
-# ── GitHub Actions OIDC — add-cluster.yml in the fork ──────────────────────
+# ── GitHub Actions OIDC — add-cluster.yml in your private copy ──────────────────────
 # Reuses the OIDC provider iam/codebuild-pipeline-tf already created (or was
 # pointed at) — not recreated here, an AWS account only gets one per URL.
 

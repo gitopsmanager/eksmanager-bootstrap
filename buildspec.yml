@@ -5,12 +5,12 @@ version: 0.2
 # EKS Manager Bootstrap — AWS CodeBuild buildspec
 # -----------------------------------------------------------------------------
 # Sourced from S3 (see iam/codebuild-pipeline-tf/main.tf) — setup-pipeline.sh/
-# .ps1 clones the fork with a GitHub App token, zips it, and uploads it here.
+# .ps1 clones your private copy with a GitHub App token, zips it, and uploads it here.
 # CodeBuild itself never touches GitHub. The server supplies presigned S3
 # URLs, SSO ARN and a bearer token via POST /bootstrap/aws.
 #
 # Entra SAML SSO is set up separately, outside this pipeline — see
-# azure-saml/README.md in the repo root.
+# the gitopsmanager-identity-bootstrap repository.
 #
 # Environment variables (set on the CodeBuild project):
 #   EKSMANAGER_CLIENT_ID    ← M2M client ID        (from Settings → Terraform tile)
