@@ -86,58 +86,71 @@ jobs:
           arns = sorted(set(arns))
 
           # No clusters is a legitimate state: a fresh install, or every cluster
-          # removed. The trust cannot be written empty -- IAM rejects a statement
-          # with no principal and an empty condition list -- so it is written to
-          # match nothing instead. Leaving the previous list in place would keep
-          # trusting roles for clusters that no longer exist.
+          # removed. Both write a policy -- the trust is never left as it was.
+          #
+          # Removing the last cluster used to skip the update entirely, which
+          # left the departing cluster's account trusted indefinitely. That is
+          # not the harmless case it looks like: the principal is the account
+          # ROOT and the role ARNs live in an ArnEquals condition, matched as
+          # strings. Deleting a role normally neuters a policy, because IAM
+          # rewrites a deleted principal to its unique id and a same-named
+          # replacement cannot match it. A string condition has no such
+          # protection -- an offboarded account could recreate a role by the
+          # same name and satisfy the condition again.
           if arns:
               print(f"Trusting {len(arns)} cluster role(s):")
               for a in arns:
                   print(f"  {a}")
-              condition = {"ArnEquals": {"aws:PrincipalArn": arns}}
-          else:
-              print("No clusters configured -- writing a trust that matches nothing.")
-              condition = {"ArnEquals": {"aws:PrincipalArn": []}}
 
-          # Principal stays the account root with the real constraint in the
-          # condition, rather than naming the role ARNs directly. IAM validates
-          # principals on write: a role listed there that does not exist yet --
-          # a cluster registered before its ARC deployment created the role --
-          # fails the whole update with MalformedPolicyDocument. Conditions are
-          # not validated that way, so this stays correct whatever order things
-          # are created in.
-          accounts = sorted({a.split(":")[4] for a in arns})
-          policy = {
-              "Version": "2012-10-17",
-              "Statement": [{
-                  "Sid": "AllowClusterPushEcrRoles",
-                  "Effect": "Allow",
-                  "Principal": {"AWS": [f"arn:aws:iam::{acct}:root" for acct in accounts]},
-                  # TagSession as well as AssumeRole: Pod Identity carries
-                  # session tags through the chain and the hop fails without it.
-                  "Action": ["sts:AssumeRole", "sts:TagSession"],
-                  "Condition": condition,
-              }],
-          }
-
-          # With no clusters there is no account to name as a principal either,
-          # so the statement cannot be written at all. Deleting the role is not
-          # this workflow's job, so it is left alone and reported.
-          if not accounts:
-              print("No trusted accounts -- leaving the existing trust untouched.")
-              open("skip", "w").write("1")
+              # Principal stays the account root with the real constraint in the
+              # condition, rather than naming the role ARNs directly. IAM
+              # validates principals on write: a role listed there that does not
+              # exist yet -- a cluster registered before its ARC deployment
+              # created the role -- fails the whole update with
+              # MalformedPolicyDocument. Conditions are not validated that way,
+              # so this stays correct whatever order things are created in.
+              accounts = sorted({a.split(":")[4] for a in arns})
+              policy = {
+                  "Version": "2012-10-17",
+                  "Statement": [{
+                      "Sid": "AllowClusterPushEcrRoles",
+                      "Effect": "Allow",
+                      "Principal": {"AWS": [f"arn:aws:iam::{acct}:root" for acct in accounts]},
+                      # TagSession as well as AssumeRole: Pod Identity carries
+                      # session tags through the chain and the hop fails without it.
+                      "Action": ["sts:AssumeRole", "sts:TagSession"],
+                      "Condition": {"ArnEquals": {"aws:PrincipalArn": arns}},
+                  }],
+              }
           else:
-              json.dump(policy, open("trust.json", "w"), indent=2)
+              # A single Deny, rather than an Allow that happens to match
+              # nothing. There is no account left to name as a principal, and
+              # neither an empty principal list nor an empty condition list is a
+              # valid policy document -- but Deny to everyone always is, and it
+              # states the intent plainly to whoever reads the role next.
+              #
+              # The role itself is left in place. Deleting it is not this
+              # workflow's job, and Terraform owns it.
+              print("No clusters configured -- writing a trust that denies everyone.")
+              policy = {
+                  "Version": "2012-10-17",
+                  "Statement": [{
+                      "Sid": "NoClustersTrustNothing",
+                      "Effect": "Deny",
+                      "Principal": {"AWS": "*"},
+                      "Action": ["sts:AssumeRole", "sts:TagSession"],
+                  }],
+              }
+
+          json.dump(policy, open("trust.json", "w"), indent=2)
           PY
 
       - uses: aws-actions/configure-aws-credentials@v6
-        if: hashFiles('skip') == ''
         with:
           role-to-assume: ${{ vars.ECR_PUSH_TRUST_SYNC_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Apply to EKSManager-push-ecr
-        if: hashFiles('skip') == ''
         run: |
           set -eu
           ROLE="EKSManager-push-ecr"
@@ -150,6 +163,35 @@ jobs:
             --role-name "$ROLE" \
             --policy-document file://trust.json
 
-          echo "--- trust after ---"
+          # Read it back and compare. update-assume-role-policy returning zero
+          # says the call was accepted, not that the trust now says what was
+          # intended -- and this is the only thing standing between a departed
+          # account and push access to shared ECR.
           aws iam get-role --role-name "$ROLE" \
-            --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition' --output json
+            --query 'Role.AssumeRolePolicyDocument' --output json > after.json
+
+          python3 - <<'PY'
+          import json, sys
+
+          want = json.load(open("trust.json"))["Statement"][0]
+          got  = json.load(open("after.json"))["Statement"][0]
+
+          if got.get("Effect") != want["Effect"]:
+              sys.exit(f"Trust not applied: wanted Effect {want['Effect']}, got {got.get('Effect')}")
+
+          def arns(stmt):
+              v = stmt.get("Condition", {}).get("ArnEquals", {}).get("aws:PrincipalArn", [])
+              return sorted([v] if isinstance(v, str) else v)
+
+          if arns(want) != arns(got):
+              sys.exit(
+                  "Trust not applied as intended.\n"
+                  f"  wanted: {arns(want)}\n"
+                  f"  got:    {arns(got)}"
+              )
+
+          if want["Effect"] == "Deny":
+              print("Verified: no clusters, trust denies everyone.")
+          else:
+              print(f"Verified: {len(arns(got))} trusted cluster role ARN(s).")
+          PY
