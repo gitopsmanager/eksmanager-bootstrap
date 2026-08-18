@@ -406,6 +406,49 @@ EOF
   echo "${STATE_BUCKET}: versioned, encrypted, public access blocked, management account granted."
 ) || exit 1
 
+# Reads the module's state and sets STATE_MANAGED to the number of managed
+# resources in it. Called twice by tf_init -- once after init, once after a
+# push -- which is why it is a function rather than inline.
+STATE_MANAGED=0
+read_state_managed() {
+  local module_name="$1"
+  # `|| state_rc=$?` is load-bearing under `set -e`, not defensive style. A bare
+  # state_out=$(...) followed by state_rc=$? exits the shell the instant the
+  # substitution fails, so nothing below runs and setup dies silently mid-module
+  # with nothing printed. The || makes it a compound command, which set -e does
+  # not trip on, and state_rc must default to 0 because the assignment only
+  # happens on failure.
+  local state_out state_rc=0
+  state_out=$(terraform state list 2>&1) || state_rc=$?
+
+  # `terraform state list` exits 1 on an EMPTY state as well as on a failure,
+  # printing "No state file was found!". So a non-zero exit does not by itself
+  # mean the backend is unreadable -- treating it that way misreports the very
+  # condition the caller's guard exists to catch. Match that message first; any
+  # OTHER non-zero exit is a real backend problem and must not be waved through
+  # as "empty", because "empty" is what permits an apply from scratch.
+  if [[ $state_rc -ne 0 && "$state_out" != *"No state file was found"* ]]; then
+    cat >&2 <<EOF
+
+ERROR: could not read the state for ${module_name} -- terraform state list
+       exited ${state_rc}. This is NOT the empty-state condition; it means the
+       backend could not be read, so nothing can be concluded about what exists.
+
+${state_out}
+
+Resolve that before re-running. EKSMANAGER_ALLOW_EMPTY_STATE does not apply
+here and will not bypass it.
+EOF
+    exit 1
+  fi
+
+  if [[ $state_rc -ne 0 || -z "${state_out//[[:space:]]/}" ]]; then
+    STATE_MANAGED=0
+  else
+    STATE_MANAGED=$(printf '%s\n' "$state_out" | grep -cv '^data[.]' || true)
+  fi
+}
+
 # Init against the shared backend. Migrates a local terraform.tfstate up on
 # first run, and refuses when both copies exist -- that is the one case where
 # guessing loses somebody's work.
@@ -457,52 +500,41 @@ EOF
   # has been set up before, so a module with no managed resources means state
   # was lost rather than never created. On a genuine first install the bucket
   # is created moments earlier and this never fires.
-  if [[ "$BUCKET_PREEXISTED" == "true" && "${EKSMANAGER_ALLOW_EMPTY_STATE:-}" != "true" ]]; then
-    # Failure and emptiness are NOT the same answer, and conflating them is why
-    # this guard first fired on a module whose state was perfectly intact. A
-    # backend that cannot be read -- AccessDenied, a held lock, a KMS refusal --
-    # makes `terraform state list` exit non-zero with an empty stdout, which
-    # read as "no resources" when stderr went to /dev/null under `|| true`.
-    # Check the exit code first and report what it actually said.
-    # `|| state_rc=$?` is load-bearing under `set -e`, not defensive style. A
-    # bare `state_out=$(...)` followed by `state_rc=$?` exits the shell the
-    # instant the substitution fails, so the error block below never runs and
-    # setup dies silently mid-module with nothing printed -- which is worse than
-    # the conflation this replaced. The || makes it a compound command, which
-    # set -e does not trip on, and state_rc must default to 0 because the
-    # assignment only happens on failure.
-    local state_out managed
-    local state_rc=0
-    state_out=$(terraform state list 2>&1) || state_rc=$?
+  read_state_managed "$module_name"
 
-    # `terraform state list` exits 1 on an EMPTY state as well as on a failure,
-    # printing "No state file was found!". So a non-zero exit does not by itself
-    # mean the backend is unreadable -- treating it that way misreports the very
-    # condition this guard exists to catch. Match that message first; any OTHER
-    # non-zero exit is a real backend problem and must not be waved through as
-    # "empty", because "empty" is what permits an apply from scratch.
-    if [[ $state_rc -ne 0 && "$state_out" != *"No state file was found"* ]]; then
+  # Terraform migrates local -> S3 only when the BACKEND CHANGES. Once a run has
+  # recorded the s3 backend in .terraform, a terraform.tfstate placed in the
+  # directory afterwards is inert: -migrate-state has nothing to do and
+  # terraform never reads the file. Nothing warns about this -- init prints its
+  # usual success message and the state stays empty.
+  #
+  # That is not a corner case. It is what happens whenever setup is first run
+  # from a clone that carries no state -- the normal order at a new customer,
+  # and exactly how the prefix-lists and lets-encrypt states were stranded here.
+  #
+  # Pushing is safe only because the check at the top of this function proved
+  # there is no remote object: an empty destination means push cannot overwrite
+  # anyone's work. Do not relax that condition.
+  if $local_state && ! $remote_state && [[ "${STATE_MANAGED:-0}" -eq 0 ]]; then
+    echo "Backend for ${module_name} is initialised but empty, and a local state file is present."
+    echo "Pushing $(pwd)/terraform.tfstate to s3://${STATE_BUCKET}/${remote_key}..."
+    if ! terraform state push terraform.tfstate; then
       cat >&2 <<EOF
 
-ERROR: could not read the state for ${module_name} -- terraform state list
-       exited ${state_rc}. This is NOT the empty-state condition; it means the
-       backend could not be read, so nothing can be concluded about what exists.
+ERROR: could not push the local state for ${module_name} to the backend.
 
-${state_out}
-
-Resolve that before re-running. EKSMANAGER_ALLOW_EMPTY_STATE does not apply
-here and will not bypass it.
+The local file is untouched at $(pwd)/terraform.tfstate. Do not apply until
+this is resolved -- with the backend empty, an apply would build everything a
+second time.
 EOF
       exit 1
     fi
+    read_state_managed "$module_name"
+    echo "Pushed. ${module_name} now tracks ${STATE_MANAGED} managed resources."
+  fi
 
-    if [[ $state_rc -ne 0 || -z "${state_out//[[:space:]]/}" ]]; then
-      managed=0
-    else
-      managed=$(printf '%s\n' "$state_out" | grep -cv '^data[.]' || true)
-    fi
-
-    if [[ "${managed:-0}" -eq 0 ]]; then
+  if [[ "$BUCKET_PREEXISTED" == "true" && "${EKSMANAGER_ALLOW_EMPTY_STATE:-}" != "true" ]]; then
+    if [[ "${STATE_MANAGED:-0}" -eq 0 ]]; then
       cat >&2 <<EOF
 
 ERROR: ${module_name} has no resources in state, but ${STATE_BUCKET}

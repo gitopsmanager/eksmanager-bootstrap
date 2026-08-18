@@ -400,6 +400,63 @@ $bucketCredsRaw = aws sts assume-role `
         Remove-Item Env:\AWS_SESSION_TOKEN     -ErrorAction SilentlyContinue
     }
 
+# Reads the module's state and returns the number of managed resources in it.
+# Called twice by Invoke-TerraformInit -- once after init, once after a push --
+# which is why it is a function rather than inline.
+function Read-StateManaged {
+    param([Parameter(Mandatory)][string] $ModuleName)
+
+    # EAP is Stop for this script, and redirecting a native command's stderr
+    # turns each line into an ErrorRecord -- which under Stop terminates here,
+    # before the exit-code check below can report anything. Same trap as
+    # create-headlamp-app.ps1. Dropped to Continue for the call only.
+    #
+    # stderr goes to a file rather than 2>&1 so the two streams stay apart:
+    # merged, a terraform warning on a SUCCESSFUL run would land in $stateOut and
+    # be counted as a managed resource, which is the one direction this must
+    # never be wrong in.
+    #
+    # Not piped straight to Measure-Object: on a genuinely empty state the
+    # command writes nothing, and PowerShell 5.1 turns no output into $null
+    # rather than an empty array, so @() forces the collection either way.
+    $errFile = Join-Path $env:TEMP "eksmanager-state-$PID-$ModuleName.err"
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $stateOut = @(terraform state list 2>$errFile)
+        $stateRc  = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $stateErr = if (Test-Path $errFile) { (Get-Content $errFile -Raw) } else { "" }
+    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+
+    # `terraform state list` exits 1 on an EMPTY state as well as on a failure,
+    # printing "No state file was found!". A non-zero exit does not by itself
+    # mean the backend is unreadable -- treating it that way misreports the very
+    # condition the caller's guard exists to catch. Match that message first;
+    # any OTHER non-zero exit is a real backend problem and must not be waved
+    # through as "empty", because "empty" is what permits an apply from scratch.
+    $stateEmpty = ($stateErr -match "No state file was found")
+    if ($stateRc -ne 0 -and -not $stateEmpty) {
+        Write-Error @"
+
+Could not read the state for $ModuleName -- terraform state list exited
+$stateRc. This is NOT the empty-state condition; it means the backend could not
+be read, so nothing can be concluded about what exists.
+
+$(if ($stateErr) { $stateErr.TrimEnd() } else { ($stateOut -join "`n") })
+
+Resolve that before re-running. EKSMANAGER_ALLOW_EMPTY_STATE does not apply here
+and will not bypass it.
+"@
+        exit 1
+    }
+
+    if ($stateRc -ne 0) { return 0 }
+    return @($stateOut | Where-Object { $_ -notmatch '^data\.' }).Count
+}
+
 # Init against the shared backend. Migrates a local terraform.tfstate up on
 # first run, and refuses when both copies exist -- that is the one case where
 # guessing loses somebody's work.
@@ -459,62 +516,42 @@ the local one is, delete the remote object and re-run.
     # has been set up before, so a module with no managed resources means state
     # was lost rather than never created. On a genuine first install the bucket
     # is created moments earlier and this never fires.
-    if ($script:BucketPreexisted -and $env:EKSMANAGER_ALLOW_EMPTY_STATE -ne "true") {
-        # Failure and emptiness are NOT the same answer, and conflating them is
-        # why this guard first fired on a module whose state was perfectly
-        # intact. A backend that cannot be read -- AccessDenied, a held lock, a
-        # KMS refusal -- makes `terraform state list` exit non-zero with no
-        # stdout, which read as "no resources". Check the exit code first.
-        #
-        # Not piped straight to Measure-Object: on a genuinely empty state the
-        # command writes nothing, and PowerShell 5.1 turns no output into $null
-        # rather than an empty array, so @() forces the collection either way.
-        # EAP is Stop for this script, and redirecting a native command's stderr
-        # turns each line into an ErrorRecord -- which under Stop terminates
-        # here, before the exit-code check below can report anything. Same trap
-        # as create-headlamp-app.ps1. Dropped to Continue for the call only.
-        #
-        # stderr goes to a file rather than 2>&1 so the two streams stay apart:
-        # merged, a terraform warning on a SUCCESSFUL run would land in $stateOut
-        # and be counted as a managed resource, which is the one direction this
-        # guard must never be wrong in.
-        $errFile = Join-Path $env:TEMP "eksmanager-state-$PID-$ModuleName.err"
-        $prevEap = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            $stateOut = @(terraform state list 2>$errFile)
-            $stateRc  = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $prevEap
-        }
-        $stateErr = if (Test-Path $errFile) { (Get-Content $errFile -Raw) } else { "" }
-        Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+    $managedCount = Read-StateManaged -ModuleName $ModuleName
 
-        # `terraform state list` exits 1 on an EMPTY state as well as on a
-        # failure, printing "No state file was found!". A non-zero exit does not
-        # by itself mean the backend is unreadable -- treating it that way
-        # misreports the very condition this guard exists to catch. Match that
-        # message first; any OTHER non-zero exit is a real backend problem and
-        # must not be waved through as "empty".
-        $stateEmpty = ($stateErr -match "No state file was found")
-        if ($stateRc -ne 0 -and -not $stateEmpty) {
+    # Terraform migrates local -> S3 only when the BACKEND CHANGES. Once a run
+    # has recorded the s3 backend in .terraform, a terraform.tfstate placed in
+    # the directory afterwards is inert: -migrate-state has nothing to do and
+    # terraform never reads the file. Nothing warns about this -- init prints its
+    # usual success message and the state stays empty.
+    #
+    # That is not a corner case. It is what happens whenever setup is first run
+    # from a clone that carries no state -- the normal order at a new customer,
+    # and exactly how the prefix-lists and lets-encrypt states were stranded.
+    #
+    # Pushing is safe only because the check at the top of this function proved
+    # there is no remote object: an empty destination means push cannot
+    # overwrite anyone's work. Do not relax that condition.
+    if ($localState -and -not $remoteState -and $managedCount -eq 0) {
+        Write-Host "Backend for $ModuleName is initialised but empty, and a local state file is present."
+        Write-Host "Pushing $(Join-Path (Get-Location) 'terraform.tfstate') to s3://$StateBucket/$remoteKey..."
+        terraform state push terraform.tfstate
+        if ($LASTEXITCODE -ne 0) {
             Write-Error @"
 
-Could not read the state for $ModuleName -- terraform state list exited
-$stateRc. This is NOT the empty-state condition; it means the backend could not
-be read, so nothing can be concluded about what exists.
+Could not push the local state for $ModuleName to the backend.
 
-$(if ($stateErr) { $stateErr.TrimEnd() } else { ($stateOut -join "`n") })
-
-Resolve that before re-running. EKSMANAGER_ALLOW_EMPTY_STATE does not apply here
-and will not bypass it.
+The local file is untouched at $(Join-Path (Get-Location) 'terraform.tfstate').
+Do not apply until this is resolved -- with the backend empty, an apply would
+build everything a second time.
 "@
             exit 1
         }
+        $managedCount = Read-StateManaged -ModuleName $ModuleName
+        Write-Host "Pushed. $ModuleName now tracks $managedCount managed resources."
+    }
 
-        $managed = if ($stateRc -ne 0) { @() }
-                   else { @($stateOut | Where-Object { $_ -notmatch '^data\.' }) }
-        if ($managed.Count -eq 0) {
+    if ($script:BucketPreexisted -and $env:EKSMANAGER_ALLOW_EMPTY_STATE -ne "true") {
+        if ($managedCount -eq 0) {
             Write-Error @"
 
 $ModuleName has no resources in state, but $StateBucket already existed
