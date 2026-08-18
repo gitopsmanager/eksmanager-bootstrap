@@ -68,24 +68,31 @@
 # -----------------------------------------------------------------------------
 
 
-# jsonencode(jsondecode(...)) minifies before sending. An SCP is capped at 5,120
-# characters and the document is stored exactly as submitted, so indentation and
-# newlines count against the limit -- the shared policy is 5,249 characters as
-# written here and 3,857 once compacted. Keeping the files indented and
-# compacting at apply time means the limit constrains what the policy SAYS
-# rather than how readably it is written.
+# Sent as written, so what is stored in AWS is byte-for-byte what is in this
+# directory -- readable in the console and in describe-policy, not just here.
+#
+# Watch the size when adding to these. An SCP is capped at 5,120 characters and
+# Organizations counts whitespace, unlike IAM, so indentation counts against the
+# limit. As it stands: spoke 1,923, shared 4,765. That leaves the shared policy
+# roughly 355 characters of room -- about four more ARNs in an exemption list,
+# and not enough for another statement.
+#
+# If it no longer fits, wrap these in jsonencode(jsondecode(...)) to minify
+# before sending. That drops shared to 3,519 and costs only the readability of
+# the stored copy; the files here stay as they are either way. It was in place
+# briefly when a since-merged alias statement pushed the document to 5,249.
 locals {
-  scp_spoke_content = jsonencode(jsondecode(replace(
+  scp_spoke_content = replace(
     file("${path.module}/eksmanager-scp-spoke.json"),
     "{{SHARED_SERVICES_ACCOUNT_ID}}",
     var.shared_services_account_id
-  )))
+  )
 
-  scp_shared_content = jsonencode(jsondecode(replace(
+  scp_shared_content = replace(
     file("${path.module}/eksmanager-scp-shared.json"),
     "{{SHARED_SERVICES_ACCOUNT_ID}}",
     var.shared_services_account_id
-  )))
+  )
 }
 
 # -- Cluster accounts ---------------------------------------------------------
