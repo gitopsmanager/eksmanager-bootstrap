@@ -529,6 +529,44 @@ Resources:
                 Effect: Allow
                 Action: iam:PassRole
                 Resource: "arn:aws:iam::*:role/EKSManager-*"
+              # Roles the CUSTOMER provides, which by design do not carry the
+              # EKSManager- prefix -- today that means roles.external_dns from
+              # hosted-zones.json, the role external-dns runs as. The reseller
+              # contract commits us to using the role they supply rather than
+              # creating one, so the statement above cannot cover it.
+              #
+              # Scoped by tag rather than by ARN because hosted-zones.json and
+              # topology.json are deliberately independent: zones change through
+              # sync-hosted-zones, this StackSet changes through a bootstrap run.
+              # Rendering the ARNs in here would couple them, so adding a zone
+              # would silently need a StackSet redeploy before a cluster could be
+              # built in it. A tag is declared once on the role and never drifts.
+              #
+              # The alternative -- a sync workflow writing this grant with
+              # iam:PutRolePolicy -- was rejected: that action on
+              # EKSManagerAdminRole is denied by ProtectEKSManagerAdminRole in
+              # the spoke SCP, and exempting a sync role from it would hand that
+              # role total control of the admin role in every spoke. Not a trade
+              # worth making to avoid a tag.
+              #
+              # Both conditions, not either. The tag says which roles may be
+              # passed; PassedToService says where they may go, so a tagged role
+              # still cannot be handed to EC2 or Lambda. Tagging a role is an
+              # account-admin action, and an account admin could grant themselves
+              # this directly, so it concedes nothing they did not already have.
+              #
+              # iam:ResourceTag rather than aws:ResourceTag: this is the IAM
+              # service evaluating a condition on an IAM role. aws:ResourceTag
+              # appears elsewhere in this policy on EKS resources, where it is
+              # the right key.
+              - Sid: AllowPassRoleToTaggedCustomerRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:ResourceTag/EKSManager: "PassRole"
+                    iam:PassedToService: "pods.eks.amazonaws.com"
               # ListHostedZones only -- the cluster's own DNS records are
               # written by external-dns under its own Pod Identity role, not
               # by this one.
