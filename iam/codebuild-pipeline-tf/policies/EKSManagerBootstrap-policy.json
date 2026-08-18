@@ -22,28 +22,24 @@
       "Resource": "*"
     },
     {
-      "Sid": "EKSManagerProtectionSCP",
+      "Sid": "EKSManagerProtectionSCPCreateAndAttach",
       "Effect": "Allow",
       "Action": [
         "organizations:CreatePolicy",
-        "organizations:UpdatePolicy",
-        "organizations:DeletePolicy",
-        "organizations:DescribePolicy",
-        "organizations:ListPolicies",
         "organizations:AttachPolicy",
         "organizations:DetachPolicy",
         "organizations:ListPoliciesForTarget",
-        "organizations:ListTargetsForPolicy",
-        "organizations:ListRoots",
-        "organizations:ListOrganizationalUnitsForParent",
-        "organizations:ListAccountsForParent"
+        "organizations:ListTargetsForPolicy"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "EKSManagerProtectionSCPReadTags",
+      "Sid": "EKSManagerProtectionSCPManage",
       "Effect": "Allow",
       "Action": [
+        "organizations:DescribePolicy",
+        "organizations:UpdatePolicy",
+        "organizations:DeletePolicy",
         "organizations:ListTagsForResource"
       ],
       "Resource": "arn:aws:organizations::*:policy/*/service_control_policy/*"

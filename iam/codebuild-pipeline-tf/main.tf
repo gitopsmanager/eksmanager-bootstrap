@@ -132,6 +132,30 @@ resource "aws_iam_role" "management_bootstrap" {
   })
 }
 
+# The two SCP statements in this policy are split by what can be scoped.
+#
+# EKSManagerProtectionSCPCreateAndAttach must stay on "*":
+#   CreatePolicy   — no resource exists yet to name
+#   Attach/Detach  — authorise against BOTH the policy and the TARGET, and the
+#                    targets are OU and account ARNs from the customer's
+#                    topology.json. Naming them would mean templatefile() here.
+#   List*ForTarget/ListTargetsForPolicy — how the provider reads
+#                    aws_organizations_policy_attachment
+#
+# EKSManagerProtectionSCPManage is scoped to SCP ARNs, which excludes tag,
+# backup and AI opt-out policies. ListTagsForResource is in it because
+# aws_organizations_policy is taggable: the provider reads tags back on every
+# refresh even though module.scp sets none (it uses aws.management_untagged).
+# Without it CreatePolicy succeeds and the post-create READ fails -- policy in
+# AWS, absent from state, duplicate-name collision on retry.
+#
+# Four actions were removed on 18 Aug as unused: ListPolicies, ListRoots,
+# ListOrganizationalUnitsForParent, ListAccountsForParent. Nothing on the
+# management provider enumerates the org -- ou_ids is keys(var.org_config),
+# straight from topology.json, and aws/ declares no aws_organizations_* data
+# sources. The shared CodeBuild role keeps its own copies for the StackSet's OU
+# resolution; these were most likely copied from there. Do not re-add them
+# without a caller.
 resource "aws_iam_role_policy" "management_bootstrap" {
   name   = "EKSManagerBootstrapPolicy"
   role   = aws_iam_role.management_bootstrap.id
