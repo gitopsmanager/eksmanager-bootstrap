@@ -99,7 +99,6 @@ module "scp" {
 
   shared_services_account_id = var.shared_services_account_id
   ou_ids                     = local.ou_ids
-  cmk_arn                    = module.shared_services.cmk_arn
 
   depends_on = [module.org]
 }

@@ -37,41 +37,55 @@
 # does not exist here.
 #
 # Both files use {{SHARED_SERVICES_ACCOUNT_ID}} tokens (same as
-# aws-bootstrap.py), replaced with replace() before applying. The shared file
-# also carries {{EKSMANAGER_CMK_ARN}}.
+# aws-bootstrap.py), replaced with replace() before applying.
 #
-# The key is named by exact ARN rather than arn:aws:kms:*:<acct>:key/*, which
-# was the first version and is wrong in anyone else's account: it matches every
-# key there, so a customer creating keys for their own state, ECR or anything
-# else would find PutKeyPolicy and ScheduleKeyDeletion denied on keys that have
-# nothing to do with this product. A key ARN contains a generated id and cannot
-# be written into the JSON at authoring time, so it is substituted here from
-# the alias lookup shared_services already performs.
+# ProtectEKSManagerKey is scoped by tag, not by key ARN. The first version used
+# arn:aws:kms:*:<acct>:key/*, which is wrong in anyone else's account: it
+# matches every key there, so a customer creating keys for their own state, ECR
+# or anything else would find PutKeyPolicy and ScheduleKeyDeletion denied on
+# keys that have nothing to do with this product.
 #
-# Not a tag condition, and not kms:ResourceAliases. Both work, and both depend
-# on something mutable -- a tag can be untagged, an alias deleted or repointed,
-# and when either happens the Deny silently stops applying. AWS specifically
-# cautions against kms:ResourceAliases in Deny statements for that reason. The
-# alias still gets its own resource entry below, because DeleteAlias and
-# UpdateAlias act on the alias, not the key.
+# The tag is aws:ResourceTag/ManagedBy = EKSManager, which the key already
+# carries -- iam/codebuild-pipeline-tf's aws.shared provider sets it through
+# default_tags, and aws_kms_key.eksmanager is created there. So no new tag and
+# no setup-pipeline re-run, and therefore no window where the policy is
+# attached and matching nothing.
+#
+# kms:UntagResource is in the denied list deliberately. A tag is mutable, and
+# without that action the tag could be stripped and the Deny would lift itself
+# silently. With it, the Deny holds while the tag is present, so it cannot be
+# removed to escape it.
+#
+# DeleteAlias and UpdateAlias sit in the same statement, on the key resource,
+# rather than in a separate one naming alias/EKSManagerCMK. KMS authorises an
+# alias operation against BOTH the alias and the key -- DeleteAlias needs
+# permission on each, UpdateAlias on the alias and both keys -- so a Deny on
+# the key blocks them, and the tag condition applies through the key leg.
+#
+# That is also stronger than naming the alias: an alias ARN is a literal, so
+# renaming the alias would leave the new one uncovered, while the key carries
+# the tag whatever it is called.
 # -----------------------------------------------------------------------------
 
+
+# jsonencode(jsondecode(...)) minifies before sending. An SCP is capped at 5,120
+# characters and the document is stored exactly as submitted, so indentation and
+# newlines count against the limit -- the shared policy is 5,249 characters as
+# written here and 3,857 once compacted. Keeping the files indented and
+# compacting at apply time means the limit constrains what the policy SAYS
+# rather than how readably it is written.
 locals {
-  scp_spoke_content = replace(
+  scp_spoke_content = jsonencode(jsondecode(replace(
     file("${path.module}/eksmanager-scp-spoke.json"),
     "{{SHARED_SERVICES_ACCOUNT_ID}}",
     var.shared_services_account_id
-  )
+  )))
 
-  scp_shared_content = replace(
-    replace(
-      file("${path.module}/eksmanager-scp-shared.json"),
-      "{{SHARED_SERVICES_ACCOUNT_ID}}",
-      var.shared_services_account_id
-    ),
-    "{{EKSMANAGER_CMK_ARN}}",
-    var.cmk_arn
-  )
+  scp_shared_content = jsonencode(jsondecode(replace(
+    file("${path.module}/eksmanager-scp-shared.json"),
+    "{{SHARED_SERVICES_ACCOUNT_ID}}",
+    var.shared_services_account_id
+  )))
 }
 
 # -- Cluster accounts ---------------------------------------------------------
