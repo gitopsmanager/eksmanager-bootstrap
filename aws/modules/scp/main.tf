@@ -37,7 +37,23 @@
 # does not exist here.
 #
 # Both files use {{SHARED_SERVICES_ACCOUNT_ID}} tokens (same as
-# aws-bootstrap.py), replaced with replace() before applying.
+# aws-bootstrap.py), replaced with replace() before applying. The shared file
+# also carries {{EKSMANAGER_CMK_ARN}}.
+#
+# The key is named by exact ARN rather than arn:aws:kms:*:<acct>:key/*, which
+# was the first version and is wrong in anyone else's account: it matches every
+# key there, so a customer creating keys for their own state, ECR or anything
+# else would find PutKeyPolicy and ScheduleKeyDeletion denied on keys that have
+# nothing to do with this product. A key ARN contains a generated id and cannot
+# be written into the JSON at authoring time, so it is substituted here from
+# the alias lookup shared_services already performs.
+#
+# Not a tag condition, and not kms:ResourceAliases. Both work, and both depend
+# on something mutable -- a tag can be untagged, an alias deleted or repointed,
+# and when either happens the Deny silently stops applying. AWS specifically
+# cautions against kms:ResourceAliases in Deny statements for that reason. The
+# alias still gets its own resource entry below, because DeleteAlias and
+# UpdateAlias act on the alias, not the key.
 # -----------------------------------------------------------------------------
 
 locals {
@@ -48,9 +64,13 @@ locals {
   )
 
   scp_shared_content = replace(
-    file("${path.module}/eksmanager-scp-shared.json"),
-    "{{SHARED_SERVICES_ACCOUNT_ID}}",
-    var.shared_services_account_id
+    replace(
+      file("${path.module}/eksmanager-scp-shared.json"),
+      "{{SHARED_SERVICES_ACCOUNT_ID}}",
+      var.shared_services_account_id
+    ),
+    "{{EKSMANAGER_CMK_ARN}}",
+    var.cmk_arn
   )
 }
 

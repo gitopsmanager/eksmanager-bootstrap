@@ -92,7 +92,7 @@
         "kms:UpdateAlias"
       ],
       "Resource": [
-        "arn:aws:kms:*:{{SHARED_SERVICES_ACCOUNT_ID}}:key/*",
+        "{{EKSMANAGER_CMK_ARN}}",
         "arn:aws:kms:*:{{SHARED_SERVICES_ACCOUNT_ID}}:alias/EKSManagerCMK"
       ],
       "Condition": {
