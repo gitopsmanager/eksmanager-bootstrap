@@ -257,8 +257,162 @@ echo "Default provider: management account (your ambient credentials)."
 echo "aws.shared provider: assumes ${SHARED_SERVICES_ROLE_NAME} in ${SHARED_SERVICES_ACCOUNT_ID}."
 echo ""
 
+# ── AWS CLI is required ──────────────────────────────────────────────────────
+# It was best-effort before, used only for a couple of tidy-up calls. It is
+# required now because the Terraform state bucket is created here, with the
+# CLI, before Terraform runs -- the module that would otherwise declare it is
+# the same one whose state it holds.
+if ! command -v aws >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+ERROR: the AWS CLI is required and is not on PATH.
+
+    https://aws.amazon.com/cli/
+
+It creates the Terraform state bucket before Terraform runs.
+EOF
+  exit 1
+fi
+
+# ── Terraform state bucket ───────────────────────────────────────────────────
+# In the MANAGEMENT account, because that is where this script authenticates --
+# the backend then needs no assume_role of its own. Not the shared services
+# account, where aws/ keeps its state, and deliberately not a Terraform
+# resource: iam/codebuild-pipeline-tf creates the bootstrap bucket, so it
+# cannot also keep its state there.
+#
+# Before this, all three iam/* modules used a local terraform.tfstate -- the
+# only record of what was created, living on one laptop. A second operator
+# running setup-pipeline began from empty state, planned to create everything,
+# and failed partway on the first name collision, leaving two partial and
+# divergent views of one installation.
+MANAGEMENT_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)
+if [[ -z "$MANAGEMENT_ACCOUNT_ID" ]]; then
+  echo "ERROR: no usable AWS credentials for the management account. Sign in, then re-run." >&2
+  exit 1
+fi
+STATE_BUCKET="eksmanager-tfstate-${SHARED_SERVICES_ACCOUNT_ID}"
+
+# In SHARED SERVICES, alongside aws/'s state -- not the management account.
+# Management is meant to stay free of workloads and resources, and splitting
+# EKS Manager's state across two accounts would read as an oversight to anyone
+# who found it later.
+#
+# Terraform still runs with ambient MANAGEMENT credentials, so the bucket
+# carries a policy granting that account. That keeps assume_role out of the
+# backend config, which would otherwise mean nested quoting through
+# -backend-config.
+#
+# Creating it needs shared-services credentials, so this borrows the same
+# assume-role dance the OIDC detection below uses, in a subshell so the
+# temporary credentials cannot leak into the Terraform calls that follow --
+# their default provider is management.
+if aws s3api head-bucket --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
+  echo "Terraform state bucket: ${STATE_BUCKET} (exists, shared services)"
+else
+  echo "Creating Terraform state bucket ${STATE_BUCKET} in ${SHARED_SERVICES_ACCOUNT_ID} / ${REGION}..."
+  (
+    CREDS=$(aws sts assume-role       --role-arn "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${SHARED_SERVICES_ROLE_NAME}"       --role-session-name "eksmanager-tfstate-bootstrap"       --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text) || {
+        echo "ERROR: could not assume ${SHARED_SERVICES_ROLE_NAME} in ${SHARED_SERVICES_ACCOUNT_ID}." >&2
+        exit 1
+      }
+    AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS" | cut -f1)
+    AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS" | cut -f2)
+    AWS_SESSION_TOKEN=$(printf '%s' "$CREDS" | cut -f3)
+    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+
+    # us-east-1 rejects a LocationConstraint; every other region requires one.
+    if [[ "$REGION" == "us-east-1" ]]; then
+      aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$REGION" >/dev/null
+    else
+      aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$REGION"         --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null
+    fi
+
+    # Versioning first. It is what makes a corrupted or truncated state
+    # recoverable, and it cannot be applied retroactively to objects written
+    # before it was switched on.
+    aws s3api put-bucket-versioning --bucket "$STATE_BUCKET"       --versioning-configuration "Status=Enabled" >/dev/null
+    aws s3api put-bucket-encryption --bucket "$STATE_BUCKET"       --server-side-encryption-configuration       "Rules=[{ApplyServerSideEncryptionByDefault={SSEAlgorithm=AES256}}]" >/dev/null
+    aws s3api put-public-access-block --bucket "$STATE_BUCKET"       --public-access-block-configuration       "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" >/dev/null
+
+    POLICY_FILE=$(mktemp)
+    trap 'rm -f "$POLICY_FILE"' EXIT
+    cat > "$POLICY_FILE" <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowManagementAccountTerraformState",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::${MANAGEMENT_ACCOUNT_ID}:root" },
+      "Action": ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::${STATE_BUCKET}",
+        "arn:aws:s3:::${STATE_BUCKET}/setup/*"
+      ]
+    }
+  ]
+}
+EOF
+    aws s3api put-bucket-policy --bucket "$STATE_BUCKET"       --policy "file://${POLICY_FILE}" >/dev/null || {
+        echo "ERROR: created ${STATE_BUCKET} but could not apply its bucket policy -- Terraform would be denied." >&2
+        exit 1
+      }
+  ) || exit 1
+
+  echo "Created ${STATE_BUCKET} (versioned, encrypted, public access blocked, management account granted)."
+fi
+
+# Init against the shared backend. Migrates a local terraform.tfstate up on
+# first run, and refuses when both copies exist -- that is the one case where
+# guessing loses somebody's work.
+tf_init() {
+  local module_name="$1"
+  local remote_key="setup/${module_name}/terraform.tfstate"
+  local local_state=false remote_state=false
+
+  [[ -f terraform.tfstate ]] && local_state=true
+  aws s3api head-object --bucket "$STATE_BUCKET" --key "$remote_key" >/dev/null 2>&1 && remote_state=true
+
+  if $local_state && $remote_state; then
+    cat >&2 <<EOF
+ERROR: ${module_name} has BOTH a local and a remote state file.
+
+    local  : $(pwd)/terraform.tfstate
+    remote : s3://${STATE_BUCKET}/${remote_key}
+
+Only you can say which is current, and migrating would overwrite one with the
+other. If the remote copy is right, move the local file aside and re-run. If
+the local one is, delete the remote object and re-run.
+EOF
+    exit 1
+  fi
+
+  local args=( -input=false
+               -backend-config="bucket=${STATE_BUCKET}"
+               -backend-config="region=${REGION}" )
+
+  if $local_state; then
+    echo "Migrating local state for ${module_name} to s3://${STATE_BUCKET}/${remote_key}"
+    # Safe only because the check above proved there is nothing remote to lose.
+    args+=( -migrate-state -force-copy )
+  fi
+
+  terraform init "${args[@]}"
+
+  # -migrate-state copies the state up but leaves the local file behind, so
+  # without this the next run would find both and refuse. Renamed rather than
+  # deleted: it is the only copy of what was created if the migration turns out
+  # to have gone wrong.
+  if $local_state; then
+    local archived="terraform.tfstate.migrated-$(date -u +%Y%m%d%H%M%S)"
+    mv terraform.tfstate "$archived"
+    rm -f terraform.tfstate.backup
+    echo "Local state migrated and archived as ${archived}"
+  fi
+}
+
 cd "${SCRIPT_DIR}/iam/codebuild-pipeline-tf"
-terraform init
+tf_init codebuild-pipeline
 
 # ── Auto-detect an existing GitHub Actions OIDC provider ────────────────────
 # token.actions.githubusercontent.com is an account-wide singleton in the
@@ -438,7 +592,7 @@ if $DESTROY; then
   echo ""
   echo "Emptying ${PREFIX_LISTS_BUCKET_NAME} (all object versions and delete markers)..."
   cd "${SCRIPT_DIR}/iam/prefix-lists-pipeline-tf"
-  terraform init
+  tf_init prefix-lists-pipeline
   VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${PREFIX_LISTS_BUCKET_NAME}" \
     --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
   if printf '%s' "$VERSIONS_JSON" | grep -q '"Key"'; then
@@ -479,7 +633,7 @@ if $DESTROY; then
   echo ""
   echo "Emptying ${LETS_ENCRYPT_BUCKET_NAME} (all object versions and delete markers)..."
   cd "${SCRIPT_DIR}/iam/lets-encrypt-pipeline-tf"
-  terraform init
+  tf_init lets-encrypt-pipeline
   LE_VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${LETS_ENCRYPT_BUCKET_NAME}" \
     --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
   if printf '%s' "$LE_VERSIONS_JSON" | grep -q '"Key"'; then
@@ -546,7 +700,7 @@ echo "================================================================"
 echo ""
 
 cd "${SCRIPT_DIR}/iam/prefix-lists-pipeline-tf"
-terraform init
+tf_init prefix-lists-pipeline
 
 PREFIX_LISTS_TF_VARS=(
   -var="shared_services_account_id=${SHARED_SERVICES_ACCOUNT_ID}"
@@ -587,7 +741,7 @@ echo "================================================================"
 echo ""
 
 cd "${SCRIPT_DIR}/iam/lets-encrypt-pipeline-tf"
-terraform init
+tf_init lets-encrypt-pipeline
 
 LETS_ENCRYPT_TF_VARS=(
   -var="shared_services_account_id=${SHARED_SERVICES_ACCOUNT_ID}"

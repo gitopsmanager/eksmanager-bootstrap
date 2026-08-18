@@ -33,13 +33,31 @@
 # -----------------------------------------------------------------------------
 
 terraform {
-  required_version = ">= 1.5.0"
+  # 1.10 for use_lockfile below -- S3-native state locking, no DynamoDB table.
+  required_version = ">= 1.10.0"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
       version = ">= 5.0.0"
     }
+  }
+
+  # Remote state, so this module is not owned by whichever laptop ran it first.
+  # It used to be a local terraform.tfstate: a second operator running
+  # setup-pipeline started from empty state, planned to create everything, and
+  # died partway on the first name collision -- leaving two partial and
+  # divergent views of one installation.
+  #
+  # bucket and region come from -backend-config at init; the script creates the
+  # bucket with the AWS CLI beforehand. Deliberately NOT a Terraform resource:
+  # this module creates the bootstrap bucket, so it cannot also keep its state
+  # there, and a bucket declared in the module storing its own state is the
+  # cycle this avoids.
+  backend "s3" {
+    key          = "setup/codebuild-pipeline/terraform.tfstate"
+    encrypt      = true
+    use_lockfile = true
   }
 }
 

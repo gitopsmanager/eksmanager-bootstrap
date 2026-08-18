@@ -85,16 +85,15 @@
 
     .\setup-pipeline.ps1 -Destroy
 
-    To point this at a different AWS organisation, archive the previous
-    one's local Terraform state first:
+    Pointing this at a different AWS organisation needs nothing special.
+    State lives in s3://eksmanager-tfstate-<management-account-id>/, so a
+    different organisation means a different management account, a different
+    bucket, and separate state by construction.
 
-    .\setup-pipeline.ps1 -ClearOldState
-
-    iam/codebuild-pipeline-tf and iam/prefix-lists-pipeline-tf keep state in
-    a local terraform.tfstate (only aws/ and terraform/add-cluster use the S3
-    backend), so without this Terraform plans against the old org's account
-    and resource ids. It archives rather than deletes, and destroys nothing --
-    run -Destroy first if those resources still exist.
+    -ClearOldState remains for one case only: clearing a leftover local
+    terraform.tfstate from before state moved to S3. It archives rather than
+    deletes and destroys nothing -- run -Destroy first if those resources
+    still exist.
 
     If your shell's ambient AWS credentials aren't in the default profile/
     region (e.g. you use named SSO profiles), pass them explicitly -- an
@@ -128,11 +127,14 @@ if ($Profile) {
 
 # ---- -ClearOldState ---------------------------------------------------------
 #
-# iam/codebuild-pipeline-tf and iam/prefix-lists-pipeline-tf keep their state in
-# a local terraform.tfstate next to the code -- unlike aws/ and
-# terraform/add-cluster, which use the S3 backend. So pointing this script at a
-# different AWS organisation leaves the previous org's account ids and resource
-# ids in those two files, and Terraform plans against them.
+# Largely obsolete. All three iam/* modules now keep state in
+# s3://eksmanager-tfstate-<management-account-id>/, so switching organisations
+# switches state automatically -- the bucket name carries the account id.
+#
+# It still has one job: clearing a local terraform.tfstate left over from
+# before that move, on a machine where tf_init has not yet migrated it. Note
+# that a successful migration archives the local file itself, so this is only
+# for state that was never migrated.
 #
 # Archives rather than deletes: the state is the only record of what was
 # created, and worth keeping even when the accounts are gone.
@@ -251,8 +253,198 @@ Write-Host "Default provider: management account (your ambient credentials)."
 Write-Host "aws.shared provider: assumes $SharedServicesRoleName in $SharedServicesAccountId."
 Write-Host ""
 
+# ── AWS CLI is required ──────────────────────────────────────────────────────
+# It was optional before, used only to auto-detect an existing OIDC provider.
+# It is required now because the Terraform state bucket is created here, with
+# the CLI, before Terraform runs -- the module that would otherwise declare it
+# is the same one whose state it holds.
+if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
+    Write-Error @"
+The AWS CLI is required and is not on PATH.
+
+    winget install -e --id Amazon.AWSCLI
+    or https://aws.amazon.com/cli/
+
+It creates the Terraform state bucket before Terraform runs.
+"@
+    exit 1
+}
+
+# ── Terraform state bucket ───────────────────────────────────────────────────
+# In the MANAGEMENT account, because that is where this script authenticates --
+# the backend then needs no assume_role of its own. Not the shared services
+# account, where aws/ keeps its state, and deliberately not a Terraform
+# resource: iam/codebuild-pipeline-tf creates the bootstrap bucket, so it
+# cannot also keep its state there.
+#
+# Before this, all three iam/* modules used a local terraform.tfstate. The
+# state was, in this script's own words, the only record of what was created --
+# and it lived on one laptop. A second operator running setup-pipeline began
+# from empty state, planned to create everything, and failed partway on the
+# first name collision, leaving two partial and divergent views of one install.
+$ManagementAccountId = aws sts get-caller-identity --query Account --output text 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $ManagementAccountId) {
+    Write-Error "No usable AWS credentials for the management account. Sign in, then re-run."
+    exit 1
+}
+$StateBucket = "eksmanager-tfstate-$SharedServicesAccountId"
+
+# In SHARED SERVICES, alongside aws/'s state -- not the management account.
+# Management is meant to stay free of workloads and resources, and splitting
+# EKS Manager's state across two accounts would read as an oversight to anyone
+# who found it later.
+#
+# Terraform still runs with ambient MANAGEMENT credentials, so the bucket
+# carries a policy granting that account. That keeps assume_role out of the
+# backend config, which would otherwise mean nested quoting through
+# -backend-config -- and PowerShell 5.1 does not survive that.
+#
+# Creating it needs shared-services credentials, so this borrows the same
+# assume-role dance the OIDC detection below uses, and clears the temporary
+# credentials in a finally. Leaving them set would break every Terraform call
+# after this point: the default provider is management.
+aws s3api head-bucket --bucket $StateBucket 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "Terraform state bucket: $StateBucket (exists, shared services)"
+} else {
+    Write-Host "Creating Terraform state bucket $StateBucket in $SharedServicesAccountId / $Region..."
+
+    $bucketCredsRaw = aws sts assume-role `
+        --role-arn "arn:aws:iam::${SharedServicesAccountId}:role/${SharedServicesRoleName}" `
+        --role-session-name "eksmanager-tfstate-bootstrap" --output json 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $bucketCredsRaw) {
+        Write-Error "Could not assume $SharedServicesRoleName in $SharedServicesAccountId to create the state bucket."
+        exit 1
+    }
+
+    try {
+        $bc = $bucketCredsRaw | ConvertFrom-Json
+        $env:AWS_ACCESS_KEY_ID     = $bc.Credentials.AccessKeyId
+        $env:AWS_SECRET_ACCESS_KEY = $bc.Credentials.SecretAccessKey
+        $env:AWS_SESSION_TOKEN     = $bc.Credentials.SessionToken
+
+        # us-east-1 rejects a LocationConstraint; every other region requires one.
+        if ($Region -eq "us-east-1") {
+            aws s3api create-bucket --bucket $StateBucket --region $Region | Out-Null
+        } else {
+            aws s3api create-bucket --bucket $StateBucket --region $Region `
+                --create-bucket-configuration "LocationConstraint=$Region" | Out-Null
+        }
+        if ($LASTEXITCODE -ne 0) { Write-Error "Could not create $StateBucket."; exit 1 }
+
+        # Versioning first. It is what makes a corrupted or truncated state
+        # recoverable, and it cannot be applied retroactively to objects
+        # written before it was switched on.
+        #
+        # Shorthand rather than JSON on purpose: PowerShell 5.1 does not escape
+        # embedded double quotes for a native command, so a JSON argument
+        # arrives with its quotes stripped and is rejected.
+        aws s3api put-bucket-versioning --bucket $StateBucket `
+            --versioning-configuration "Status=Enabled" | Out-Null
+        aws s3api put-bucket-encryption --bucket $StateBucket `
+            --server-side-encryption-configuration "Rules=[{ApplyServerSideEncryptionByDefault={SSEAlgorithm=AES256}}]" | Out-Null
+        aws s3api put-public-access-block --bucket $StateBucket `
+            --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" | Out-Null
+
+        # The bucket policy has no shorthand form, so it goes through a file --
+        # same reason as above.
+        $policyFile = New-TemporaryFile
+        try {
+            @"
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowManagementAccountTerraformState",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::$ManagementAccountId`:root" },
+      "Action": ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::$StateBucket",
+        "arn:aws:s3:::$StateBucket/setup/*"
+      ]
+    }
+  ]
+}
+"@ | Set-Content -Path $policyFile.FullName -Encoding ascii -ErrorAction Stop
+
+            aws s3api put-bucket-policy --bucket $StateBucket `
+                --policy "file://$($policyFile.FullName)" | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Created $StateBucket but could not apply its bucket policy -- Terraform would be denied."
+                exit 1
+            }
+        }
+        finally { Remove-Item $policyFile.FullName -ErrorAction SilentlyContinue }
+
+        Write-Host "Created $StateBucket (versioned, encrypted, public access blocked, management account granted)."
+    }
+    finally {
+        Remove-Item Env:\AWS_ACCESS_KEY_ID     -ErrorAction SilentlyContinue
+        Remove-Item Env:\AWS_SECRET_ACCESS_KEY -ErrorAction SilentlyContinue
+        Remove-Item Env:\AWS_SESSION_TOKEN     -ErrorAction SilentlyContinue
+    }
+}
+
+# Init against the shared backend. Migrates a local terraform.tfstate up on
+# first run, and refuses when both copies exist -- that is the one case where
+# guessing loses somebody's work.
+function Invoke-TerraformInit {
+    param([Parameter(Mandatory)][string] $ModuleName)
+
+    $localState = Test-Path "terraform.tfstate"
+    $remoteKey  = "setup/$ModuleName/terraform.tfstate"
+
+    aws s3api head-object --bucket $StateBucket --key $remoteKey 2>$null | Out-Null
+    $remoteState = ($LASTEXITCODE -eq 0)
+
+    if ($localState -and $remoteState) {
+        Write-Error @"
+$ModuleName has BOTH a local and a remote state file.
+
+    local  : $(Join-Path (Get-Location) 'terraform.tfstate')
+    remote : s3://$StateBucket/$remoteKey
+
+Only you can say which is current, and migrating would overwrite one with the
+other. If the remote copy is right, move the local file aside and re-run. If
+the local one is, delete the remote object and re-run.
+"@
+        exit 1
+    }
+
+    $tfArgs = @(
+        "-input=false"
+        "-backend-config=bucket=$StateBucket"
+        "-backend-config=region=$Region"
+    )
+    if ($localState) {
+        Write-Host "Migrating local state for $ModuleName to s3://$StateBucket/$remoteKey"
+        # Safe here only because the check above proved there is nothing remote
+        # to overwrite.
+        $tfArgs += "-migrate-state"
+        $tfArgs += "-force-copy"
+    }
+
+    terraform init @tfArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "terraform init failed for $ModuleName."
+        exit 1
+    }
+
+    # -migrate-state copies the state up but leaves the local file behind, so
+    # without this the next run would find both and refuse. Renamed rather than
+    # deleted: it is the only copy of what was created if the migration turns
+    # out to have gone wrong.
+    if ($localState) {
+        $archived = "terraform.tfstate.migrated-$(Get-Date -Format 'yyyyMMddHHmmss')"
+        Move-Item "terraform.tfstate" $archived -Force
+        Remove-Item "terraform.tfstate.backup" -ErrorAction SilentlyContinue
+        Write-Host "Local state migrated and archived as $archived"
+    }
+}
+
 Push-Location (Join-Path $ScriptDir "iam\codebuild-pipeline-tf")
-terraform init
+Invoke-TerraformInit -ModuleName "codebuild-pipeline"
 
 # ── Auto-detect an existing GitHub Actions OIDC provider ────────────────────
 # token.actions.githubusercontent.com is an account-wide singleton in the
@@ -407,7 +599,7 @@ if ($Destroy) {
     Write-Host ""
     Write-Host "Emptying $PrefixListsBucketName (all object versions and delete markers)..."
     Push-Location (Join-Path $ScriptDir "iam\prefix-lists-pipeline-tf")
-    terraform init
+    Invoke-TerraformInit -ModuleName "prefix-lists-pipeline"
     $plVersionsJson = aws s3api list-object-versions --bucket $PrefixListsBucketName `
         --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>$null
     if ($plVersionsJson) {
@@ -454,7 +646,7 @@ if ($Destroy) {
     Write-Host ""
     Write-Host "Emptying $LetsEncryptBucketName (all object versions and delete markers)..."
     Push-Location (Join-Path $ScriptDir "iam\lets-encrypt-pipeline-tf")
-    terraform init
+    Invoke-TerraformInit -ModuleName "lets-encrypt-pipeline"
     $leVersionsJson = aws s3api list-object-versions --bucket $LetsEncryptBucketName `
         --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>$null
     if ($leVersionsJson) {
@@ -533,7 +725,7 @@ Write-Host "================================================================"
 Write-Host ""
 
 Push-Location (Join-Path $ScriptDir "iam\prefix-lists-pipeline-tf")
-terraform init
+Invoke-TerraformInit -ModuleName "prefix-lists-pipeline"
 
 $prefixListsTfVars = @(
     "-var=shared_services_account_id=$SharedServicesAccountId"
@@ -574,7 +766,7 @@ Write-Host "================================================================"
 Write-Host ""
 
 Push-Location (Join-Path $ScriptDir "iam\lets-encrypt-pipeline-tf")
-terraform init
+Invoke-TerraformInit -ModuleName "lets-encrypt-pipeline"
 
 $letsEncryptTfVars = @(
     "-var=shared_services_account_id=$SharedServicesAccountId"
