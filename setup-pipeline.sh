@@ -458,8 +458,37 @@ EOF
   # was lost rather than never created. On a genuine first install the bucket
   # is created moments earlier and this never fires.
   if [[ "$BUCKET_PREEXISTED" == "true" && "${EKSMANAGER_ALLOW_EMPTY_STATE:-}" != "true" ]]; then
-    local managed
-    managed=$(terraform state list 2>/dev/null | grep -cv '^data[.]' || true)
+    # Failure and emptiness are NOT the same answer, and conflating them is why
+    # this guard first fired on a module whose state was perfectly intact. A
+    # backend that cannot be read -- AccessDenied, a held lock, a KMS refusal --
+    # makes `terraform state list` exit non-zero with an empty stdout, which
+    # read as "no resources" when stderr went to /dev/null under `|| true`.
+    # Check the exit code first and report what it actually said.
+    local state_out state_rc managed
+    state_out=$(terraform state list 2>&1)
+    state_rc=$?
+
+    if [[ $state_rc -ne 0 ]]; then
+      cat >&2 <<EOF
+
+ERROR: could not read the state for ${module_name} -- terraform state list
+       exited ${state_rc}. This is NOT the empty-state condition; it means the
+       backend could not be read, so nothing can be concluded about what exists.
+
+${state_out}
+
+Resolve that before re-running. EKSMANAGER_ALLOW_EMPTY_STATE does not apply
+here and will not bypass it.
+EOF
+      exit 1
+    fi
+
+    if [[ -z "${state_out//[[:space:]]/}" ]]; then
+      managed=0
+    else
+      managed=$(printf '%s\n' "$state_out" | grep -cv '^data[.]' || true)
+    fi
+
     if [[ "${managed:-0}" -eq 0 ]]; then
       cat >&2 <<EOF
 

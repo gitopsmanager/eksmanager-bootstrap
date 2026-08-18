@@ -460,10 +460,33 @@ the local one is, delete the remote object and re-run.
     # was lost rather than never created. On a genuine first install the bucket
     # is created moments earlier and this never fires.
     if ($script:BucketPreexisted -and $env:EKSMANAGER_ALLOW_EMPTY_STATE -ne "true") {
-        # Not piped to Measure-Object: `terraform state list` on an empty state
-        # writes nothing at all, and PowerShell 5.1 turns no output into $null
+        # Failure and emptiness are NOT the same answer, and conflating them is
+        # why this guard first fired on a module whose state was perfectly
+        # intact. A backend that cannot be read -- AccessDenied, a held lock, a
+        # KMS refusal -- makes `terraform state list` exit non-zero with no
+        # stdout, which read as "no resources". Check the exit code first.
+        #
+        # Not piped straight to Measure-Object: on a genuinely empty state the
+        # command writes nothing, and PowerShell 5.1 turns no output into $null
         # rather than an empty array, so @() forces the collection either way.
-        $managed = @(terraform state list 2>$null | Where-Object { $_ -notmatch '^data\.' })
+        $stateOut = @(terraform state list 2>&1)
+        $stateRc  = $LASTEXITCODE
+        if ($stateRc -ne 0) {
+            Write-Error @"
+
+Could not read the state for $ModuleName -- terraform state list exited
+$stateRc. This is NOT the empty-state condition; it means the backend could not
+be read, so nothing can be concluded about what exists.
+
+$($stateOut -join "`n")
+
+Resolve that before re-running. EKSMANAGER_ALLOW_EMPTY_STATE does not apply here
+and will not bypass it.
+"@
+            exit 1
+        }
+
+        $managed = @($stateOut | Where-Object { $_ -notmatch '^data\.' })
         if ($managed.Count -eq 0) {
             Write-Error @"
 
