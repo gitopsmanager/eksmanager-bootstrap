@@ -306,6 +306,20 @@ STATE_BUCKET="eksmanager-tfstate-${SHARED_SERVICES_ACCOUNT_ID}"
 # assume-role dance the OIDC detection below uses, in a subshell so the
 # temporary credentials cannot leak into the Terraform calls that follow --
 # their default provider is management.
+# Probed here, in the parent shell, so the answer survives the subshell below.
+# It is the signal the empty-state guard in tf_init depends on: a bucket that
+# predates this run means the installation predates it too, so a module with no
+# resources in state has lost it rather than never had it.
+#
+# Uses ambient MANAGEMENT credentials, which the bucket policy grants. If that
+# policy were missing the probe fails and the flag stays false -- the guard then
+# does not fire, which is the safe direction to be wrong in.
+BUCKET_PREEXISTED=false
+if aws s3api head-bucket --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
+  BUCKET_PREEXISTED=true
+  echo "Terraform state bucket: ${STATE_BUCKET} (exists, shared services)"
+fi
+
 # Creation is conditional; everything after it is applied on every run. All of
 # those calls are idempotent, and doing them unconditionally means a run that
 # died partway -- bucket created, policy not -- repairs itself next time. The
@@ -324,8 +338,8 @@ STATE_BUCKET="eksmanager-tfstate-${SHARED_SERVICES_ACCOUNT_ID}"
   AWS_SESSION_TOKEN=$(printf '%s' "$CREDS" | cut -f3)
   export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 
-  if aws s3api head-bucket --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
-    echo "Terraform state bucket: ${STATE_BUCKET} (exists, shared services)"
+  if [[ "$BUCKET_PREEXISTED" == "true" ]]; then
+    : # already reported above
   else
     echo "Creating Terraform state bucket ${STATE_BUCKET} in ${SHARED_SERVICES_ACCOUNT_ID} / ${REGION}..."
     # us-east-1 rejects a LocationConstraint; every other region requires one.
@@ -357,7 +371,14 @@ STATE_BUCKET="eksmanager-tfstate-${SHARED_SERVICES_ACCOUNT_ID}"
       "Sid": "AllowManagementAccountTerraformState",
       "Effect": "Allow",
       "Principal": { "AWS": "arn:aws:iam::${MANAGEMENT_ACCOUNT_ID}:root" },
-      "Action": ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
       "Resource": [
         "arn:aws:s3:::${STATE_BUCKET}",
         "arn:aws:s3:::${STATE_BUCKET}/setup/*"
@@ -421,6 +442,48 @@ EOF
   fi
 
   terraform init "${args[@]}"
+
+  # Refuse to apply from empty state onto an installation that already exists.
+  #
+  # This is the failure that cost an afternoon: setup was run from a directory
+  # with no local terraform.tfstate, before state lived in S3. Terraform quite
+  # reasonably concluded nothing existed and planned to build everything. Most
+  # creates collided harmlessly -- roles, buckets, secrets and security groups
+  # all have unique names -- but a KMS key does not. CreateKey always succeeds,
+  # so it made a second customer-managed key, which then could not take the
+  # alias and sat orphaned.
+  #
+  # The signal is the state bucket. If it predates this run, this installation
+  # has been set up before, so a module with no managed resources means state
+  # was lost rather than never created. On a genuine first install the bucket
+  # is created moments earlier and this never fires.
+  if [[ "$BUCKET_PREEXISTED" == "true" && "${EKSMANAGER_ALLOW_EMPTY_STATE:-}" != "true" ]]; then
+    local managed
+    managed=$(terraform state list 2>/dev/null | grep -cv '^data[.]' || true)
+    if [[ "${managed:-0}" -eq 0 ]]; then
+      cat >&2 <<EOF
+
+ERROR: ${module_name} has no resources in state, but ${STATE_BUCKET}
+       already existed before this run -- so this installation has been set up
+       before and its state is missing, not absent.
+
+Applying now would try to create everything from scratch. Most of it would
+collide and fail, but anything AWS lets you create twice would succeed -- a KMS
+key in particular, which would leave an orphaned key that cannot take its alias.
+
+Check whether the state is still there before doing anything else:
+
+    aws s3api list-object-versions --bucket ${STATE_BUCKET} \
+      --prefix setup/${module_name}/terraform.tfstate \
+      --query 'Versions[].[LastModified,Size,VersionId]' --output text
+
+A recent version of a few tens of KB is the state you want; restore it with
+s3api get-object --version-id. If this really is a new module being added to an
+existing installation, re-run with EKSMANAGER_ALLOW_EMPTY_STATE=true.
+EOF
+      exit 1
+    fi
+  fi
 
   # -migrate-state copies the state up but leaves the local file behind, so
   # without this the next run would find both and refuse. Renamed rather than

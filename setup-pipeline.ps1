@@ -321,8 +321,12 @@ $bucketCredsRaw = aws sts assume-role `
         $env:AWS_SECRET_ACCESS_KEY = $bc.Credentials.SecretAccessKey
         $env:AWS_SESSION_TOKEN     = $bc.Credentials.SessionToken
 
+        # Script-scoped because Invoke-TerraformInit reads it: a bucket that
+        # predates this run means the installation predates it too, and that is
+        # the whole signal the empty-state guard there depends on.
         aws s3api head-bucket --bucket $StateBucket 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
+        $script:BucketPreexisted = ($LASTEXITCODE -eq 0)
+        if ($script:BucketPreexisted) {
             Write-Host "Terraform state bucket: $StateBucket (exists, shared services)"
         } else {
             Write-Host "Creating Terraform state bucket $StateBucket in $SharedServicesAccountId / $Region..."
@@ -362,7 +366,14 @@ $bucketCredsRaw = aws sts assume-role `
       "Sid": "AllowManagementAccountTerraformState",
       "Effect": "Allow",
       "Principal": { "AWS": "arn:aws:iam::$ManagementAccountId`:root" },
-      "Action": ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
       "Resource": [
         "arn:aws:s3:::$StateBucket",
         "arn:aws:s3:::$StateBucket/setup/*"
@@ -432,6 +443,50 @@ the local one is, delete the remote object and re-run.
     if ($LASTEXITCODE -ne 0) {
         Write-Error "terraform init failed for $ModuleName."
         exit 1
+    }
+
+    # Refuse to apply from empty state onto an installation that already exists.
+    #
+    # This is the failure that cost an afternoon: setup was run from a directory
+    # with no local terraform.tfstate, before state lived in S3. Terraform quite
+    # reasonably concluded nothing existed and planned to build everything. Most
+    # creates collided harmlessly -- roles, buckets, secrets and security groups
+    # all have unique names -- but a KMS key does not. CreateKey always succeeds,
+    # so it made a second customer-managed key, which then could not take the
+    # alias and sat orphaned.
+    #
+    # The signal is the state bucket. If it predates this run, this installation
+    # has been set up before, so a module with no managed resources means state
+    # was lost rather than never created. On a genuine first install the bucket
+    # is created moments earlier and this never fires.
+    if ($script:BucketPreexisted -and $env:EKSMANAGER_ALLOW_EMPTY_STATE -ne "true") {
+        # Not piped to Measure-Object: `terraform state list` on an empty state
+        # writes nothing at all, and PowerShell 5.1 turns no output into $null
+        # rather than an empty array, so @() forces the collection either way.
+        $managed = @(terraform state list 2>$null | Where-Object { $_ -notmatch '^data\.' })
+        if ($managed.Count -eq 0) {
+            Write-Error @"
+
+$ModuleName has no resources in state, but $StateBucket already existed
+before this run -- so this installation has been set up before and its state is
+missing, not absent.
+
+Applying now would try to create everything from scratch. Most of it would
+collide and fail, but anything AWS lets you create twice would succeed -- a KMS
+key in particular, which would leave an orphaned key that cannot take its alias.
+
+Check whether the state is still there before doing anything else:
+
+    aws s3api list-object-versions --bucket $StateBucket ``
+      --prefix setup/$ModuleName/terraform.tfstate ``
+      --query 'Versions[].[LastModified,Size,VersionId]' --output text
+
+A recent version of a few tens of KB is the state you want; restore it with
+s3api get-object --version-id. If this really is a new module being added to an
+existing installation, re-run with `$env:EKSMANAGER_ALLOW_EMPTY_STATE = "true".
+"@
+            exit 1
+        }
     }
 
     # -migrate-state copies the state up but leaves the local file behind, so
