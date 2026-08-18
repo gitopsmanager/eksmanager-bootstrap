@@ -10,7 +10,9 @@
         "iam:PutRolePolicy",
         "iam:AttachRolePolicy",
         "iam:DetachRolePolicy",
-        "iam:DeleteRolePolicy"
+        "iam:DeleteRolePolicy",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary"
       ],
       "Resource": "arn:aws:iam::*:role/EKSManagerAdminRole",
       "Condition": {
@@ -33,6 +35,24 @@
         "iam:DeletePolicy"
       ],
       "Resource": "arn:aws:iam::*:policy/EKSManagerRoleBoundary",
+      "Condition": {
+        "StringNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::*:role/OrganizationAccountAccessRole",
+            "arn:aws:iam::*:role/AWSControlTowerExecution",
+            "arn:aws:iam::*:role/stacksets-exec-*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ProtectEKSManagerRoleBoundaryAttachment",
+      "Effect": "Deny",
+      "Action": [
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary"
+      ],
+      "Resource": "arn:aws:iam::*:role/EKSManager-*",
       "Condition": {
         "StringNotLike": {
           "aws:PrincipalArn": [

@@ -75,13 +75,34 @@ locals {
 }
 
 # -- Cluster accounts ---------------------------------------------------------
-# Protects what the StackSet created: the role, and the permissions boundary
-# that constrains every EKSManager-* role the agent goes on to create. The
-# boundary is the higher-leverage of the two -- it is a managed policy, so a
-# CreatePolicyVersion plus SetDefaultPolicyVersion rewrites it in place and
-# widens every bounded role at once, without touching a single role. The
-# identity policy's DenyBoundaryTampering does not cover that: it stops
+# Protects what the StackSet created: the role, the permissions boundary that
+# constrains every EKSManager-* role the agent goes on to create, and the
+# attachment of that boundary.
+#
+# The boundary policy is the higher-leverage of the three -- it is a managed
+# policy, so a CreatePolicyVersion plus SetDefaultPolicyVersion rewrites it in
+# place and widens every bounded role at once, without touching a single role.
+# The identity policy's DenyBoundaryTampering does not cover that: it stops
 # boundaries being attached or removed, not the boundary's contents changing.
+#
+# EKSManagerAdminRole itself has NO boundary -- its permissions are the inline
+# EKSManagerAdminPolicy. Put/DeleteRolePermissionsBoundary are denied on it
+# anyway, and not to stop an escalation: with policies and trust already
+# frozen, ATTACHING a restrictive boundary is the one remaining way to disable
+# the role. The symptom would be AccessDenied on actions its policy plainly
+# allows, with nothing visibly changed -- an expensive thing to diagnose.
+#
+# ProtectEKSManagerRoleBoundaryAttachment covers the roles that DO carry a
+# boundary. DenyBoundaryTampering already stops the agent stripping one, but
+# that is an identity policy and does not bind an account administrator. The
+# boundary exists to cap what a compromised pod can do with those credentials,
+# so removing it widens that blast radius even though it escalates nothing for
+# the admin who removed it. No exemption for the agent: it sets the boundary at
+# CreateRole and never calls either action.
+#
+# The two resources are disjoint by the hyphen -- EKSManagerAdminRole does not
+# match EKSManager-*, which is the same convention that separates agent-created
+# roles from everything else.
 
 resource "aws_organizations_policy" "spoke" {
   name        = "EKSManagerProtectionSCP"
