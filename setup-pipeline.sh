@@ -475,7 +475,13 @@ EOF
     local state_rc=0
     state_out=$(terraform state list 2>&1) || state_rc=$?
 
-    if [[ $state_rc -ne 0 ]]; then
+    # `terraform state list` exits 1 on an EMPTY state as well as on a failure,
+    # printing "No state file was found!". So a non-zero exit does not by itself
+    # mean the backend is unreadable -- treating it that way misreports the very
+    # condition this guard exists to catch. Match that message first; any OTHER
+    # non-zero exit is a real backend problem and must not be waved through as
+    # "empty", because "empty" is what permits an apply from scratch.
+    if [[ $state_rc -ne 0 && "$state_out" != *"No state file was found"* ]]; then
       cat >&2 <<EOF
 
 ERROR: could not read the state for ${module_name} -- terraform state list
@@ -490,7 +496,7 @@ EOF
       exit 1
     fi
 
-    if [[ -z "${state_out//[[:space:]]/}" ]]; then
+    if [[ $state_rc -ne 0 || -z "${state_out//[[:space:]]/}" ]]; then
       managed=0
     else
       managed=$(printf '%s\n' "$state_out" | grep -cv '^data[.]' || true)

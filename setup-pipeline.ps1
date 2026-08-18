@@ -490,7 +490,14 @@ the local one is, delete the remote object and re-run.
         $stateErr = if (Test-Path $errFile) { (Get-Content $errFile -Raw) } else { "" }
         Remove-Item $errFile -Force -ErrorAction SilentlyContinue
 
-        if ($stateRc -ne 0) {
+        # `terraform state list` exits 1 on an EMPTY state as well as on a
+        # failure, printing "No state file was found!". A non-zero exit does not
+        # by itself mean the backend is unreadable -- treating it that way
+        # misreports the very condition this guard exists to catch. Match that
+        # message first; any OTHER non-zero exit is a real backend problem and
+        # must not be waved through as "empty".
+        $stateEmpty = ($stateErr -match "No state file was found")
+        if ($stateRc -ne 0 -and -not $stateEmpty) {
             Write-Error @"
 
 Could not read the state for $ModuleName -- terraform state list exited
@@ -505,7 +512,8 @@ and will not bypass it.
             exit 1
         }
 
-        $managed = @($stateOut | Where-Object { $_ -notmatch '^data\.' })
+        $managed = if ($stateRc -ne 0) { @() }
+                   else { @($stateOut | Where-Object { $_ -notmatch '^data\.' }) }
         if ($managed.Count -eq 0) {
             Write-Error @"
 
