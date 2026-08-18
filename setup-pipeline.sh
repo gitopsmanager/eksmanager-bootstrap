@@ -306,37 +306,50 @@ STATE_BUCKET="eksmanager-tfstate-${SHARED_SERVICES_ACCOUNT_ID}"
 # assume-role dance the OIDC detection below uses, in a subshell so the
 # temporary credentials cannot leak into the Terraform calls that follow --
 # their default provider is management.
-if aws s3api head-bucket --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
-  echo "Terraform state bucket: ${STATE_BUCKET} (exists, shared services)"
-else
-  echo "Creating Terraform state bucket ${STATE_BUCKET} in ${SHARED_SERVICES_ACCOUNT_ID} / ${REGION}..."
-  (
-    CREDS=$(aws sts assume-role       --role-arn "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${SHARED_SERVICES_ROLE_NAME}"       --role-session-name "eksmanager-tfstate-bootstrap"       --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text) || {
-        echo "ERROR: could not assume ${SHARED_SERVICES_ROLE_NAME} in ${SHARED_SERVICES_ACCOUNT_ID}." >&2
-        exit 1
-      }
-    AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS" | cut -f1)
-    AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS" | cut -f2)
-    AWS_SESSION_TOKEN=$(printf '%s' "$CREDS" | cut -f3)
-    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+# Creation is conditional; everything after it is applied on every run. All of
+# those calls are idempotent, and doing them unconditionally means a run that
+# died partway -- bucket created, policy not -- repairs itself next time. The
+# first version skipped the whole block once the bucket existed, so a failed
+# policy call left a bucket Terraform could not write to and nothing to say so.
+(
+  CREDS=$(aws sts assume-role \
+    --role-arn "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${SHARED_SERVICES_ROLE_NAME}" \
+    --role-session-name "eksmanager-tfstate-bootstrap" \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text) || {
+      echo "ERROR: could not assume ${SHARED_SERVICES_ROLE_NAME} in ${SHARED_SERVICES_ACCOUNT_ID}." >&2
+      exit 1
+    }
+  AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS" | cut -f1)
+  AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS" | cut -f2)
+  AWS_SESSION_TOKEN=$(printf '%s' "$CREDS" | cut -f3)
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 
+  if aws s3api head-bucket --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
+    echo "Terraform state bucket: ${STATE_BUCKET} (exists, shared services)"
+  else
+    echo "Creating Terraform state bucket ${STATE_BUCKET} in ${SHARED_SERVICES_ACCOUNT_ID} / ${REGION}..."
     # us-east-1 rejects a LocationConstraint; every other region requires one.
     if [[ "$REGION" == "us-east-1" ]]; then
       aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$REGION" >/dev/null
     else
-      aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$REGION"         --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null
+      aws s3api create-bucket --bucket "$STATE_BUCKET" --region "$REGION" \
+        --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null
     fi
+  fi
 
-    # Versioning first. It is what makes a corrupted or truncated state
-    # recoverable, and it cannot be applied retroactively to objects written
-    # before it was switched on.
-    aws s3api put-bucket-versioning --bucket "$STATE_BUCKET"       --versioning-configuration "Status=Enabled" >/dev/null
-    aws s3api put-bucket-encryption --bucket "$STATE_BUCKET"       --server-side-encryption-configuration       "Rules=[{ApplyServerSideEncryptionByDefault={SSEAlgorithm=AES256}}]" >/dev/null
-    aws s3api put-public-access-block --bucket "$STATE_BUCKET"       --public-access-block-configuration       "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" >/dev/null
+  # Versioning first. It is what makes a corrupted or truncated state
+  # recoverable, and it cannot be applied retroactively to objects written
+  # before it was switched on.
+  aws s3api put-bucket-versioning --bucket "$STATE_BUCKET" \
+    --versioning-configuration "Status=Enabled" >/dev/null
+  aws s3api put-bucket-encryption --bucket "$STATE_BUCKET" \
+    --server-side-encryption-configuration "Rules=[{ApplyServerSideEncryptionByDefault={SSEAlgorithm=AES256}}]" >/dev/null
+  aws s3api put-public-access-block --bucket "$STATE_BUCKET" \
+    --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" >/dev/null
 
-    POLICY_FILE=$(mktemp)
-    trap 'rm -f "$POLICY_FILE"' EXIT
-    cat > "$POLICY_FILE" <<EOF
+  POLICY_FILE=$(mktemp)
+  trap 'rm -f "$POLICY_FILE"' EXIT
+  cat > "$POLICY_FILE" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -353,14 +366,24 @@ else
   ]
 }
 EOF
-    aws s3api put-bucket-policy --bucket "$STATE_BUCKET"       --policy "file://${POLICY_FILE}" >/dev/null || {
-        echo "ERROR: created ${STATE_BUCKET} but could not apply its bucket policy -- Terraform would be denied." >&2
-        exit 1
-      }
-  ) || exit 1
 
-  echo "Created ${STATE_BUCKET} (versioned, encrypted, public access blocked, management account granted)."
-fi
+  # The AWS CLI on Windows is a native binary and cannot open an MSYS path like
+  # /tmp/tmp.XXXX. MSYS does not translate it either, because the argument
+  # starts with "file:" rather than "/". cygpath exists only under Git Bash and
+  # Cygwin, so this is a no-op everywhere else.
+  POLICY_PATH="$POLICY_FILE"
+  if command -v cygpath >/dev/null 2>&1; then
+    POLICY_PATH=$(cygpath -w "$POLICY_FILE")
+  fi
+
+  aws s3api put-bucket-policy --bucket "$STATE_BUCKET" \
+    --policy "file://${POLICY_PATH}" >/dev/null || {
+      echo "ERROR: could not apply the bucket policy to ${STATE_BUCKET} -- Terraform would be denied." >&2
+      exit 1
+    }
+
+  echo "${STATE_BUCKET}: versioned, encrypted, public access blocked, management account granted."
+) || exit 1
 
 # Init against the shared backend. Migrates a local terraform.tfstate up on
 # first run, and refuses when both copies exist -- that is the one case where

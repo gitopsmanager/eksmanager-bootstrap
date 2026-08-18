@@ -303,13 +303,11 @@ $StateBucket = "eksmanager-tfstate-$SharedServicesAccountId"
 # assume-role dance the OIDC detection below uses, and clears the temporary
 # credentials in a finally. Leaving them set would break every Terraform call
 # after this point: the default provider is management.
-aws s3api head-bucket --bucket $StateBucket 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "Terraform state bucket: $StateBucket (exists, shared services)"
-} else {
-    Write-Host "Creating Terraform state bucket $StateBucket in $SharedServicesAccountId / $Region..."
-
-    $bucketCredsRaw = aws sts assume-role `
+# Creation is conditional; everything after it runs on every pass. Those calls
+# are idempotent, and doing them unconditionally means a run that died partway
+# -- bucket created, policy not -- repairs itself next time rather than leaving
+# a bucket Terraform cannot write to and nothing to say so.
+$bucketCredsRaw = aws sts assume-role `
         --role-arn "arn:aws:iam::${SharedServicesAccountId}:role/${SharedServicesRoleName}" `
         --role-session-name "eksmanager-tfstate-bootstrap" --output json 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $bucketCredsRaw) {
@@ -323,14 +321,20 @@ if ($LASTEXITCODE -eq 0) {
         $env:AWS_SECRET_ACCESS_KEY = $bc.Credentials.SecretAccessKey
         $env:AWS_SESSION_TOKEN     = $bc.Credentials.SessionToken
 
-        # us-east-1 rejects a LocationConstraint; every other region requires one.
-        if ($Region -eq "us-east-1") {
-            aws s3api create-bucket --bucket $StateBucket --region $Region | Out-Null
+        aws s3api head-bucket --bucket $StateBucket 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Terraform state bucket: $StateBucket (exists, shared services)"
         } else {
-            aws s3api create-bucket --bucket $StateBucket --region $Region `
-                --create-bucket-configuration "LocationConstraint=$Region" | Out-Null
+            Write-Host "Creating Terraform state bucket $StateBucket in $SharedServicesAccountId / $Region..."
+            # us-east-1 rejects a LocationConstraint; every other region requires one.
+            if ($Region -eq "us-east-1") {
+                aws s3api create-bucket --bucket $StateBucket --region $Region | Out-Null
+            } else {
+                aws s3api create-bucket --bucket $StateBucket --region $Region `
+                    --create-bucket-configuration "LocationConstraint=$Region" | Out-Null
+            }
+            if ($LASTEXITCODE -ne 0) { Write-Error "Could not create $StateBucket."; exit 1 }
         }
-        if ($LASTEXITCODE -ne 0) { Write-Error "Could not create $StateBucket."; exit 1 }
 
         # Versioning first. It is what makes a corrupted or truncated state
         # recoverable, and it cannot be applied retroactively to objects
@@ -371,20 +375,19 @@ if ($LASTEXITCODE -eq 0) {
             aws s3api put-bucket-policy --bucket $StateBucket `
                 --policy "file://$($policyFile.FullName)" | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                Write-Error "Created $StateBucket but could not apply its bucket policy -- Terraform would be denied."
+                Write-Error "Could not apply the bucket policy to $StateBucket -- Terraform would be denied."
                 exit 1
             }
         }
         finally { Remove-Item $policyFile.FullName -ErrorAction SilentlyContinue }
 
-        Write-Host "Created $StateBucket (versioned, encrypted, public access blocked, management account granted)."
+        Write-Host "${StateBucket}: versioned, encrypted, public access blocked, management account granted."
     }
     finally {
         Remove-Item Env:\AWS_ACCESS_KEY_ID     -ErrorAction SilentlyContinue
         Remove-Item Env:\AWS_SECRET_ACCESS_KEY -ErrorAction SilentlyContinue
         Remove-Item Env:\AWS_SESSION_TOKEN     -ErrorAction SilentlyContinue
     }
-}
 
 # Init against the shared backend. Migrates a local terraform.tfstate up on
 # first run, and refuses when both copies exist -- that is the one case where
