@@ -125,6 +125,24 @@ locals {
 # match EKSManager-*, which is the same convention that separates agent-created
 # roles from everything else.
 
+# The spoke policy was aws_organizations_policy.eksmanager until the split into
+# two policies. Without these, an installation that had already applied with
+# manage_scp_automatically = true plans a CREATE of EKSManagerProtectionSCP
+# beside a DESTROY of the same name -- and Organizations rejects duplicate
+# policy names, so the apply fails partway with the old policy still attached.
+#
+# The attachment keeps the same for_each keys (var.ou_ids), so the whole
+# collection moves.
+moved {
+  from = aws_organizations_policy.eksmanager
+  to   = aws_organizations_policy.spoke
+}
+
+moved {
+  from = aws_organizations_policy_attachment.eksmanager
+  to   = aws_organizations_policy_attachment.spoke
+}
+
 resource "aws_organizations_policy" "spoke" {
   name        = "EKSManagerProtectionSCP"
   description = "Protects EKSManagerAdminRole and its permissions boundary in cluster accounts"
