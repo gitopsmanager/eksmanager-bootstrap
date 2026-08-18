@@ -2,12 +2,14 @@
 # -----------------------------------------------------------------------------
 # terraform-aws-eksmanager — providers.tf
 # -----------------------------------------------------------------------------
-# Two providers:
-#   default    — management account, reached by assuming EKSManagerBootstrap
-#                from CodeBuild's own role (EKSManagerBootstrapSharedRole,
-#                in the shared services account)
-#   aws.shared — shared services account. No assume_role -- CodeBuild's own
-#                execution role already runs here directly.
+# Three providers:
+#   default              — management account, reached by assuming
+#                          EKSManagerBootstrap from CodeBuild's own role
+#                          (EKSManagerBootstrapSharedRole, in shared services)
+#   aws.shared           — shared services account. No assume_role -- CodeBuild's
+#                          own execution role already runs here directly.
+#   aws.management_untagged — same identity as default, no default_tags. Used
+#                          only by module.scp. See the note on that provider.
 #
 # Child accounts are never targeted directly — the StackSet handles deployment
 # into spoke accounts on behalf of the module.
@@ -103,6 +105,41 @@ provider "aws" {
 
   default_tags {
     tags = local.common_tags
+  }
+}
+
+# Management account, deliberately WITHOUT default_tags. Used only by
+# module.scp.
+#
+# aws_organizations_policy is the first taggable resource this module creates in
+# the management account -- aws_organizations_aws_service_access and
+# aws_organizations_delegated_administrator, the only others, do not take tags.
+# So default_tags had never produced a tagging call there until the SCPs were
+# added, and the first apply failed with a bare AccessDeniedException from
+# CreatePolicy: Organizations authorises tag-on-create against
+# organizations:TagResource, which EKSManagerBootstrap was not granted.
+#
+# The fix could have been to grant it. This is the cheaper answer: nothing reads
+# an SCP's tags, the policy names identify themselves, and the SCP's own KMS
+# statement keys off the KMS key's tag rather than its own. Untagged, the role
+# needs only organizations:ListTagsForResource -- read-only, and scoped to
+# policy ARNs -- instead of TagResource plus UntagResource. UntagResource in
+# particular is worth not holding: on "*" it would let this role strip tags from
+# accounts and OUs, which customers use for their own controls.
+#
+# ListTagsForResource is still required even with no tags, because the provider
+# reads tags back on every refresh of a taggable resource.
+#
+# If a reviewer later wants SCPs tagged, switch module.scp back to the default
+# provider and restore TagResource/UntagResource on arn:aws:organizations::*:policy/*
+# -- both parts have to move together.
+provider "aws" {
+  alias  = "management_untagged"
+  region = var.management_account_region
+
+  assume_role {
+    role_arn     = "arn:aws:iam::${var.management_account_id}:role/EKSManagerBootstrap"
+    session_name = "EKSManagerBootstrapSCP"
   }
 }
 

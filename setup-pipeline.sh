@@ -314,17 +314,32 @@ STATE_BUCKET="eksmanager-tfstate-${SHARED_SERVICES_ACCOUNT_ID}"
 # Uses ambient MANAGEMENT credentials, which the bucket policy grants. If that
 # policy were missing the probe fails and the flag stays false -- the guard then
 # does not fire, which is the safe direction to be wrong in.
-BUCKET_PREEXISTED=false
-if aws s3api head-bucket --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
-  BUCKET_PREEXISTED=true
-  echo "Terraform state bucket: ${STATE_BUCKET} (exists, shared services)"
-fi
-
 # Creation is conditional; everything after it is applied on every run. All of
 # those calls are idempotent, and doing them unconditionally means a run that
 # died partway -- bucket created, policy not -- repairs itself next time. The
 # first version skipped the whole block once the bucket existed, so a failed
 # policy call left a bucket Terraform could not write to and nothing to say so.
+#
+# The subshell exists to contain the shared-services credentials: leaving them
+# set would break every Terraform call after this point, because the default
+# provider is management. That containment is why the "did the bucket already
+# exist?" answer -- which the empty-state guard in tf_init depends on -- comes
+# back as an EXIT CODE rather than a variable. A variable assigned in a subshell
+# does not survive it.
+#
+# The probe deliberately runs INSIDE the subshell, on shared-services
+# credentials, so it asks with the same identity that does the creating. An
+# earlier version probed in the parent shell on ambient management credentials,
+# which answers a subtly different question: it depends on the bucket POLICY
+# granting the management account. If a first run created the bucket and then
+# died before applying that policy, the next run's probe would 403, conclude the
+# bucket did not exist, attempt to create it again, and die under set -e -- while
+# also silently disabling the empty-state guard.
+#
+#   exit 0 -> bucket already existed
+#   exit 3 -> bucket was created by this run
+#   other  -> failure, and the subshell has already said why
+set +e
 (
   CREDS=$(aws sts assume-role \
     --role-arn "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${SHARED_SERVICES_ROLE_NAME}" \
@@ -338,9 +353,11 @@ fi
   AWS_SESSION_TOKEN=$(printf '%s' "$CREDS" | cut -f3)
   export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 
-  if [[ "$BUCKET_PREEXISTED" == "true" ]]; then
-    : # already reported above
+  preexisted=true
+  if aws s3api head-bucket --bucket "$STATE_BUCKET" >/dev/null 2>&1; then
+    echo "Terraform state bucket: ${STATE_BUCKET} (exists, shared services)"
   else
+    preexisted=false
     echo "Creating Terraform state bucket ${STATE_BUCKET} in ${SHARED_SERVICES_ACCOUNT_ID} / ${REGION}..."
     # us-east-1 rejects a LocationConstraint; every other region requires one.
     if [[ "$REGION" == "us-east-1" ]]; then
@@ -404,7 +421,18 @@ EOF
     }
 
   echo "${STATE_BUCKET}: versioned, encrypted, public access blocked, management account granted."
-) || exit 1
+
+  # Signals the answer past the subshell boundary -- see the note above.
+  $preexisted && exit 0 || exit 3
+)
+BUCKET_RC=$?
+set -e
+
+case "$BUCKET_RC" in
+  0) BUCKET_PREEXISTED=true ;;
+  3) BUCKET_PREEXISTED=false ;;
+  *) exit 1 ;;
+esac
 
 # Reads the module's state and sets STATE_MANAGED to the number of managed
 # resources in it. Called twice by tf_init -- once after init, once after a

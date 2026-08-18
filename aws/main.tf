@@ -97,6 +97,13 @@ module "scp" {
   source = "./modules/scp"
   count  = var.manage_scp_automatically ? 1 : 0
 
+  # Management account, but the untagged provider -- see providers.tf. Tagging
+  # these would cost the role organizations:TagResource and UntagResource for
+  # nothing that reads them.
+  providers = {
+    aws = aws.management_untagged
+  }
+
   shared_services_account_id = var.shared_services_account_id
   ou_ids                     = local.ou_ids
 

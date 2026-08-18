@@ -39,6 +39,14 @@
         "organizations:ListAccountsForParent"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "EKSManagerProtectionSCPReadTags",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:organizations::*:policy/*/service_control_policy/*"
     }
   ]
 }
