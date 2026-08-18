@@ -195,7 +195,7 @@ The StackSet in `aws/modules/stackset` targets OUs (`organizational_unit_ids`), 
 
 The role's abilities are the inline `EKSManagerAdminPolicy` in
 [eksmanager-enable-account-stackset.yaml](aws/modules/stackset/eksmanager-enable-account-stackset.yaml),
-bounded by [the SCP](aws/modules/scp/eksmanager-scp.json). This is the broadest
+bounded by [the spoke SCP](aws/modules/scp/eksmanager-scp-spoke.json). This is the broadest
 role this repo creates — worth reading before the narrower pipeline roles, since
 it is what the agent actually uses day to day.
 
@@ -294,7 +294,8 @@ eksmanager-bootstrap/
 │       ├── stackset/           # Per-account enablement
 │       │   └── eksmanager-enable-account-stackset.yaml  # Defines EKSManagerAdminRole + EKSManagerAdminPolicy
 │       ├── scp/
-│       │   └── eksmanager-scp.json     # Guardrail bounding EKSManagerAdminRole
+│       │   ├── eksmanager-scp-spoke.json   # Bounds EKSManagerAdminRole + its boundary
+│       │   └── eksmanager-scp-shared.json  # Protects the shared services hub
 │       ├── shared_services/    # Agent role and its policies
 │       ├── agent/              # Agent EC2 host
 │       ├── org/                # Organization wiring
@@ -339,7 +340,7 @@ eksmanager-bootstrap/
 [the StackSet template that defines `EKSManagerAdminRole`](aws/modules/stackset/eksmanager-enable-account-stackset.yaml)
 — the per-account role the agent assumes to manage clusters, and the broadest
 role this repo creates. Its inline `EKSManagerAdminPolicy` is in that file, and
-[the SCP that bounds it](aws/modules/scp/eksmanager-scp.json) is the guardrail
+[the spoke SCP that bounds it](aws/modules/scp/eksmanager-scp-spoke.json) is the guardrail
 around it. See
 [`EKSManagerAdminRole` deploys to every account in a targeted OU](#eksmanageradminrole-deploys-to-every-account-in-a-targeted-ou-not-just-enrolled-ones)
 for what happens in an account that was never enrolled.

@@ -248,20 +248,6 @@
       "Resource": "arn:aws:ecr:*:${SHARED_SERVICES_ACCOUNT_ID}:repository/eksmanager"
     },
     {
-      "Sid": "SecretsManagerConfigStore",
-      "Effect": "Allow",
-      "Action": [
-        "secretsmanager:CreateSecret",
-        "secretsmanager:DeleteSecret",
-        "secretsmanager:DescribeSecret",
-        "secretsmanager:UpdateSecret",
-        "secretsmanager:TagResource",
-        "secretsmanager:UntagResource",
-        "secretsmanager:Get*"
-      ],
-      "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManager/config-??????"
-    },
-    {
       "Sid": "S3ConfigBucket",
       "Effect": "Allow",
       "Action": [
