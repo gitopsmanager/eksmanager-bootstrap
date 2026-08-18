@@ -20,7 +20,8 @@
         "arn:aws:iam::{{SHARED_SERVICES_ACCOUNT_ID}}:role/EKSManagerPrefixListsGithubActionsRole",
         "arn:aws:iam::{{SHARED_SERVICES_ACCOUNT_ID}}:role/EKSManager-push-ecr",
         "arn:aws:iam::{{SHARED_SERVICES_ACCOUNT_ID}}:role/EKSManagerLetsEncryptRole",
-        "arn:aws:iam::{{SHARED_SERVICES_ACCOUNT_ID}}:role/EKSManagerEcrPushTrustSyncRole"
+        "arn:aws:iam::{{SHARED_SERVICES_ACCOUNT_ID}}:role/EKSManagerEcrPushTrustSyncRole",
+        "arn:aws:iam::{{SHARED_SERVICES_ACCOUNT_ID}}:role/EKSManagerLetsEncryptPolicySyncRole"
       ],
       "Condition": {
         "StringNotLike": {

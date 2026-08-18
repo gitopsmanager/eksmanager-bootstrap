@@ -116,15 +116,39 @@ resource "aws_organizations_policy_attachment" "spoke" {
 # ParameterStoreDenyAllWrites. Exempting it would have contradicted that
 # design for no operational gain.
 #
-# One chain this cannot close. EKSManagerLetsEncryptPolicySyncRole holds
-# iam:PutRolePolicy on EKSManagerLetsEncryptRole and must stay exempt or
-# sync-hosted-zones fails. That grant is not scoped to a single policy name --
-# see the note in iam/lets-encrypt-pipeline-tf/main.tf, iam:PolicyName is not a
-# real condition key -- so the sync role can attach any inline policy to a role
-# that is itself exempt from the secrets Deny. The fix is the one that note
-# already names: move the grant to a customer-managed policy, whose ARN lets
-# CreatePolicyVersion scope to exactly one document. An SCP cannot substitute
-# for it.
+# One chain this narrows but cannot close. EKSManagerLetsEncryptPolicySyncRole
+# holds iam:PutRolePolicy on EKSManagerLetsEncryptRole and must stay exempt, or
+# sync-hosted-zones fails -- that workflow keeps the Let's Encrypt role's
+# sts:AssumeRole list in step with hosted-zones.json, where the customer
+# declares which of their roles may write the DNS-01 challenge to the public
+# zone and records to the private one. The list is customer data, so it cannot
+# be baked into Terraform.
+#
+# The grant is not scoped to a single policy name -- see the note in
+# iam/lets-encrypt-pipeline-tf/main.tf; iam:PolicyName is not a real condition
+# key -- so the sync role can attach any inline policy to a role that is itself
+# exempt from the secrets Deny.
+#
+# Scoping that grant to one policy document would not help, and it is worth
+# saying why so nobody spends the effort. Reaching this identity means write
+# access to the client repo, which already allows editing terraform/lets-encrypt
+# and dispatching lets-encrypt.yml -- CodeBuild then runs that Terraform AS
+# EKSManagerLetsEncryptRole. The attacker never needs PutRolePolicy, so scoping
+# it closes a door standing beside an open one. Moving the inline policy to a
+# customer-managed one expresses intent better and would let an SCP name the
+# document by ARN, but it is presentation rather than a control.
+#
+# What actually bounds this is the ref, and it is not the SCP's doing. Both
+# lets-encrypt OIDC roles now require sub = repo:<repo>:ref:refs/heads/main
+# (they were repo:<repo>:*), and sync-hosted-zones.yml carries a matching
+# branches: [main] filter -- so reaching either takes a merge to main rather
+# than a branch push. The SCP contributes one thing: those roles' own trust
+# policies are protected above, so the ref condition cannot be widened back to
+# a wildcard, or repointed at another repository, without a break-glass path.
+#
+# The remaining exposure is whoever can merge to main on the client repo. That
+# is theirs to bound, and the README recommends branch protection with required
+# reviewers for exactly this reason.
 
 resource "aws_organizations_policy" "shared" {
   name        = "EKSManagerSharedServicesSCP"

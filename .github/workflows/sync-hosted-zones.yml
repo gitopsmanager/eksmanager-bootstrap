@@ -23,12 +23,23 @@ name: sync-hosted-zones
 # no iam:PolicyName condition key. Writing one anyway denies every call, since
 # a condition on an absent key is false.
 #
-# Moving EKSManagerLetsEncryptAssumeRoles from an inline policy to a
-# customer-managed policy would fix that properly: managed policies have ARNs,
-# so iam:CreatePolicyVersion scopes to exactly one document. The costs are a
-# 6,144-character limit instead of 10,240, a five-version cap that has to be
-# pruned on every write, and no way to express "no zones" by deletion -- the
-# policy is attached, so it would need a placeholder statement instead.
+# Moving EKSManagerLetsEncryptAssumeRoles to a customer-managed policy would
+# express the intent better -- managed policies have ARNs, so
+# iam:CreatePolicyVersion scopes to exactly one document -- at the cost of a
+# 6,144-character limit instead of 10,240, a five-version cap to prune on every
+# write, and a placeholder statement for the no-zones case.
+#
+# It would not, however, be a security improvement. Anyone who can reach this
+# identity can also edit terraform/lets-encrypt and dispatch lets-encrypt.yml,
+# which CodeBuild runs AS EKSManagerLetsEncryptRole. They never need
+# PutRolePolicy at all, so scoping it closes a door standing beside an open
+# one.
+#
+# What actually bounds this is the ref. Both roles now require
+# sub = repo:<repo>:ref:refs/heads/main, so reaching either takes a merge to
+# main rather than a branch push. Protect that branch and require review on the
+# client repo and the boundary becomes a reviewed change; leave main writable
+# by anyone with repo access and the pinning buys much less.
 #
 # Requires (from iam/lets-encrypt-pipeline-tf outputs):
 #   LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN - policy_sync_role_arn
@@ -36,6 +47,13 @@ name: sync-hosted-zones
 
 on:
   push:
+    # main only. The role this assumes can rewrite an inline policy on
+    # EKSManagerLetsEncryptRole, and its OIDC trust now requires
+    # ref:refs/heads/main -- so a push to any other branch would trigger a run
+    # that fails at AssumeRole. Filtering here makes that explicit rather than
+    # leaving a red workflow on every feature branch that touches the file.
+    branches:
+      - main
     paths:
       - "hosted-zones.json"
   workflow_dispatch:

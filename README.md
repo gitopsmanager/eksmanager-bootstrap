@@ -96,6 +96,35 @@ VPC Flow Logs. These are account-wide and belong with whoever owns the account a
 its compliance posture. They are stated here so the boundary is explicit — this
 bootstrap is not silently assuming controls that may not exist.
 
+### Recommended: protect `main` on your private copy
+
+Your private copy drives infrastructure. Uploading `eksmanager-bootstrap.zip`
+starts a CodeBuild run that applies Terraform in the shared services account,
+and the workflows in `.github/workflows/` reach roles that write IAM, rewrite
+trust policies and issue certificates.
+
+Every GitHub Actions role this bootstrap creates requires
+`sub = repo:<your-repo>:ref:refs/heads/main` in its OIDC trust —
+`EKSManagerBootstrapGithubActionsRole`, `EKSManagerPrefixListsGithubActionsRole`,
+`EKSManagerLetsEncryptGithubActionsRole` and
+`EKSManagerLetsEncryptPolicySyncRole`. A branch push cannot assume any of them.
+
+That makes **merging to `main` the privilege boundary**, so it is worth
+protecting like one:
+
+- **Branch protection on `main`** with a required pull request review. Without
+  it, anyone with repo write can push straight to `main` and the ref pinning
+  buys much less than it appears to.
+- **Required reviewers on a GitHub environment** for `lets-encrypt.yml` and
+  `sync-hosted-zones.yml`, if you want an approval on each run rather than on
+  each merge. These are the two that can rewrite an IAM policy in the shared
+  services account.
+
+Neither is something this bootstrap can configure for you — they are settings on
+a repository you own. They are named here because the IAM side has been taken as
+far as it can go without them: AWS can verify which repository and branch a
+workflow ran from, but not who approved the change that got it there.
+
 ## Setup
 
 **Your private copy is created for you — this is not a fork.** The Settings page

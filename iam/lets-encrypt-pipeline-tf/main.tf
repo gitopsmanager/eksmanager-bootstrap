@@ -138,13 +138,19 @@ resource "aws_iam_role" "github_actions_upload" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        }
-        # Dispatched from any branch, unlike the other two pipelines which pin
-        # refs/heads/main. lets-encrypt.yml is workflow_dispatch and
-        # sync-hosted-zones.yml triggers on push, so both carry a ref sub claim
-        # -- the wildcard covers either without caring which branch.
-        StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:*"
+          # Pinned to refs/heads/main, matching the other two pipelines.
+          #
+          # It was a wildcard so either workflow could run from any branch. But
+          # the sub claim is the only thing between "can push a branch" and
+          # "holds this role", and repo write is held more widely than it looks
+          # -- contractors, CI tooling, a leaked PAT. These two workflows reach
+          # identities that rewrite IAM in this account and run Terraform as
+          # EKSManagerLetsEncryptRole, so they are the two that least deserve a
+          # wildcard.
+          #
+          # Consequence: dispatching from a feature branch no longer works. Merge
+          # first, then dispatch from main.
+          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:ref:refs/heads/main"
         }
       }
     }]
@@ -281,12 +287,11 @@ resource "aws_iam_role" "policy_sync" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        }
-        # See the upload role above -- same reasoning, same claim shape. This
-        # one is reached by push rather than dispatch, but the sub claim is
-        # built the same way either way.
-        StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:*"
+          # Pinned to refs/heads/main -- see the upload role above.
+          # sync-hosted-zones.yml carries a matching branches: [main] filter, so
+          # a push to any other branch neither triggers the workflow nor
+          # satisfies this claim.
+          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:ref:refs/heads/main"
         }
       }
     }]
