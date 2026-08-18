@@ -464,9 +464,16 @@ EOF
     # makes `terraform state list` exit non-zero with an empty stdout, which
     # read as "no resources" when stderr went to /dev/null under `|| true`.
     # Check the exit code first and report what it actually said.
-    local state_out state_rc managed
-    state_out=$(terraform state list 2>&1)
-    state_rc=$?
+    # `|| state_rc=$?` is load-bearing under `set -e`, not defensive style. A
+    # bare `state_out=$(...)` followed by `state_rc=$?` exits the shell the
+    # instant the substitution fails, so the error block below never runs and
+    # setup dies silently mid-module with nothing printed -- which is worse than
+    # the conflation this replaced. The || makes it a compound command, which
+    # set -e does not trip on, and state_rc must default to 0 because the
+    # assignment only happens on failure.
+    local state_out managed
+    local state_rc=0
+    state_out=$(terraform state list 2>&1) || state_rc=$?
 
     if [[ $state_rc -ne 0 ]]; then
       cat >&2 <<EOF

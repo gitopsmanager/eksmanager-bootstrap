@@ -469,8 +469,27 @@ the local one is, delete the remote object and re-run.
         # Not piped straight to Measure-Object: on a genuinely empty state the
         # command writes nothing, and PowerShell 5.1 turns no output into $null
         # rather than an empty array, so @() forces the collection either way.
-        $stateOut = @(terraform state list 2>&1)
-        $stateRc  = $LASTEXITCODE
+        # EAP is Stop for this script, and redirecting a native command's stderr
+        # turns each line into an ErrorRecord -- which under Stop terminates
+        # here, before the exit-code check below can report anything. Same trap
+        # as create-headlamp-app.ps1. Dropped to Continue for the call only.
+        #
+        # stderr goes to a file rather than 2>&1 so the two streams stay apart:
+        # merged, a terraform warning on a SUCCESSFUL run would land in $stateOut
+        # and be counted as a managed resource, which is the one direction this
+        # guard must never be wrong in.
+        $errFile = Join-Path $env:TEMP "eksmanager-state-$PID-$ModuleName.err"
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $stateOut = @(terraform state list 2>$errFile)
+            $stateRc  = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        $stateErr = if (Test-Path $errFile) { (Get-Content $errFile -Raw) } else { "" }
+        Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+
         if ($stateRc -ne 0) {
             Write-Error @"
 
@@ -478,7 +497,7 @@ Could not read the state for $ModuleName -- terraform state list exited
 $stateRc. This is NOT the empty-state condition; it means the backend could not
 be read, so nothing can be concluded about what exists.
 
-$($stateOut -join "`n")
+$(if ($stateErr) { $stateErr.TrimEnd() } else { ($stateOut -join "`n") })
 
 Resolve that before re-running. EKSMANAGER_ALLOW_EMPTY_STATE does not apply here
 and will not bypass it.
