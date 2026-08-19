@@ -291,11 +291,26 @@ Resources:
                   StringEquals:
                     aws:ResourceTag/EKSManager: 'Managed'
                     aws:RequestTag/EKSManager: 'Managed'
+              # AssociateIdentityProviderConfig belongs with the other cluster
+              # updates: EKS treats it as one, and runs only one at a time.
+              #
+              # It is what lets the API server validate an Entra token. AKS gets
+              # the equivalent from --enable-aad at creation and needs no
+              # permission of its own; EKS has no such flag, so the Headlamp
+              # install makes this call on a cluster that has no config yet.
+              # Without the grant, Headlamp installs cleanly and sign-in loops
+              # back to the login page -- the token is rejected before RBAC is
+              # ever consulted, so both the bindings and the app look correct.
+              #
+              # Disassociate is deliberately NOT granted. Nothing in the product
+              # removes an identity provider, and doing so would lock every
+              # operator out of the cluster at once.
               - Sid: AllowEKSClusterUpdate
                 Effect: Allow
                 Action:
                   - eks:UpdateClusterConfig
                   - eks:UpdateClusterVersion
+                  - eks:AssociateIdentityProviderConfig
                 Resource: "*"
                 Condition:
                   StringEquals:
