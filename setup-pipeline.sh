@@ -389,26 +389,46 @@ set +e
   #
   # "Managed By" is EKSManagerBootstrap because this script created it, matching
   # the convention in aws/providers.tf where that key names the creator.
-  BUCKET_TAGS=$(
-    aws s3api get-bucket-tagging --bucket "$STATE_BUCKET" --output json 2>/dev/null \
-      || echo '{"TagSet":[]}'
-  )
-  BUCKET_TAGS=$(RESOURCE_TAG_NAME="$RESOURCE_TAG_NAME" RESOURCE_TAG_VALUE="$RESOURCE_TAG_VALUE" \
-    python3 - "$BUCKET_TAGS" <<'PY'
-import json, os, sys
-existing = {t["Key"]: t["Value"] for t in json.loads(sys.argv[1]).get("TagSet", [])}
-existing.update({
-    "Deployed By": "GitOpsManager",
-    "Managed By":  "EKSManagerBootstrap",
-    "Environment": "production",
-    "Module":      "terraform-aws-eksmanager",
-})
-name = os.environ.get("RESOURCE_TAG_NAME", "").strip()
-if name:
-    existing[name] = os.environ.get("RESOURCE_TAG_VALUE", "").strip()
-print(json.dumps({"TagSet": [{"Key": k, "Value": v} for k, v in existing.items()]}))
-PY
-  )
+  # Built with bash and the CLI alone. This script runs on an operator's own
+  # machine, where the documented prerequisites are the AWS CLI, Terraform and
+  # git -- adding python3 or jq to that list to write a tag would be a poor
+  # trade. (The PrivateLink script does use python3, but that one runs in
+  # CodeBuild, where the buildspec already depends on it.)
+  BUCKET_TAG_KEYS=("Deployed By" "Managed By" "Environment" "Module")
+  BUCKET_TAG_VALUES=("GitOpsManager" "EKSManagerBootstrap" "production" "terraform-aws-eksmanager")
+
+  if [[ -n "$RESOURCE_TAG_NAME" ]]; then
+    BUCKET_TAG_KEYS+=("$RESOURCE_TAG_NAME")
+    BUCKET_TAG_VALUES+=("$RESOURCE_TAG_VALUE")
+  fi
+
+  # Carry over anything already on the bucket that we do not set ourselves, so a
+  # customer's own tags survive. Tab-separated is safe here: AWS does not permit
+  # tabs or newlines in tag keys or values.
+  while IFS=$'\t' read -r existing_key existing_value; do
+    [[ -z "$existing_key" ]] && continue
+    for k in "${BUCKET_TAG_KEYS[@]}"; do
+      [[ "$k" == "$existing_key" ]] && continue 2
+    done
+    BUCKET_TAG_KEYS+=("$existing_key")
+    BUCKET_TAG_VALUES+=("$existing_value")
+  done < <(aws s3api get-bucket-tagging --bucket "$STATE_BUCKET" \
+             --query 'TagSet[].[Key,Value]' --output text 2>/dev/null || true)
+
+  BUCKET_TAGS='{"TagSet":['
+  for i in "${!BUCKET_TAG_KEYS[@]}"; do
+    [[ $i -gt 0 ]] && BUCKET_TAGS+=','
+    # Escape backslashes then quotes -- order matters, the other way round
+    # would re-escape the backslashes it just inserted. Parameter expansion
+    # rather than sed: no subprocess, and no second layer of quoting to get
+    # wrong.
+    esc_key="${BUCKET_TAG_KEYS[$i]//\\/\\\\}"
+    esc_key="${esc_key//\"/\\\"}"
+    esc_value="${BUCKET_TAG_VALUES[$i]//\\/\\\\}"
+    esc_value="${esc_value//\"/\\\"}"
+    BUCKET_TAGS+="{\"Key\":\"${esc_key}\",\"Value\":\"${esc_value}\"}"
+  done
+  BUCKET_TAGS+=']}'
   aws s3api put-bucket-tagging --bucket "$STATE_BUCKET" --tagging "$BUCKET_TAGS" >/dev/null 2>&1 \
     || echo "WARNING: could not tag ${STATE_BUCKET}" >&2
 
