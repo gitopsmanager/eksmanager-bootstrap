@@ -317,6 +317,14 @@
       ]
     },
     {
+      "Sid": "AllowCrossRegionPrivateLink",
+      "Effect": "Allow",
+      "Action": [
+        "vpce:AllowMultiRegion"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "AgentPrivateLinkPrivateZone",
       "Effect": "Allow",
       "Action": [
