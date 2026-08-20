@@ -556,15 +556,23 @@ EOF
 # Hence the tolerated failure: the only case it hides is a genuine permissions
 # problem, and that surfaces immediately afterwards as the apply failing on
 # ResourceAlreadyExistsException, which names the resource.
+# The -var flags are passed through by the caller, and -input=false is not
+# optional: terraform import evaluates the whole configuration, so it needs
+# every required variable. Without them it either fails immediately or, worse,
+# prompts and waits on stdin -- which in an otherwise unattended script looks
+# exactly like a hang.
 import_log_group() {
   local address="$1" name="$2"
+  shift 2
 
   if terraform state show "$address" >/dev/null 2>&1; then
     return 0   # already managed
   fi
 
-  if terraform import "$address" "$name" >/dev/null 2>&1; then
+  if terraform import -input=false "$@" "$address" "$name" >/dev/null 2>&1; then
     echo "Imported existing log group ${name}"
+  else
+    echo "No existing ${name} to import -- it will be created."
   fi
 }
 
