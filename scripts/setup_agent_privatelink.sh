@@ -115,48 +115,76 @@ if [[ -n "$SERVICE_REGION" && "$SERVICE_REGION" != "$REGION" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. The endpoint. Idempotent -- a re-run finds the existing one.
+# 1. The endpoint's security group, and its one rule.
+#
+# Asserted on EVERY run, not only when the endpoint is created. These used to
+# live inside the creation branch, which meant a run that created the endpoint
+# but failed to open it left a state no later run could repair: the endpoint
+# exists, so the branch is skipped, so the rule is never added. The endpoint
+# reports itself "available" throughout and accepts nothing.
+#
+# This group admits the agent TO the endpoint. It is a different thing from the
+# rule on the SERVER's NLB, which admits this VPC's traffic to that listener.
+# ---------------------------------------------------------------------------
+VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$REGION" \
+  --query 'Vpcs[0].CidrBlock' --output text 2>/dev/null) || VPC_CIDR=""
+if [[ -z "$VPC_CIDR" || "$VPC_CIDR" == "None" ]]; then
+  echo "ERROR: could not read the CIDR of ${VPC_ID}; refusing to guess." >&2
+  exit 1
+fi
+
+# Look for an existing group BEFORE trying to create one. The other order hid a
+# real failure: create was denied, its stderr went to /dev/null, the describe
+# found nothing because the group had never been made, and SG_ID became the
+# literal string "None" -- which surfaced three calls later as "Invalid Security
+# Group Id: 'None'", pointing at the endpoint rather than at the missing
+# permission that actually caused it.
+SG_ID=$(aws ec2 describe-security-groups --region "$REGION" \
+  --filters "Name=group-name,Values=eksmanager-privatelink-endpoint" "Name=vpc-id,Values=${VPC_ID}" \
+  --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+
+if [[ -z "$SG_ID" || "$SG_ID" == "None" ]]; then
+  SG_ERR=$(mktemp)
+  SG_ID=$(aws ec2 create-security-group --region "$REGION" \
+    --group-name "eksmanager-privatelink-endpoint" \
+    --description "EKS Manager server PrivateLink endpoint" \
+    --vpc-id "$VPC_ID" --query 'GroupId' --output text 2>"$SG_ERR")
+  if [[ -z "$SG_ID" || "$SG_ID" == "None" ]]; then
+    echo "ERROR: could not create the endpoint security group in ${VPC_ID}:" >&2
+    cat "$SG_ERR" >&2
+    rm -f "$SG_ERR"
+    exit 1
+  fi
+  rm -f "$SG_ERR"
+fi
+echo "  endpoint security group: ${SG_ID}"
+
+# A duplicate rule is the expected outcome on a re-run and must not fail the
+# build. Everything else must: with no ingress the endpoint accepts nothing,
+# which looks exactly like a server-side fault and sends you looking in the
+# wrong region.
+SG_RULE_ERR=$(mktemp)
+if ! aws ec2 authorize-security-group-ingress --region "$REGION" \
+     --group-id "$SG_ID" --protocol tcp --port 443 --cidr "$VPC_CIDR" \
+     >/dev/null 2>"$SG_RULE_ERR"; then
+  if ! grep -q "InvalidPermission.Duplicate" "$SG_RULE_ERR"; then
+    echo "ERROR: could not permit 443 from ${VPC_CIDR} on ${SG_ID}:" >&2
+    cat "$SG_RULE_ERR" >&2
+    rm -f "$SG_RULE_ERR"
+    exit 1
+  fi
+fi
+rm -f "$SG_RULE_ERR"
+echo "  443 permitted from ${VPC_CIDR} on ${SG_ID}"
+
+# ---------------------------------------------------------------------------
+# 2. The endpoint. Idempotent -- a re-run finds the existing one.
 # ---------------------------------------------------------------------------
 ENDPOINT_ID=$(aws ec2 describe-vpc-endpoints --region "$REGION" \
   --filters "Name=service-name,Values=${SERVICE_NAME}" "Name=vpc-id,Values=${VPC_ID}" \
   --query 'VpcEndpoints[0].VpcEndpointId' --output text 2>/dev/null)
 
 if [[ -z "$ENDPOINT_ID" || "$ENDPOINT_ID" == "None" ]]; then
-  # Its own security group, allowing 443 from the VPC. The endpoint is the thing
-  # being reached, so this is what admits the agent to it -- distinct from the
-  # rule on the SERVER's NLB, which admits this endpoint's ENI to that listener.
-  VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$REGION" \
-    --query 'Vpcs[0].CidrBlock' --output text)
-
-  # Look for an existing group BEFORE trying to create one. The other order hid
-  # a real failure: create was denied, its stderr went to /dev/null, the
-  # describe found nothing because the group had never been made, and SG_ID
-  # became the literal string "None" -- which surfaced three calls later as
-  # "Invalid Security Group Id: 'None'", pointing at the endpoint rather than at
-  # the missing permission that actually caused it.
-  SG_ID=$(aws ec2 describe-security-groups --region "$REGION" \
-    --filters "Name=group-name,Values=eksmanager-privatelink-endpoint" "Name=vpc-id,Values=${VPC_ID}" \
-    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
-
-  if [[ -z "$SG_ID" || "$SG_ID" == "None" ]]; then
-    SG_ERR=$(mktemp)
-    SG_ID=$(aws ec2 create-security-group --region "$REGION" \
-      --group-name "eksmanager-privatelink-endpoint" \
-      --description "EKS Manager server PrivateLink endpoint" \
-      --vpc-id "$VPC_ID" --query 'GroupId' --output text 2>"$SG_ERR")
-    if [[ -z "$SG_ID" || "$SG_ID" == "None" ]]; then
-      echo "ERROR: could not create the endpoint security group in ${VPC_ID}:" >&2
-      cat "$SG_ERR" >&2
-      rm -f "$SG_ERR"
-      exit 1
-    fi
-    rm -f "$SG_ERR"
-  fi
-  echo "  endpoint security group: ${SG_ID}"
-
-  aws ec2 authorize-security-group-ingress --region "$REGION" \
-    --group-id "$SG_ID" --protocol tcp --port 443 --cidr "$VPC_CIDR" >/dev/null 2>&1 || true
-
   # Confirm the service is visible to THIS principal before trying to build
   # against it. CreateVpcEndpoint answers InvalidServiceName both for a name
   # that is wrong and for a real service the caller is not permitted to see --
@@ -206,7 +234,7 @@ echo "  endpoint: ${ENDPOINT_ID}"
 # endpoint answers.
 
 # ---------------------------------------------------------------------------
-# 2. Wait for available. Nothing works before this.
+# 3. Wait for available. Nothing works before this.
 # ---------------------------------------------------------------------------
 for _ in $(seq 1 60); do
   STATE=$(aws ec2 describe-vpc-endpoints --region "$REGION" \
@@ -223,7 +251,7 @@ fi
 echo "  state: available"
 
 # ---------------------------------------------------------------------------
-# 3. Prove it, without touching DNS.
+# 4. Prove it, without touching DNS.
 # ---------------------------------------------------------------------------
 ENI_IP=$(aws ec2 describe-vpc-endpoints --region "$REGION" \
   --vpc-endpoint-ids "$ENDPOINT_ID" \
@@ -252,7 +280,7 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Only now: the zone and the record, together.
+# 5. Only now: the zone and the record, together.
 # ---------------------------------------------------------------------------
 ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name "$HOST" \
   --query "HostedZones[?Name=='${HOST}.' && Config.PrivateZone].Id | [0]" --output text 2>/dev/null)
