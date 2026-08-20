@@ -980,7 +980,7 @@ if $DESTROY; then
   exit 0
 fi
 
-import_log_group aws_cloudwatch_log_group.bootstrap "/aws/codebuild/eksmanager-bootstrap"
+import_log_group aws_cloudwatch_log_group.bootstrap "/aws/codebuild/eksmanager-bootstrap" "${TF_VARS[@]}"
 
 terraform apply "${TF_VARS[@]}"
 
@@ -1033,7 +1033,7 @@ PREFIX_LISTS_TF_VARS=(
   -var="vpc_subnet_id=${SUBNET_ID}"
 )
 
-import_log_group aws_cloudwatch_log_group.prefix_lists "/aws/codebuild/eksmanager-prefix-lists"
+import_log_group aws_cloudwatch_log_group.prefix_lists "/aws/codebuild/eksmanager-prefix-lists" "${PREFIX_LISTS_TF_VARS[@]}"
 
 terraform apply "${PREFIX_LISTS_TF_VARS[@]}"
 PREFIX_LISTS_ROLE_ARN=$(terraform output -raw github_actions_role_arn)
@@ -1071,7 +1071,7 @@ LETS_ENCRYPT_TF_VARS=(
   -var="github_oidc_provider_arn=${OIDC_PROVIDER_ARN}"
 )
 
-import_log_group aws_cloudwatch_log_group.lets_encrypt "/aws/codebuild/eksmanager-lets-encrypt"
+import_log_group aws_cloudwatch_log_group.lets_encrypt "/aws/codebuild/eksmanager-lets-encrypt" "${LETS_ENCRYPT_TF_VARS[@]}"
 
 terraform apply "${LETS_ENCRYPT_TF_VARS[@]}"
 LETS_ENCRYPT_ROLE_ARN=$(terraform output -raw github_actions_role_arn)
