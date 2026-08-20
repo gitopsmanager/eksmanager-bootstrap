@@ -138,6 +138,34 @@ if [[ -z "$ENDPOINT_ID" || "$ENDPOINT_ID" == "None" ]]; then
   aws ec2 authorize-security-group-ingress --region "$REGION" \
     --group-id "$SG_ID" --protocol tcp --port 443 --cidr "$VPC_CIDR" >/dev/null 2>&1 || true
 
+  # Confirm the service is visible to THIS principal before trying to build
+  # against it. CreateVpcEndpoint answers InvalidServiceName both for a name
+  # that is wrong and for a real service the caller is not permitted to see --
+  # AWS hides existence rather than returning AccessDenied -- so the raw error
+  # cannot distinguish "wrong region" from "not an allowed principal".
+  #
+  # Retried because the server added this account as a principal seconds ago and
+  # that is not always effective immediately.
+  WHOAMI=$(aws sts get-caller-identity --query 'Account' --output text 2>/dev/null || echo "unknown")
+  echo "  creating as account ${WHOAMI} in ${REGION}"
+
+  VISIBLE=""
+  for _ in $(seq 1 12); do
+    if aws ec2 describe-vpc-endpoint-services --region "$REGION" \
+         --service-names "$SERVICE_NAME" >/dev/null 2>&1; then
+      VISIBLE="yes"; break
+    fi
+    sleep 5
+  done
+
+  if [[ -z "$VISIBLE" ]]; then
+    echo "ERROR: ${SERVICE_NAME} is not visible to account ${WHOAMI} in ${REGION}." >&2
+    echo "  Either the region differs from the service's (the name embeds the" >&2
+    echo "  service's own region), or ${WHOAMI} was never added as an allowed" >&2
+    echo "  principal. Check the server's allowed principals against ${WHOAMI}." >&2
+    exit 1
+  fi
+
   echo "Creating endpoint in ${SUBNET_ID}..."
   ENDPOINT_ID=$(aws ec2 create-vpc-endpoint --region "$REGION" \
     --vpc-id "$VPC_ID" --vpc-endpoint-type Interface \
