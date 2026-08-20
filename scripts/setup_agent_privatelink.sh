@@ -70,7 +70,12 @@ if [[ "$CONNECT_STATUS" != "200" ]]; then
   exit 1
 fi
 
-SERVICE_NAME=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('endpointServiceName',''))" "$CONNECT_BODY")
+read -r SERVICE_NAME SERVICE_REGION <<<"$(python3 - "$CONNECT_BODY" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d.get("endpointServiceName", ""), d.get("endpointServiceRegion", ""))
+PY
+)"
 rm -f "$CONNECT_BODY"
 if [[ -z "$SERVICE_NAME" ]]; then
   echo "ERROR: the server did not return an endpoint service name." >&2
@@ -94,6 +99,20 @@ if [[ -z "$VPC_ID" || -z "$SUBNET_ID" || -z "$REGION" || -z "$HOST" ]]; then
 fi
 
 echo "PrivateLink: service=${SERVICE_NAME} host=${HOST} subnet=${SUBNET_ID}"
+
+# The endpoint is always built in OUR region; the service may be in another. AWS
+# needs telling explicitly when they differ -- an interface endpoint is regional,
+# and without --service-region it looks for the service locally and reports a
+# service that plainly exists as not existing.
+#
+# The server enables our region on its side before returning, so by the time we
+# get here the cross-region path is open. Older servers return no region at all,
+# in which case same-region is the only thing that ever worked anyway.
+SVC_REGION_ARGS=()
+if [[ -n "$SERVICE_REGION" && "$SERVICE_REGION" != "$REGION" ]]; then
+  SVC_REGION_ARGS=(--service-region "$SERVICE_REGION")
+  echo "  cross-region: endpoint in ${REGION}, service in ${SERVICE_REGION}"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. The endpoint. Idempotent -- a re-run finds the existing one.
@@ -152,6 +171,7 @@ if [[ -z "$ENDPOINT_ID" || "$ENDPOINT_ID" == "None" ]]; then
   VISIBLE=""
   for _ in $(seq 1 12); do
     if aws ec2 describe-vpc-endpoint-services --region "$REGION" \
+         "${SVC_REGION_ARGS[@]+"${SVC_REGION_ARGS[@]}"}" \
          --service-names "$SERVICE_NAME" >/dev/null 2>&1; then
       VISIBLE="yes"; break
     fi
@@ -170,6 +190,7 @@ if [[ -z "$ENDPOINT_ID" || "$ENDPOINT_ID" == "None" ]]; then
   ENDPOINT_ID=$(aws ec2 create-vpc-endpoint --region "$REGION" \
     --vpc-id "$VPC_ID" --vpc-endpoint-type Interface \
     --service-name "$SERVICE_NAME" \
+    "${SVC_REGION_ARGS[@]+"${SVC_REGION_ARGS[@]}"}" \
     --subnet-ids "$SUBNET_ID" --security-group-ids "$SG_ID" \
     --no-private-dns-enabled \
     --query 'VpcEndpoint.VpcEndpointId' --output text) || {
