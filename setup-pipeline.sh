@@ -553,14 +553,30 @@ EOF
 # the group does not exist -- a fresh installation -- the import simply fails
 # and the apply creates it, which is the correct outcome either way.
 #
-# Hence the tolerated failure: the only case it hides is a genuine permissions
-# problem, and that surfaces immediately afterwards as the apply failing on
-# ResourceAlreadyExistsException, which names the resource.
-# The -var flags are passed through by the caller, and -input=false is not
-# optional: terraform import evaluates the whole configuration, so it needs
-# every required variable. Without them it either fails immediately or, worse,
-# prompts and waits on stdin -- which in an otherwise unattended script looks
-# exactly like a hang.
+# Bring a CodeBuild log group that already exists under Terraform's management.
+#
+# CodeBuild creates its own log group on first run, so every installation older
+# than this change has one Terraform has never seen. Now that the resource is
+# declared, applying without importing first fails with
+# ResourceAlreadyExistsException -- the group is there, just not in state.
+#
+# MSYS_NO_PATHCONV=1 is what makes this work at all on Windows. Git Bash
+# rewrites any argument that looks like a Unix path, so the log group name
+# "/aws/codebuild/eksmanager-bootstrap" reaches Terraform as
+# "C:/Program Files/Git/aws/codebuild/eksmanager-bootstrap". The import then
+# looks for a group that cannot exist, finds nothing, and the apply tries to
+# create one that does -- which is exactly how this failed. Harmless on Linux,
+# where the variable is simply ignored.
+#
+# -input=false and the caller's -var flags are both required: terraform import
+# evaluates the whole configuration, so without the variables it either fails or
+# prompts and waits on stdin, which in a script looks like a hang.
+#
+# No existence check first. Asking CloudWatch directly would need the shared
+# services identity, which this script does not hold here; terraform import goes
+# through the provider's assume_role, so it is certain to look in the right
+# account. On a fresh installation the import fails and the apply creates the
+# group, which is correct either way.
 import_log_group() {
   local address="$1" name="$2"
   shift 2
@@ -572,13 +588,13 @@ import_log_group() {
   local err
   err=$(mktemp)
 
-  if terraform import -input=false "$@" "$address" "$name" >/dev/null 2>"$err"; then
+  if MSYS_NO_PATHCONV=1 terraform import -input=false "$@" "$address" "$name" >/dev/null 2>"$err"; then
     echo "Imported existing log group ${name}"
   else
     # Printed, not swallowed. A failure here is indistinguishable from "the
     # group does not exist yet" unless the reason is shown, and the apply that
-    # follows fails with ResourceAlreadyExistsException pointing at the
-    # resource rather than at the import that should have prevented it.
+    # follows fails pointing at the resource rather than at the import that
+    # should have prevented it.
     echo "Could not import ${name} -- if it already exists, the apply below will fail:" >&2
     sed 's/^/    /' "$err" >&2
   fi

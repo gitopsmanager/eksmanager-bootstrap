@@ -893,8 +893,7 @@ resource "aws_security_group" "agent" {
 
 # Declared rather than left to CodeBuild, which creates it implicitly on first
 # run. That made it the one resource in this pipeline Terraform did not manage
-# and default_tags never reached -- and it never expires, so it grows forever
-# without anything naming an owner.
+# and default_tags never reached.
 #
 # Every installation that predates this already has one, so setup-pipeline.sh
 # imports it before applying. Without that the create fails with
