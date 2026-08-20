@@ -569,11 +569,20 @@ import_log_group() {
     return 0   # already managed
   fi
 
-  if terraform import -input=false "$@" "$address" "$name" >/dev/null 2>&1; then
+  local err
+  err=$(mktemp)
+
+  if terraform import -input=false "$@" "$address" "$name" >/dev/null 2>"$err"; then
     echo "Imported existing log group ${name}"
   else
-    echo "No existing ${name} to import -- it will be created."
+    # Printed, not swallowed. A failure here is indistinguishable from "the
+    # group does not exist yet" unless the reason is shown, and the apply that
+    # follows fails with ResourceAlreadyExistsException pointing at the
+    # resource rather than at the import that should have prevented it.
+    echo "Could not import ${name} -- if it already exists, the apply below will fail:" >&2
+    sed 's/^/    /' "$err" >&2
   fi
+  rm -f "$err"
 }
 
 tf_init() {
