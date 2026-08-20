@@ -81,6 +81,22 @@ variable "agent_subnet_id" {
   type        = string
 }
 
+# Derived from agent_subnet_id by setup-pipeline.sh, not entered on the
+# Terraform tile -- one value to supply, and the two cannot disagree.
+#
+# Carried because the agent's PrivateLink endpoint lives in this subnet, and the
+# client-side stack has to permit that source on the NLB's 443 listener. With
+# "enforce inbound rules on PrivateLink traffic" on, the security group sees the
+# endpoint ENI's own address, which is in this subnet -- in an account that
+# stack cannot reach, so the value has to travel rather than be looked up.
+#
+# Defaulted empty so an installation whose pinned vars predate this still plans.
+variable "agent_subnet_cidr" {
+  description = "CIDR of agent_subnet_id. Derived by setup-pipeline.sh."
+  type        = string
+  default     = ""
+}
+
 # agent_security_group_id intentionally removed -- looked up via a data
 # source in aws/modules/agent/main.tf (fixed name
 # eksmanager-bootstrap-agent-sg, created by iam/codebuild-pipeline-tf).

@@ -220,6 +220,15 @@ phases:
 
           terraform -chdir=aws apply -input=false tfplan
           echo "OK: terraform apply complete"
+
+          # Connect the agent to the server over PrivateLink. Skips itself when
+          # EKSMANAGER_ENDPOINT_SERVICE_NAME is unset, so installations not
+          # using it are unaffected.
+          #
+          # After the apply on purpose: the agent's VPC and subnet must exist,
+          # and the script proves the endpoint answers before creating the
+          # private hosted zone that shadows the server's hostname.
+          bash scripts/setup_agent_privatelink.sh aws/pinned.auto.tfvars.json
         fi
 
   post_build:

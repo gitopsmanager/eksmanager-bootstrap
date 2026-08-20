@@ -1062,6 +1062,56 @@ set_github_variable "ECR_PUSH_TRUST_SYNC_ROLE_ARN" "$ECR_PUSH_TRUST_SYNC_ROLE_AR
 echo ""
 echo "Writing pinned.auto.tfvars.json to ${GITHUB_REPO}..."
 
+# ── The agent subnet's CIDR ─────────────────────────────────────────────────
+# Derived from SUBNET_ID rather than asked for. The two cannot then disagree,
+# and there is one fewer value on the Terraform tile to mistype.
+#
+# It is needed because the agent's PrivateLink endpoint lives in this subnet,
+# and the client-side stack has to permit that source on the NLB's 443 listener.
+# "Enforce inbound rules on PrivateLink traffic" is on, so what that security
+# group sees is the endpoint ENI's own address -- an address in THIS subnet, in
+# an account the stack cannot reach. Hence carrying the value rather than
+# looking it up there.
+#
+# The lookup runs inside a command substitution, which is a subshell: the
+# assumed credentials cannot leak into the Terraform runs that follow, where the
+# default provider is management. Same containment as the state bucket block,
+# achieved by capturing stdout rather than an exit code, since that block is
+# already using its exit code to report whether the bucket pre-existed.
+#
+# Shared-services credentials, not the ambient management ones -- the subnet
+# lives there, and asking as management returns nothing while looking like a
+# subnet that does not exist.
+echo "Reading the CIDR of ${SUBNET_ID} from ${SHARED_SERVICES_ACCOUNT_ID}..."
+AGENT_SUBNET_CIDR=$(
+  CREDS=$(aws sts assume-role \
+    --role-arn "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/${SHARED_SERVICES_ROLE_NAME}" \
+    --role-session-name "eksmanager-subnet-lookup" \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text) || exit 1
+  export AWS_ACCESS_KEY_ID=$(printf '%s' "$CREDS" | cut -f1)
+  export AWS_SECRET_ACCESS_KEY=$(printf '%s' "$CREDS" | cut -f2)
+  export AWS_SESSION_TOKEN=$(printf '%s' "$CREDS" | cut -f3)
+  aws ec2 describe-subnets --subnet-ids "$SUBNET_ID" --region "$REGION" \
+    --query 'Subnets[0].CidrBlock' --output text 2>/dev/null
+) || true
+
+# An empty or "None" answer must stop here. Written into pinned vars it becomes a
+# security group rule matching nothing, and the symptom arrives much later as an
+# agent whose connections time out with every piece of configuration looking
+# correct.
+if [[ -z "$AGENT_SUBNET_CIDR" || "$AGENT_SUBNET_CIDR" == "None" ]]; then
+  cat >&2 <<EOF
+
+ERROR: could not read the CIDR of ${SUBNET_ID} in account
+       ${SHARED_SERVICES_ACCOUNT_ID} (${REGION}).
+
+Check that SUBNET_ID names a subnet in that account and region, and that
+${SHARED_SERVICES_ROLE_NAME} there permits ec2:DescribeSubnets.
+EOF
+  exit 1
+fi
+echo "  agent subnet CIDR: ${AGENT_SUBNET_CIDR}"
+
 PINNED_JSON=$(cat <<EOF
 {
   "management_account_id": "${MANAGEMENT_ACCOUNT_ID}",
@@ -1070,6 +1120,7 @@ PINNED_JSON=$(cat <<EOF
   "shared_services_region": "${REGION}",
   "agent_name": "${AGENT_NAME}",
   "agent_subnet_id": "${SUBNET_ID}",
+  "agent_subnet_cidr": "${AGENT_SUBNET_CIDR}",
   "agent_ami": "${AGENT_AMI}",
   "vpc_id": "${VPC_ID}",
   "eks_manager_user_view_permission_set_arn": "${EKS_USER_VIEW_PS_ARN}",
