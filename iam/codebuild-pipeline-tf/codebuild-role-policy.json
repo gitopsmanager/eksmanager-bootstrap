@@ -306,7 +306,8 @@
       "Action": [
         "ec2:CreateVpcEndpoint",
         "ec2:CreateSecurityGroup",
-        "ec2:AuthorizeSecurityGroupIngress"
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateTags"
       ],
       "Resource": [
         "arn:aws:ec2:*:${SHARED_SERVICES_ACCOUNT_ID}:vpc-endpoint/*",
@@ -333,7 +334,8 @@
         "route53:ListHostedZonesByName",
         "route53:ListHostedZones",
         "route53:GetHostedZone",
-        "route53:GetChange"
+        "route53:GetChange",
+        "route53:ChangeTagsForResource"
       ],
       "Resource": "*"
     }

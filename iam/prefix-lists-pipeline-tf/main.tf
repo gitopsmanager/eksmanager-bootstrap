@@ -328,6 +328,14 @@ resource "aws_security_group" "codebuild" {
   }
 }
 
+# See the note in iam/codebuild-pipeline-tf/main.tf: CodeBuild creates this
+# implicitly, leaving it unmanaged and untagged. Imported by setup-pipeline.sh
+# where it already exists.
+resource "aws_cloudwatch_log_group" "prefix_lists" {
+  provider = aws.shared
+  name     = "/aws/codebuild/eksmanager-prefix-lists"
+}
+
 resource "aws_codebuild_project" "eksmanager_prefix_lists" {
   provider      = aws.shared
   name          = "eksmanager-prefix-lists"

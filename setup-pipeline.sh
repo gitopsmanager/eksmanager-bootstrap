@@ -378,6 +378,40 @@ set +e
   aws s3api put-public-access-block --bucket "$STATE_BUCKET" \
     --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" >/dev/null
 
+  # The state bucket is the one resource this installation creates that
+  # Terraform does not manage -- it has to exist before Terraform can store
+  # state in it -- so default_tags never reached it and it was the only
+  # untagged thing in the account.
+  #
+  # Merged, not replaced: put-bucket-tagging overwrites the entire tag set, and
+  # a customer who tagged this bucket themselves would lose it. Applied on every
+  # run so existing buckets are repaired rather than only new ones.
+  #
+  # "Managed By" is EKSManagerBootstrap because this script created it, matching
+  # the convention in aws/providers.tf where that key names the creator.
+  BUCKET_TAGS=$(
+    aws s3api get-bucket-tagging --bucket "$STATE_BUCKET" --output json 2>/dev/null \
+      || echo '{"TagSet":[]}'
+  )
+  BUCKET_TAGS=$(RESOURCE_TAG_NAME="$RESOURCE_TAG_NAME" RESOURCE_TAG_VALUE="$RESOURCE_TAG_VALUE" \
+    python3 - "$BUCKET_TAGS" <<'PY'
+import json, os, sys
+existing = {t["Key"]: t["Value"] for t in json.loads(sys.argv[1]).get("TagSet", [])}
+existing.update({
+    "Deployed By": "GitOpsManager",
+    "Managed By":  "EKSManagerBootstrap",
+    "Environment": "production",
+    "Module":      "terraform-aws-eksmanager",
+})
+name = os.environ.get("RESOURCE_TAG_NAME", "").strip()
+if name:
+    existing[name] = os.environ.get("RESOURCE_TAG_VALUE", "").strip()
+print(json.dumps({"TagSet": [{"Key": k, "Value": v} for k, v in existing.items()]}))
+PY
+  )
+  aws s3api put-bucket-tagging --bucket "$STATE_BUCKET" --tagging "$BUCKET_TAGS" >/dev/null 2>&1 \
+    || echo "WARNING: could not tag ${STATE_BUCKET}" >&2
+
   POLICY_FILE=$(mktemp)
   trap 'rm -f "$POLICY_FILE"' EXIT
   cat > "$POLICY_FILE" <<EOF
@@ -480,6 +514,35 @@ EOF
 # Init against the shared backend. Migrates a local terraform.tfstate up on
 # first run, and refuses when both copies exist -- that is the one case where
 # guessing loses somebody's work.
+# Bring a CodeBuild log group that already exists under Terraform's management.
+#
+# CodeBuild creates its own log group on first run, so every installation older
+# than this change has one Terraform has never seen. Now that the resource is
+# declared, applying without importing first fails with
+# ResourceAlreadyExistsException -- the group is there, just not in state.
+#
+# No existence check, deliberately. Asking CloudWatch whether the group exists
+# would need the shared services identity, which this script does not hold at
+# this point; terraform import already runs through the provider's assume_role,
+# so it is the one call here that is certain to look in the right account. If
+# the group does not exist -- a fresh installation -- the import simply fails
+# and the apply creates it, which is the correct outcome either way.
+#
+# Hence the tolerated failure: the only case it hides is a genuine permissions
+# problem, and that surfaces immediately afterwards as the apply failing on
+# ResourceAlreadyExistsException, which names the resource.
+import_log_group() {
+  local address="$1" name="$2"
+
+  if terraform state show "$address" >/dev/null 2>&1; then
+    return 0   # already managed
+  fi
+
+  if terraform import "$address" "$name" >/dev/null 2>&1; then
+    echo "Imported existing log group ${name}"
+  fi
+}
+
 tf_init() {
   local module_name="$1"
   local remote_key="setup/${module_name}/terraform.tfstate"
@@ -854,6 +917,8 @@ if $DESTROY; then
   exit 0
 fi
 
+import_log_group aws_cloudwatch_log_group.bootstrap "/aws/codebuild/eksmanager-bootstrap"
+
 terraform apply "${TF_VARS[@]}"
 
 echo ""
@@ -905,6 +970,8 @@ PREFIX_LISTS_TF_VARS=(
   -var="vpc_subnet_id=${SUBNET_ID}"
 )
 
+import_log_group aws_cloudwatch_log_group.prefix_lists "/aws/codebuild/eksmanager-prefix-lists"
+
 terraform apply "${PREFIX_LISTS_TF_VARS[@]}"
 PREFIX_LISTS_ROLE_ARN=$(terraform output -raw github_actions_role_arn)
 PREFIX_LISTS_BUCKET=$(terraform output -raw prefix_lists_bucket)
@@ -940,6 +1007,8 @@ LETS_ENCRYPT_TF_VARS=(
   -var="github_repo_id=${GITHUB_REPO_ID}"
   -var="github_oidc_provider_arn=${OIDC_PROVIDER_ARN}"
 )
+
+import_log_group aws_cloudwatch_log_group.lets_encrypt "/aws/codebuild/eksmanager-lets-encrypt"
 
 terraform apply "${LETS_ENCRYPT_TF_VARS[@]}"
 LETS_ENCRYPT_ROLE_ARN=$(terraform output -raw github_actions_role_arn)

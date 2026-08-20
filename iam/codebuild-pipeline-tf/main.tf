@@ -891,6 +891,23 @@ resource "aws_security_group" "agent" {
 # here. Whatever later uploads eksmanager-bootstrap.zip can use the GitHub
 # App credentials persisted in Secrets Manager (below) to do that clone.
 
+# Declared rather than left to CodeBuild, which creates it implicitly on first
+# run. That made it the one resource in this pipeline Terraform did not manage
+# and default_tags never reached -- and it never expires, so it grows forever
+# without anything naming an owner.
+#
+# Every installation that predates this already has one, so setup-pipeline.sh
+# imports it before applying. Without that the create fails with
+# ResourceAlreadyExistsException.
+#
+# No retention_in_days on purpose: leaving it unset keeps the current
+# never-expire behaviour, so this change adds tags without silently starting to
+# delete anyone's build history. Setting it is a separate decision.
+resource "aws_cloudwatch_log_group" "bootstrap" {
+  provider = aws.shared
+  name     = "/aws/codebuild/eksmanager-bootstrap"
+}
+
 resource "aws_codebuild_project" "eksmanager_bootstrap" {
   provider      = aws.shared
   name          = "eksmanager-bootstrap"

@@ -100,6 +100,45 @@ fi
 
 echo "PrivateLink: service=${SERVICE_NAME} host=${HOST} subnet=${SUBNET_ID}"
 
+# The same tags Terraform's default_tags puts on everything else in this
+# installation, because these resources are part of it and were previously the
+# only ones with none -- default_tags reaches Terraform's resources, and the
+# three things this script creates are made with the CLI.
+#
+# "Managed By" is EKSManagerBootstrap, not Terraform: that key names what
+# CREATED the resource, and these are created here. The agent uses
+# EKSManagerAgent for the same reason.
+#
+# The unspaced ManagedBy is deliberately NOT set. It is common enough that org
+# tag policies and other tooling write it, so leaving it alone avoids a
+# collision -- the same reason the agent omits it.
+#
+# The customer's cost-allocation tag is included when configured and omitted
+# entirely when not: AWS rejects an empty tag key rather than ignoring it.
+TAGS_JSON=$(python3 - "$PINNED" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+tags = [
+    {"Key": "Deployed By", "Value": "GitOpsManager"},
+    {"Key": "Managed By",  "Value": "EKSManagerBootstrap"},
+    {"Key": "Environment", "Value": "production"},
+    {"Key": "Module",      "Value": "terraform-aws-eksmanager"},
+]
+name = (d.get("resource_tag_name") or "").strip()
+if name:
+    tags.append({"Key": name, "Value": (d.get("resource_tag_value") or "").strip()})
+print(json.dumps(tags))
+PY
+)
+
+# Applied on every run, not only at creation. ELAN's endpoint, security group
+# and zone were all made before this existed, and re-tagging is idempotent --
+# so they are repaired by the next run rather than by hand.
+tag_ec2() {
+  aws ec2 create-tags --region "$REGION" --resources "$1" --tags "$TAGS_JSON" \
+    >/dev/null 2>&1 || echo "  WARNING: could not tag $1" >&2
+}
+
 # The endpoint is always built in OUR region; the service may be in another. AWS
 # needs telling explicitly when they differ -- an interface endpoint is regional,
 # and without --service-region it looks for the service locally and reports a
@@ -158,6 +197,7 @@ if [[ -z "$SG_ID" || "$SG_ID" == "None" ]]; then
   rm -f "$SG_ERR"
 fi
 echo "  endpoint security group: ${SG_ID}"
+tag_ec2 "$SG_ID"
 
 # A duplicate rule is the expected outcome on a re-run and must not fail the
 # build. Everything else must: with no ingress the endpoint accepts nothing,
@@ -227,6 +267,7 @@ if [[ -z "$ENDPOINT_ID" || "$ENDPOINT_ID" == "None" ]]; then
     }
 fi
 echo "  endpoint: ${ENDPOINT_ID}"
+tag_ec2 "$ENDPOINT_ID"
 
 # --no-private-dns-enabled above is deliberate: AWS's own private DNS would
 # override the hostname before anything has been proven, which is the failure
@@ -296,6 +337,14 @@ if [[ -z "$ZONE_ID" || "$ZONE_ID" == "None" ]]; then
 fi
 ZONE_ID=${ZONE_ID##*/}
 echo "  zone: ${ZONE_ID}"
+
+# Route 53 has no tag-on-create: the zone is made first and tagged after, so a
+# failure here leaves a working zone that is merely untagged. Warn rather than
+# exit -- taking the agent's DNS down over a cost-allocation tag would be a
+# worse outcome than the missing tag.
+aws route53 change-tags-for-resource --resource-type hostedzone \
+  --resource-id "$ZONE_ID" --add-tags "$TAGS_JSON" >/dev/null 2>&1 \
+  || echo "  WARNING: could not tag hosted zone ${ZONE_ID}" >&2
 
 # A 60s TTL so the break-glass -- deleting this record, or the zone -- takes
 # effect in a minute rather than five.

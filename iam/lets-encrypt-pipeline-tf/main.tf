@@ -226,6 +226,14 @@ resource "aws_iam_role_policy" "codebuild" {
   })
 }
 
+# See the note in iam/codebuild-pipeline-tf/main.tf: CodeBuild creates this
+# implicitly, leaving it unmanaged and untagged. Imported by setup-pipeline.sh
+# where it already exists.
+resource "aws_cloudwatch_log_group" "lets_encrypt" {
+  provider = aws.shared
+  name     = "/aws/codebuild/eksmanager-lets-encrypt"
+}
+
 resource "aws_codebuild_project" "lets_encrypt" {
   provider      = aws.shared
   name          = "eksmanager-lets-encrypt"
