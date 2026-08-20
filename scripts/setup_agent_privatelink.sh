@@ -109,13 +109,31 @@ if [[ -z "$ENDPOINT_ID" || "$ENDPOINT_ID" == "None" ]]; then
   VPC_CIDR=$(aws ec2 describe-vpcs --vpc-ids "$VPC_ID" --region "$REGION" \
     --query 'Vpcs[0].CidrBlock' --output text)
 
-  SG_ID=$(aws ec2 create-security-group --region "$REGION" \
-    --group-name "eksmanager-privatelink-endpoint" \
-    --description "EKS Manager server PrivateLink endpoint" \
-    --vpc-id "$VPC_ID" --query 'GroupId' --output text 2>/dev/null) || \
+  # Look for an existing group BEFORE trying to create one. The other order hid
+  # a real failure: create was denied, its stderr went to /dev/null, the
+  # describe found nothing because the group had never been made, and SG_ID
+  # became the literal string "None" -- which surfaced three calls later as
+  # "Invalid Security Group Id: 'None'", pointing at the endpoint rather than at
+  # the missing permission that actually caused it.
   SG_ID=$(aws ec2 describe-security-groups --region "$REGION" \
     --filters "Name=group-name,Values=eksmanager-privatelink-endpoint" "Name=vpc-id,Values=${VPC_ID}" \
-    --query 'SecurityGroups[0].GroupId' --output text)
+    --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+
+  if [[ -z "$SG_ID" || "$SG_ID" == "None" ]]; then
+    SG_ERR=$(mktemp)
+    SG_ID=$(aws ec2 create-security-group --region "$REGION" \
+      --group-name "eksmanager-privatelink-endpoint" \
+      --description "EKS Manager server PrivateLink endpoint" \
+      --vpc-id "$VPC_ID" --query 'GroupId' --output text 2>"$SG_ERR")
+    if [[ -z "$SG_ID" || "$SG_ID" == "None" ]]; then
+      echo "ERROR: could not create the endpoint security group in ${VPC_ID}:" >&2
+      cat "$SG_ERR" >&2
+      rm -f "$SG_ERR"
+      exit 1
+    fi
+    rm -f "$SG_ERR"
+  fi
+  echo "  endpoint security group: ${SG_ID}"
 
   aws ec2 authorize-security-group-ingress --region "$REGION" \
     --group-id "$SG_ID" --protocol tcp --port 443 --cidr "$VPC_CIDR" >/dev/null 2>&1 || true
