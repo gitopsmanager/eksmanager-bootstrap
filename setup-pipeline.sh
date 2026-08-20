@@ -65,6 +65,11 @@
 #   export RESOURCE_TAG_NAME="CostCentre"           # optional — tags every resource
 #   export RESOURCE_TAG_VALUE="platform"            # optional — paired with the above
 #   export REGION="eu-west-1"                    # optional, default shown
+#   export IDENTITY_CENTER_REGION="eu-west-1"       # optional — skips the region search
+#                                                   # entirely. Cached from the previous
+#                                                   # run when not set; needed only on a
+#                                                   # first run, for an opt-in region, or
+#                                                   # if the instance has moved.
 #   export EKSMANAGER_CLIENT_ID="..."
 #   export EKSMANAGER_CLIENT_SECRET="..."
 #   export EKSMANAGER_COGNITO_URL="..."
@@ -801,6 +806,36 @@ TF_VARS=(
   -var="github_app_install_id=${GITHUB_APP_INSTALL_ID}"
   -var="github_app_private_key=${GITHUB_APP_PRIVATE_KEY}"
 )
+
+# Reuse the Identity Center region a previous run already resolved.
+#
+# Without this, data.aws_ssoadmin_instances searches sixteen regions on EVERY
+# plan and refresh -- sixteen ListInstances calls into the management account
+# through an assumed role. It is the slowest thing in setup and the most likely
+# to be throttled, and when it is, Terraform retries with backoff so the run
+# looks hung rather than failing.
+#
+# The answer was already being written into pinned.auto.tfvars.json after each
+# apply; it was simply never fed back in. terraform output reads state and makes
+# no API calls, so reading it back costs nothing.
+#
+# The search still runs on a genuine first install, where there is no state to
+# read -- which is also the run where the multi-region ambiguity precondition
+# matters, so nothing is lost by skipping it thereafter.
+#
+# An explicit IDENTITY_CENTER_REGION always wins. That is also the fix if the
+# instance is ever moved and the cached value goes stale: the symptom would be
+# permission set operations failing against the old region, which is loud.
+if [[ -z "${IDENTITY_CENTER_REGION:-}" ]]; then
+  IDENTITY_CENTER_REGION=$(terraform output -raw identity_center_region 2>/dev/null || echo "")
+fi
+
+if [[ -n "${IDENTITY_CENTER_REGION:-}" ]]; then
+  echo "Identity Center region: ${IDENTITY_CENTER_REGION} (cached -- skipping the sixteen-region search)"
+  TF_VARS+=( -var="identity_center_region=${IDENTITY_CENTER_REGION}" )
+else
+  echo "Identity Center region not yet known -- searching all candidate regions (first run only)."
+fi
 
 # ── Reconcile a pre-existing EKSManagerBootstrap role ───────────────────────
 # The standalone Python bootstrap script (if you ran it) creates a role with
