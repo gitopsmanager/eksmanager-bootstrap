@@ -305,17 +305,53 @@ if [[ -z "$ENI_IP" || "$ENI_IP" == "None" ]]; then
   exit 1
 fi
 
+# RETRIED, because "available" is not the same as "reachable".
+#
+# The endpoint reaching state=available is a CONTROL-plane fact: AWS has
+# accepted it. The data plane behind it -- the ENI's forwarding entries, and the
+# server's security-group change made seconds earlier by the step above -- takes
+# longer to settle, and AWS exposes no state that means "traffic will now flow".
+# The only honest readiness signal is the request itself succeeding.
+#
+# A single attempt failed a real bootstrap on 30 Aug 2026 roughly 90 seconds
+# after the server opened 443: every layer was verified correct afterwards and
+# the identical curl returned HTTP 200 by hand. Terraform had already applied by
+# that point, so one cold moment cost a full re-run of everything.
+#
+# Retrying the CHECK rather than sleeping before it: instant on a warm path,
+# patient on a cold one. Five minutes is long enough for propagation and short
+# enough that a genuinely broken path does not leave someone watching a build.
+# Each attempt is logged -- a silent retry loop is indistinguishable from a hang.
+VERIFY_ATTEMPTS=30
+VERIFY_DELAY=10
+
 echo "Verifying https://${HOST}/healthz via ${ENI_IP} (public DNS untouched)..."
-if ! curl -sS -m 20 -o /dev/null -w '  HTTP %{http_code}\n' \
-     --resolve "${HOST}:443:${ENI_IP}" "https://${HOST}/healthz"; then
+verified=0
+for attempt in $(seq 1 "$VERIFY_ATTEMPTS"); do
+  if curl -sS -m 20 -o /dev/null -w '  HTTP %{http_code}\n' \
+       --resolve "${HOST}:443:${ENI_IP}" "https://${HOST}/healthz"; then
+    echo "OK: ${HOST} answered through the endpoint (attempt ${attempt})"
+    verified=1
+    break
+  fi
+  if [ "$attempt" -lt "$VERIFY_ATTEMPTS" ]; then
+    echo "  not answering yet -- endpoint still settling, retry ${attempt}/${VERIFY_ATTEMPTS} in ${VERIFY_DELAY}s..."
+    sleep "$VERIFY_DELAY"
+  fi
+done
+
+if [ "$verified" -ne 1 ]; then
   cat >&2 <<EOF
 
-ERROR: the endpoint is available but ${HOST} did not answer through it.
+ERROR: ${HOST} did not answer through the endpoint after $((VERIFY_ATTEMPTS * VERIFY_DELAY))s.
 
-Nothing has been changed in DNS, so the agent still reaches the server over the
-public path. Check on the SERVER side that:
+The endpoint is available, so this is no longer a settling delay. Nothing has
+been changed in DNS, so the agent still reaches the server over the public path.
+Check on the SERVER side that:
   - the NLB has a 443 listener with a healthy target
   - its security group permits 443 from this subnet's CIDR
+  - the 443 listener's DEFAULT certificate matches ${HOST} exactly
+    (a wildcard alone does not match the apex hostname)
 EOF
   exit 1
 fi
