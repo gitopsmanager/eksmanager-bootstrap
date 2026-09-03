@@ -528,12 +528,15 @@ the whole ask; everything below them is this repo's own configuration:
 |---|---|
 | Trust statement each `cert_manager` role needs, so shared services can assume it | [example-cert-manager-trust-statement.json](example-cert-manager-trust-statement.json) |
 | Trust policy each `external_dns` role needs — Pod Identity, not cross-account | [example-external-dns-pod-identity-trust.json](example-external-dns-pod-identity-trust.json) |
+| Example permissions for a `cert_manager` role — TXT on the public zone only | [example-cert-manager-policy.json](example-cert-manager-policy.json) |
+| Example permissions for an `external_dns` role — the private zone it manages | [example-external-dns-policy.json](example-external-dns-policy.json) |
 
-Their *permissions* are yours to decide. `cert_manager` needs only TXT writes on
-the one zone, which is the tightest role in the system. `external_dns` genuinely
-needs A and CNAME writes, so it cannot be constrained the same way — a real
-difference in blast radius, and the reason they are separate roles rather than
-one.
+Their *permissions* are yours to decide, and the two example policies above are
+a starting point that works. `cert_manager` needs only TXT writes on the public
+zone, which is the tightest role in the system. `external_dns` genuinely needs A
+and CNAME writes in the private zone, so it cannot be constrained the same way
+and is scoped by zone instead — a real difference in blast radius, and the
+reason they are separate roles rather than one.
 
 **Policies this repo applies** to `EKSManagerLetsEncryptRole`. Nothing to do
 here; these are for review:

@@ -1,0 +1,62 @@
+{
+  "_comment": [
+    "FOR THE CUSTOMER, not applied by this repo.",
+    "",
+    "The permissions policy for the role named in hosted-zones.json under",
+    "roles.external_dns. Templated from a working deployment, so this is what",
+    "the role actually needs rather than a guess.",
+    "",
+    "Its trust policy is the separate example-external-dns-pod-identity-trust.json",
+    "-- EKS Pod Identity, not a cross-account assume, because external-dns runs",
+    "inside the cluster.",
+    "",
+    "ALSO TAG THIS ROLE  EKSManager = PassRole",
+    "Without that tag the pod identity association for it cannot be created.",
+    "",
+    "BOTH ZONES, on purpose. Replace PUBLIC_ZONE_ID and PRIVATE_ZONE_ID with the",
+    "two hosted zone ids for this environment. Under split-horizon DNS the two",
+    "zones carry the SAME name, and a cluster publishes the same hostname into",
+    "both: the public zone so the name resolves from outside, the private zone so",
+    "an internal load balancer is reachable by name from inside the VPC.",
+    "Scoping this role to the private zone alone leaves the public record",
+    "unpublished.",
+    "",
+    "Unlike cert_manager this role genuinely writes A and CNAME records -- that",
+    "is its whole job -- so it cannot be constrained by record type. It is",
+    "scoped by ZONE instead: the two zones, named explicitly, and no others.",
+    "That difference in blast radius is the reason these are two roles rather",
+    "than one.",
+    "",
+    "GetHostedZone and ListTagsForResource are how external-dns decides which",
+    "records it owns; ListHostedZones and ListHostedZonesByName take no resource",
+    "and so are unavoidably on '*'.",
+    "",
+    "Permissions on this role are your decision. This pair is known to work."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ManageClusterRecords",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets",
+        "route53:GetHostedZone",
+        "route53:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:route53:::hostedzone/PUBLIC_ZONE_ID",
+        "arn:aws:route53:::hostedzone/PRIVATE_ZONE_ID"
+      ]
+    },
+    {
+      "Sid": "DiscoverZones",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:ListHostedZonesByName"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
