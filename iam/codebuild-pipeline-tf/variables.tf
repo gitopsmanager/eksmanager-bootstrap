@@ -90,7 +90,7 @@ variable "identity_center_region" {
 }
 
 variable "github_oidc_provider_arn" {
-  description = "ARN of an existing GitHub Actions OIDC provider (arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com), if the shared services account already has one. Leave empty (default) to have Terraform create it — an AWS account can only have one per URL, so if apply fails with EntityAlreadyExists on aws_iam_openid_connect_provider.github_actions, set this to the existing one's ARN and re-run."
+  description = "ARN of an existing GitHub Actions OIDC provider (arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com), if the shared services account already has one. Leave empty (default): setup-pipeline.sh/.ps1 looks for an existing provider and sets this for you, and Terraform creates one only if there is none. Set it by hand only when that pre-flight check could not run — an AWS account can hold one provider per URL, so apply then fails with EntityAlreadyExists on aws_iam_openid_connect_provider.github_actions."
   type        = string
   default     = ""
 }
