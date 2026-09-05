@@ -439,7 +439,8 @@ resource "aws_s3_bucket_versioning" "bootstrap" {
 # Versioned, so every superseded upload is retained until something expires it.
 # Without this rule that is never -- see the note in the backup bucket's stack.
 resource "aws_s3_bucket_lifecycle_configuration" "bootstrap" {
-  bucket = aws_s3_bucket.bootstrap.id
+  provider = aws.shared
+  bucket   = aws_s3_bucket.bootstrap.id
 
   rule {
     id     = "expire-noncurrent-versions"
