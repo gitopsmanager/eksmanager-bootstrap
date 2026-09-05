@@ -178,6 +178,37 @@ resource "aws_s3_bucket_versioning" "config" {
   }
 }
 
+# Versioned, so every superseded upload is retained until something expires it.
+# Without this rule that is never -- see the note in the backup bucket's stack.
+resource "aws_s3_bucket_lifecycle_configuration" "config" {
+  bucket = aws_s3_bucket.config.id
+
+  rule {
+    id     = "expire-noncurrent-versions"
+    status = "Enabled"
+
+    filter {}
+
+    # Noncurrent ONLY. The current object is the live artifact and must not be
+    # touched -- days here count from when a version was superseded, not from
+    # when it was written.
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+
+    # A delete marker whose versions have all gone is an orphan that still
+    # shows up in listings and API results.
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    # Uploads that never completed are billed until aborted.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
 # Holds allowed_regions.json, which the agent reads on every cache cycle.
 # bucket_key_enabled keeps that from becoming a KMS call per read.
 resource "aws_s3_bucket_server_side_encryption_configuration" "config" {
