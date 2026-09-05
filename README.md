@@ -4,7 +4,7 @@ Terraform bootstrap for EKS Manager — provisions AWS infrastructure
 
 ## Prerequisites
 
-- Terraform >= 1.5.0, plus `bash` (if using `setup-pipeline.sh`) or PowerShell 7.1+ (if using `setup-pipeline.ps1` — not Windows PowerShell 5.1, and not PowerShell 7.0 either; the GitHub App JWT signing needs .NET 5's `RSA.ImportFromPem`)
+- Terraform >= 1.10.0, plus `bash` (if using `setup-pipeline.sh`) or PowerShell 7.1+ (if using `setup-pipeline.ps1` — not Windows PowerShell 5.1, and not PowerShell 7.0 either; the GitHub App JWT signing needs .NET 5's `RSA.ImportFromPem`). 1.10 is the floor because the three `iam/` modules `setup-pipeline` applies declare `required_version >= 1.10.0` for S3-native state locking; the CodeBuild container installs 1.11.0 for the root `aws/` module, which needs it
 
 ### Customer-owned infrastructure
 
