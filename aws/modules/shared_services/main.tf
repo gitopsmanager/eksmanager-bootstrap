@@ -251,8 +251,11 @@ resource "aws_s3_object" "allowed_regions" {
 resource "aws_s3_bucket" "logs" {
   bucket = "eksmanager-logs-${data.aws_caller_identity.shared.account_id}"
 
-  # The entire agent log history. Nothing regenerates it, and it is the record
-  # you want most when investigating whatever prompted the teardown.
+  # The last 30 days of agent logs -- see the lifecycle configuration below,
+  # which expires objects at 30 days. Nothing regenerates them, and within that
+  # window they are the record you want most when investigating whatever
+  # prompted the teardown. Anything older is already gone, so do not treat this
+  # bucket as a full history.
   #
   # terraform/README documents a destroy path. This makes removing it a
   # deliberate act -- comment the block out -- rather than a side effect of
