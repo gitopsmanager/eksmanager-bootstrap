@@ -1,5 +1,5 @@
 # Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
-name: sync-hosted-zones
+name: Sync hz crt-mgr ARNs to EKSManagerLetsEncryptRole
 
 # Keeps EKSManagerLetsEncryptRole's AssumeRole grant in step with
 # hosted-zones.json, and does nothing else.

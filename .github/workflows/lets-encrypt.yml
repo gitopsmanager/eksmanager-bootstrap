@@ -1,5 +1,5 @@
 # Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
-name: lets-encrypt
+name: Publish lets encrypt certificate pipeline
 
 # Manually dispatched. Packages terraform/lets-encrypt together with
 # hosted-zones.json and uploads it, which starts a CodeBuild run via

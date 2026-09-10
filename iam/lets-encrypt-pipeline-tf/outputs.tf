@@ -26,6 +26,6 @@ output "codebuild_project_name" {
 }
 
 output "policy_sync_role_arn" {
-  description = "Role sync-hosted-zones.yml assumes via OIDC. Set as the LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN repository variable. It may write one named inline policy on one role and nothing else."
+  description = "Role sync-crt-mgr-arns.yml assumes via OIDC. Set as the LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN repository variable. It may write one named inline policy on one role and nothing else."
   value       = aws_iam_role.policy_sync.arn
 }

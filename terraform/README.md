@@ -51,7 +51,7 @@ If your shell's ambient AWS credentials aren't in the default profile/region (e.
 - A Secrets Manager secret `/EKSManagerBootstrap/github-app` containing the GitHub App credentials (`appId`, `installId`, base64 `privateKey`) as JSON — persisted so future automation can reuse them to re-clone and re-upload without needing the credentials passed in again. CodeBuild's own role has no access to this secret; it never touches GitHub
 - The `eksmanager-bootstrap` CodeBuild project, S3-sourced, attached to your VPC, with `EKSMANAGER_CLIENT_ID`, `EKSMANAGER_COGNITO_URL` and `EKSMANAGER_API_URL` set as plaintext environment variables
 - An EventBridge rule that starts a build whenever `eksmanager-bootstrap.zip` is uploaded to the bucket — see below
-- `EKSManagerBootstrapGithubActionsRole`, trusted only when `.github/workflows/upload-to-s3.yml` is run from `var.github_repo`'s `main` branch, and scoped to `s3:PutObject` on `eksmanager-bootstrap.zip` only. Federated to a GitHub Actions OIDC provider for `token.actions.githubusercontent.com` — since an AWS account can only have one OIDC provider per URL, this is opt-in rather than auto-detected: leave `GITHUB_OIDC_PROVIDER_ARN` empty (default) and Terraform creates the provider; if the shared services account already has one, `apply` fails once with `EntityAlreadyExists` (nothing gets written to state on a failed create, so there's nothing to clean up) — just set `GITHUB_OIDC_PROVIDER_ARN` to the existing one's ARN and re-run
+- `EKSManagerBootstrapGithubActionsRole`, trusted only when `.github/workflows/bootstrap.yml` is run from `var.github_repo`'s `main` branch, and scoped to `s3:PutObject` on `eksmanager-bootstrap.zip` only. Federated to a GitHub Actions OIDC provider for `token.actions.githubusercontent.com` — since an AWS account can only have one OIDC provider per URL, this is opt-in rather than auto-detected: leave `GITHUB_OIDC_PROVIDER_ARN` empty (default) and Terraform creates the provider; if the shared services account already has one, `apply` fails once with `EntityAlreadyExists` (nothing gets written to state on a failed create, so there's nothing to clean up) — just set `GITHUB_OIDC_PROVIDER_ARN` to the existing one's ARN and re-run
 
 The secret lives under `/EKSManagerBootstrap/` rather than `/EKSManager/` — deliberately a separate namespace from where the running EKS Manager agent stores its own operational secrets. The SCP's `ProtectEKSManagerOperationalSecrets` statement only covers `/EKSManager/*`, so it has no opinion on these bootstrap-only credentials.
 
@@ -59,7 +59,7 @@ The secret lives under `/EKSManagerBootstrap/` rather than `/EKSManager/` — de
 
 Nothing in this repo uploads `eksmanager-bootstrap.zip` automatically — two independent, coexisting options exist once the script above has run:
 
-- **`.github/workflows/upload-to-s3.yml`** in your private copy — manually triggered (`workflow_dispatch`) from the GitHub Actions tab. `setup-pipeline.sh`/`.ps1` already set the three repository variables it needs (`AWS_ROLE_ARN`, `AWS_REGION`, `S3_BUCKET` — not secrets, none of these are sensitive) via the GitHub API, using the persisted GitHub App credentials (assumes that App has the Variables: Read & Write permission). Nothing to set up by hand. Uses OIDC — no long-lived AWS credential is stored in your private copy.
+- **`.github/workflows/bootstrap.yml`** in your private copy — manually triggered (`workflow_dispatch`) from the GitHub Actions tab. `setup-pipeline.sh`/`.ps1` already set the three repository variables it needs (`AWS_ROLE_ARN`, `AWS_REGION`, `S3_BUCKET` — not secrets, none of these are sensitive) via the GitHub API, using the persisted GitHub App credentials (assumes that App has the Variables: Read & Write permission). Nothing to set up by hand. Uses OIDC — no long-lived AWS credential is stored in your private copy.
 - The GitHub App credentials persisted in Secrets Manager (above) — for whatever other automation you build later.
 
 Either way, the upload starts a build automatically via the EventBridge rule.
@@ -145,7 +145,7 @@ eksmanager-bootstrap/
 ├── buildspec.yml                # CodeBuild pipeline (S3-sourced, no git)
 ├── .github/
 │   └── workflows/
-│       └── upload-to-s3.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
+│       └── bootstrap.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
 ├── aws/                        # AWS infrastructure module
 │   ├── create-saml-app.sh
 │   ├── create-saml-app.ps1
@@ -179,7 +179,7 @@ trigger that starts a build when `add-cluster.zip` is uploaded — overriding
 the project's source at start time via `sourceLocationOverride`. The
 Terraform it runs lives in `terraform/add-cluster/`, rendered per build by
 `scripts/generate_add_cluster.py` (or `generate_destroy_cluster.py`) and
-uploaded by the `add-cluster.yml` / `destroy-cluster.yml` workflows.
+uploaded by the `add-cluster-network.yml` / `remove-cluster-network.yml` workflows.
 
 See the root `README.md` for the `prefix-groups.json` and `clusters.json`
 formats these read.

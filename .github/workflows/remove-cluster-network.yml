@@ -1,5 +1,5 @@
 # Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
-name: destroy-cluster
+name: Publish cluster network access (remove)
 
 # Manually triggered, with account_id/region/cluster_name given directly --
 # NOT read from clusters.json. This is deliberate: if the GUI already
@@ -11,11 +11,11 @@ name: destroy-cluster
 #
 # Destroys every resource in that cluster's state file
 # (accounts/<account>/clusters/<cluster>/terraform.tfstate) -- the security
-# group rules add-cluster.yml created, nothing else. Does not touch
+# group rules add-cluster-network.yml created, nothing else. Does not touch
 # the prefix lists themselves, which this pipeline does not manage.
 #
 # Requires the same PREFIX_LISTS_ROLE_ARN / PREFIX_LISTS_S3_BUCKET /
-# AWS_REGION repository variables as add-cluster.yml.
+# AWS_REGION repository variables as add-cluster-network.yml.
 
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ on:
         required: true
         type: string
       cluster_name:
-        description: "Cluster name -- must match what add-cluster.yml originally used"
+        description: "Cluster name -- must match what add-cluster-network.yml originally used"
         required: true
         type: string
 

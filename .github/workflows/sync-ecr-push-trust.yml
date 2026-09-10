@@ -1,5 +1,5 @@
 # Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
-name: sync-ecr-push-trust
+name: Sync cluster ARNs to EKSManager-push-ecr
 
 # Keeps EKSManager-push-ecr's TRUST POLICY in step with clusters.json, and does
 # nothing else.
@@ -15,13 +15,13 @@ name: sync-ecr-push-trust
 # passed on the AssumeRole call. A principal ARN, unlike a session tag, cannot
 # be forged. So the trust is an exact list, rebuilt from clusters.json.
 #
-# Split from add-cluster deliberately. A trust policy is a single document, and
+# Split from add-cluster-network deliberately. A trust policy is a single document,
 # add-cluster keeps per-cluster Terraform state -- two clusters added at once
 # would each rewrite it from their own state and the second would silently drop
 # the first. One writer, whole document, every time.
 #
 # Runs before the cluster's runners exist. BootstrapClusterRegistry writes
-# clusters.json and then dispatches add-cluster, so this fires on the push in
+# clusters.json and then dispatches add-cluster-network, so this fires on the push in
 # between and the trust is in place before anything tries to use it.
 #
 # Requires (from iam/codebuild-pipeline-tf outputs):

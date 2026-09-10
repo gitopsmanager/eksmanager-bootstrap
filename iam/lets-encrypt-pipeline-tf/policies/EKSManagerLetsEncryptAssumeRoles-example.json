@@ -2,7 +2,7 @@
   "_comment": [
     "EXAMPLE ONLY -- this policy is not applied from this file.",
     "",
-    "It is generated at runtime by .github/workflows/sync-hosted-zones.yml from",
+    "It is generated at runtime by .github/workflows/sync-crt-mgr-arns.yml from",
     "the roles.cert_manager ARNs in hosted-zones.json, and written to",
     "EKSManagerLetsEncryptRole as a second inline policy named",
     "EKSManagerLetsEncryptAssumeRoles.",

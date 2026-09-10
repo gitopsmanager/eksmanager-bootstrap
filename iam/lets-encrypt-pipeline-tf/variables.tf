@@ -27,7 +27,7 @@ variable "shared_services_region" {
 
 # The AssumeRole grant is not defined here at all. It is a separate inline
 # policy on EKSManagerLetsEncryptRole, written by
-# .github/workflows/sync-hosted-zones.yml from the cert_manager ARNs in
+# .github/workflows/sync-crt-mgr-arns.yml from the cert_manager ARNs in
 # hosted-zones.json -- so adding a zone needs no Terraform apply and no
 # setup re-run, and the grant stays exact rather than a pattern or an account
 # wildcard.

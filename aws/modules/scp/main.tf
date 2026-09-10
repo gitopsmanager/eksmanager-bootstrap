@@ -198,7 +198,7 @@ resource "aws_organizations_policy_attachment" "spoke" {
 #
 # One chain this narrows but cannot close. EKSManagerLetsEncryptPolicySyncRole
 # holds iam:PutRolePolicy on EKSManagerLetsEncryptRole and must stay exempt, or
-# sync-hosted-zones fails -- that workflow keeps the Let's Encrypt role's
+# sync-crt-mgr-arns fails -- that workflow keeps the Let's Encrypt role's
 # sts:AssumeRole list in step with hosted-zones.json, where the customer
 # declares which of their roles may write the DNS-01 challenge to the public
 # zone and records to the private one. The list is customer data, so it cannot
@@ -220,7 +220,7 @@ resource "aws_organizations_policy_attachment" "spoke" {
 #
 # What actually bounds this is the ref, and it is not the SCP's doing. Both
 # lets-encrypt OIDC roles now require sub = repo:<repo>:ref:refs/heads/main
-# (they were repo:<repo>:*), and sync-hosted-zones.yml carries a matching
+# (they were repo:<repo>:*), and sync-crt-mgr-arns.yml carries a matching
 # branches: [main] filter -- so reaching either takes a merge to main rather
 # than a branch push. The SCP contributes one thing: those roles' own trust
 # policies are protected above, so the ref condition cannot be widened back to

@@ -552,7 +552,7 @@ Resources:
               #
               # Scoped by tag rather than by ARN because hosted-zones.json and
               # topology.json are deliberately independent: zones change through
-              # sync-hosted-zones, this StackSet changes through a bootstrap run.
+              # sync-crt-mgr-arns, this StackSet changes through a bootstrap run.
               # Rendering the ARNs in here would couple them, so adding a zone
               # would silently need a StackSet redeploy before a cluster could be
               # built in it. A tag is declared once on the role and never drifts.

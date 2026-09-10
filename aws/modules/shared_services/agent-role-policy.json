@@ -154,18 +154,6 @@
       "Resource": "arn:aws:codebuild:*:${SHARED_SERVICES_ACCOUNT_ID}:project/eksmanager-lets-encrypt"
     },
     {
-      "Sid": "LetsEncryptScheduleRead",
-      "Effect": "Allow",
-      "Action": [
-        "events:DescribeRule",
-        "events:ListTargetsByRule"
-      ],
-      "Resource": [
-        "arn:aws:events:*:${SHARED_SERVICES_ACCOUNT_ID}:rule/eksmanager-lets-encrypt-weekly-renewal",
-        "arn:aws:events:*:${SHARED_SERVICES_ACCOUNT_ID}:rule/eksmanager-lets-encrypt-artifact-uploaded"
-      ]
-    },
-    {
       "Sid": "OrganizationsRead",
       "Effect": "Allow",
       "Action": [

@@ -116,7 +116,7 @@ protecting like one:
   it, anyone with repo write can push straight to `main` and the ref pinning
   buys much less than it appears to.
 - **Required reviewers on a GitHub environment** for `lets-encrypt.yml` and
-  `sync-hosted-zones.yml`, if you want an approval on each run rather than on
+  `sync-crt-mgr-arns.yml`, if you want an approval on each run rather than on
   each merge. These are the two that can rewrite an IAM policy in the shared
   services account.
 
@@ -183,7 +183,7 @@ If your shell's ambient AWS credentials aren't in the default profile/region (e.
 - A Secrets Manager secret `/EKSManagerBootstrap/github-app` containing the GitHub App credentials (`appId`, `installId`, base64 `privateKey`) as JSON — persisted so future automation can reuse them to re-clone and re-upload without needing the credentials passed in again. CodeBuild's own role has no access to this secret; it never touches GitHub
 - The `eksmanager-bootstrap` CodeBuild project, S3-sourced, attached to your VPC, with `EKSMANAGER_CLIENT_ID`, `EKSMANAGER_COGNITO_URL` and `EKSMANAGER_API_URL` set as plaintext environment variables
 - An EventBridge rule that starts a build whenever `eksmanager-bootstrap.zip` is uploaded to the bucket — see below
-- `EKSManagerBootstrapGithubActionsRole`, trusted only when `.github/workflows/upload-to-s3.yml` is run from `var.github_repo`'s `main` branch, and scoped to `s3:PutObject` on `eksmanager-bootstrap.zip` only. Federated to a GitHub Actions OIDC provider for `token.actions.githubusercontent.com`. An AWS account can only hold one provider per URL, so the script looks for an existing one in the shared services account before applying: if it finds one it sets `GITHUB_OIDC_PROVIDER_ARN` for you and Terraform federates the role to it, and if it finds none Terraform creates it. Nothing to set by hand in either case. The detection is skipped once Terraform's own state owns the provider — otherwise a second run would find the provider Terraform created on the first, and destroy it
+- `EKSManagerBootstrapGithubActionsRole`, trusted only when `.github/workflows/bootstrap.yml` is run from `var.github_repo`'s `main` branch, and scoped to `s3:PutObject` on `eksmanager-bootstrap.zip` only. Federated to a GitHub Actions OIDC provider for `token.actions.githubusercontent.com`. An AWS account can only hold one provider per URL, so the script looks for an existing one in the shared services account before applying: if it finds one it sets `GITHUB_OIDC_PROVIDER_ARN` for you and Terraform federates the role to it, and if it finds none Terraform creates it. Nothing to set by hand in either case. The detection is skipped once Terraform's own state owns the provider — otherwise a second run would find the provider Terraform created on the first, and destroy it
 
 The secret lives under `/EKSManagerBootstrap/` rather than `/EKSManager/` — deliberately a separate namespace from where the running EKS Manager agent stores its own operational secrets. The SCP's `ProtectEKSManagerOperationalSecrets` statement only covers `/EKSManager/*`, so it has no opinion on these bootstrap-only credentials.
 
@@ -191,7 +191,7 @@ The secret lives under `/EKSManagerBootstrap/` rather than `/EKSManager/` — de
 
 Nothing in this repo uploads `eksmanager-bootstrap.zip` automatically — two independent, coexisting options exist once the script above has run:
 
-- **`.github/workflows/upload-to-s3.yml`** in your private copy — manually triggered (`workflow_dispatch`) from the GitHub Actions tab. `setup-pipeline.sh`/`.ps1` already set the three repository variables it needs (`AWS_ROLE_ARN`, `AWS_REGION`, `S3_BUCKET` — not secrets, none of these are sensitive) via the GitHub API, using the persisted GitHub App credentials (assumes that App has the Variables: Read & Write permission). Nothing to set up by hand. Uses OIDC — no long-lived AWS credential is stored in your private copy.
+- **`.github/workflows/bootstrap.yml`** in your private copy — manually triggered (`workflow_dispatch`) from the GitHub Actions tab. `setup-pipeline.sh`/`.ps1` already set the three repository variables it needs (`AWS_ROLE_ARN`, `AWS_REGION`, `S3_BUCKET` — not secrets, none of these are sensitive) via the GitHub API, using the persisted GitHub App credentials (assumes that App has the Variables: Read & Write permission). Nothing to set up by hand. Uses OIDC — no long-lived AWS credential is stored in your private copy.
 - The GitHub App credentials persisted in Secrets Manager (above) — for whatever other automation you build later.
 
 Either way, the upload starts a build automatically via the EventBridge rule.
@@ -313,11 +313,12 @@ eksmanager-bootstrap/
 ├── buildspec.yml                # CodeBuild pipeline (S3-sourced, no git)
 ├── .github/
 │   └── workflows/
-│       ├── upload-to-s3.yml    # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
-│       ├── add-cluster.yml       # Manual, takes a cluster_name input
-│       ├── destroy-cluster.yml    # Manual, takes account_id/region/cluster_name inputs
-│       ├── lets-encrypt.yml        # Manual — validates hosted-zones.json, zips terraform/lets-encrypt to S3
-│       └── sync-hosted-zones.yml    # Automatic on hosted-zones.json push — writes the AssumeRole grant only
+│       ├── bootstrap.yml                # Manual — zips this repo and uploads to S3 via OIDC, see "Getting a zip into S3" above
+│       ├── add-cluster-network.yml      # Manual or dispatched by the product, takes a cluster_name input
+│       ├── remove-cluster-network.yml   # Manual, takes account_id/region/cluster_name inputs
+│       ├── lets-encrypt.yml             # Manual — validates hosted-zones.json, zips terraform/lets-encrypt to S3
+│       ├── sync-crt-mgr-arns.yml        # Automatic on hosted-zones.json push — writes the AssumeRole grant only
+│       └── sync-ecr-push-trust.yml      # Automatic on clusters.json push — writes EKSManager-push-ecr's trust policy
 ├── aws/                        # AWS infrastructure module
 │   └── modules/
 │       ├── stackset/           # Per-account enablement
@@ -398,26 +399,26 @@ attaches them to a cluster's security groups.
   CodeBuild `dynamic` matrix, that mechanism has a documented env-var
   propagation gap) and stage the Terraform module + its `.auto.tfvars.json`
   alongside it.
-- `.github/workflows/add-cluster.yml` / `destroy-cluster.yml` — run the
+- `.github/workflows/add-cluster-network.yml` / `remove-cluster-network.yml` — run the
   generators and upload the resulting zip via OIDC, same pattern as
-  `upload-to-s3.yml`.
+  `bootstrap.yml`.
 
-**`add-cluster.yml` takes an explicit `cluster_name` input**, dispatched by
+**`add-cluster-network.yml` takes an explicit `cluster_name` input**, dispatched by
 whatever's driving cluster creation (the GUI, via the GitHub API) — not
 inferred by diffing `clusters.json`, which breaks down for deletions and
 multi-cluster commits.
 
-**`destroy-cluster.yml` takes `account_id`/`region`/`cluster_name` directly
+**`remove-cluster-network.yml` takes `account_id`/`region`/`cluster_name` directly
 as inputs, not read from `clusters.json`.** Tears down exactly one cluster's
 SG rules (`terraform destroy` against the same `terraform/add-cluster`
-state that cluster's `add-cluster.yml` run created) — nothing else. This
+state that cluster's `add-cluster-network.yml` run created) — nothing else. This
 avoids an ordering dependency: works whether `clusters.json` still has the
 entry, never had it, or had it removed first. Uploads to the same
-`add-cluster.zip` key/trigger as `add-cluster.yml` — same module, just
+`add-cluster.zip` key/trigger as `add-cluster-network.yml` — same module, just
 `destroy` instead of `apply` baked into the generated buildspec, so no new
 S3 key or EventBridge rule was needed.
 
-### Before running add-cluster
+### Before running add-cluster-network
 
 1. Copy `example-prefix-groups.json` → `prefix-groups.json` and list, per
    environment, the prefix lists a cluster in that environment may be reached
@@ -447,8 +448,8 @@ S3 key or EventBridge rule was needed.
    `eks_sg_ids`, so they get 443 only — add `nlb_sg_ids` to open the load
    balancer's ports.
 3. Commit both files to `main` on your private copy. The workflow runs from `main`
-   only — same OIDC trust-policy constraint as `upload-to-s3.yml`.
-4. Run **`add-cluster`** (Actions tab → `workflow_dispatch` → `cluster_name`
+   only — same OIDC trust-policy constraint as `bootstrap.yml`.
+4. Run **`add-cluster-network`** (Actions tab → `workflow_dispatch` → `cluster_name`
    input) for a cluster already present in `clusters.json`. If a named prefix
    list does not exist in that cluster's account and region, the `data` source
    lookup fails cleanly with a "not found" error rather than doing anything
@@ -480,13 +481,13 @@ Without that trust, DNS-01 cannot write its challenge record; the build fails in
   `/EKSManagerZones/<dns-zone-prefix>-dns-zone-certs`, holding `tls.crt` (full
   chain), `tls.key` and `ca.crt`.
 - `.github/workflows/lets-encrypt.yml` — validates `hosted-zones.json`,
-  then zips and uploads via OIDC, same pattern as `add-cluster.yml`.
-- `.github/workflows/sync-hosted-zones.yml` — runs automatically whenever
+  then zips and uploads via OIDC, same pattern as `add-cluster-network.yml`.
+- `.github/workflows/sync-crt-mgr-arns.yml` — runs automatically whenever
   `hosted-zones.json` changes. It writes one named inline policy,
   `EKSManagerLetsEncryptAssumeRoles`, listing the exact `roles.cert_manager`
   ARNs from that file, and does nothing else.
 
-**Two workflows, two jobs.** `sync-hosted-zones.yml` grants the permission;
+**Two workflows, two jobs.** `sync-crt-mgr-arns.yml` grants the permission;
 `lets-encrypt.yml` uses it. The grant is a separate inline policy from the one
 Terraform owns, because `put-role-policy` replaces a policy wholesale — keeping
 them apart means neither owner overwrites the other.
@@ -510,7 +511,7 @@ account that owns the zone which can write DNS records. Neither is useful alone.
 |---|---|---|---|
 | `EKSManagerLetsEncryptRole` | `setup-pipeline` | the CodeBuild service | Runs Terraform, writes the secrets, hops into each zone account |
 | `EKSManagerLetsEncryptGithubActionsRole` | `setup-pipeline` | `lets-encrypt.yml` via OIDC | Uploads `lets-encrypt.zip` to S3 |
-| `EKSManagerLetsEncryptPolicySyncRole` | `setup-pipeline` | `sync-hosted-zones.yml` via OIDC | Writes one named inline policy on one role, nothing else |
+| `EKSManagerLetsEncryptPolicySyncRole` | `setup-pipeline` | `sync-crt-mgr-arns.yml` via OIDC | Writes one named inline policy on one role, nothing else |
 | `roles.cert_manager` (per zone) | **you** | `EKSManagerLetsEncryptRole` | Writes the `_acme-challenge` TXT record in the public zone |
 | `roles.external_dns` (per zone) | **you** | the external-dns pod, via EKS Pod Identity | Writes A and CNAME records — unrelated to certificates |
 
@@ -545,7 +546,7 @@ here; these are for review:
 |---|---|
 | Its trust — who can assume it | [EKSManagerLetsEncryptRole-trust.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptRole-trust.json) |
 | Its permissions — logs, S3 state, secrets under `/EKSManagerZones/` | [EKSManagerLetsEncryptRole-policy.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptRole-policy.json) |
-| The AssumeRole grant `sync-hosted-zones` generates | [EKSManagerLetsEncryptAssumeRoles-example.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptAssumeRoles-example.json) |
+| The AssumeRole grant `sync-crt-mgr-arns` generates | [EKSManagerLetsEncryptAssumeRoles-example.json](iam/lets-encrypt-pipeline-tf/policies/EKSManagerLetsEncryptAssumeRoles-example.json) |
 
 None of these grant Route53, EKS or EC2 access. The pipeline reaches DNS only by
 assuming a `cert_manager` role you control, and touches nothing else in your

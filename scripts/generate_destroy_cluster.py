@@ -5,7 +5,7 @@ Generates everything CodeBuild needs to tear down one cluster's SG rules:
   <output_dir>/buildspec.yml               -- runs `terraform destroy`
                                                against the add-cluster module
   <output_dir>/terraform/add-cluster/       -- copy of the module (same one
-                                               add-cluster.yml uses)
+                                               add-cluster-network.yml uses)
   <output_dir>/terraform/add-cluster/cluster.auto.tfvars.json
                                              -- placeholder values for
                                                prefix_list_names/sg_ids;
@@ -72,14 +72,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--account-id", required=True, help="12-digit account ID the cluster is/was in")
     parser.add_argument("--region", required=True, help="Region the cluster is/was in")
-    parser.add_argument("--cluster-name", required=True, help="Cluster name -- must match what add-cluster.yml originally used, since it determines the state key being destroyed")
+    parser.add_argument("--cluster-name", required=True, help="Cluster name -- must match what add-cluster-network.yml originally used, since it determines the state key being destroyed")
     parser.add_argument("--state-bucket", required=True)
     parser.add_argument("--state-region", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--module-src",
         default=str(Path(__file__).resolve().parent.parent / "terraform" / "add-cluster"),
-        help="Path to the terraform/add-cluster module to stage (same module add-cluster.yml uses -- destroy needs the same resource definitions, just a different terraform command)",
+        help="Path to the terraform/add-cluster module to stage (same module add-cluster-network.yml uses -- destroy needs the same resource definitions, just a different terraform command)",
     )
     args = parser.parse_args()
 

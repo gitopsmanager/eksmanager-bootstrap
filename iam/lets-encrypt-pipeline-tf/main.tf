@@ -244,7 +244,7 @@ resource "aws_iam_role_policy" "codebuild" {
 
   # The cross-account sts:AssumeRole grant is NOT in this file. It lives in a
   # second inline policy, EKSManagerLetsEncryptAssumeRoles, written by
-  # .github/workflows/sync-hosted-zones.yml from hosted-zones.json --
+  # .github/workflows/sync-crt-mgr-arns.yml from hosted-zones.json --
   # see policies/EKSManagerLetsEncryptAssumeRoles-example.json.
   #
   # Separate because put-role-policy replaces an inline policy wholesale: if
@@ -324,7 +324,7 @@ resource "aws_codebuild_project" "lets_encrypt" {
 }
 
 # ── Policy-sync role ────────────────────────────────────────────────────────
-# Assumed by .github/workflows/sync-hosted-zones.yml, which writes the
+# Assumed by .github/workflows/sync-crt-mgr-arns.yml, which writes the
 # EKSManagerLetsEncryptAssumeRoles inline policy from the cert_manager ARNs in
 # hosted-zones.json. That is its only job.
 #
@@ -346,7 +346,7 @@ resource "aws_iam_role" "policy_sync" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           # Pinned to refs/heads/main -- see the upload role above.
-          # sync-hosted-zones.yml carries a matching branches: [main] filter, so
+          # sync-crt-mgr-arns.yml carries a matching branches: [main] filter, so
           # a push to any other branch neither triggers the workflow nor
           # satisfies this claim.
           "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:ref:refs/heads/main"
@@ -370,7 +370,7 @@ resource "aws_iam_role_policy" "policy_sync" {
         #
         # It CAN write any inline policy on that one role, including
         # EKSManagerLetsEncryptRolePolicy, which Terraform owns. That is not
-        # the intent -- sync-hosted-zones only ever writes
+        # the intent -- sync-crt-mgr-arns only ever writes
         # EKSManagerLetsEncryptAssumeRoles -- but it is the tightest bound IAM
         # can actually express. An inline policy has no ARN, so PutRolePolicy
         # takes the ROLE as its resource, and there is no condition key for the
@@ -388,7 +388,7 @@ resource "aws_iam_role_policy" "policy_sync" {
         #
         # To make it a real boundary, the grant has to move to a
         # customer-managed policy -- those do have ARNs, so CreatePolicyVersion
-        # scopes to exactly one document. See the note in sync-hosted-zones.yml.
+        # scopes to exactly one document. See the note in sync-crt-mgr-arns.yml.
         Sid    = "MaintainAssumeRolesPolicy"
         Effect = "Allow"
         Action = [

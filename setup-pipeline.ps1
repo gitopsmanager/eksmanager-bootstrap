@@ -26,7 +26,7 @@
         the CodeBuild project (S3-sourced — CodeBuild never touches
         GitHub), the EventBridge rule that starts a build on upload, a
         GitHub Actions OIDC role for your private copy's manual
-        .github/workflows/upload-to-s3.yml, and persists the GitHub App
+        .github/workflows/bootstrap.yml, and persists the GitHub App
         credentials to Secrets Manager for whatever else uploads the zip
       - If the aws.shared assume_role fails, apply fails clearly on its
         first resource — set SHARED_SERVICES_ROLE_NAME to the correct
@@ -34,7 +34,7 @@
       - Mints a GitHub App installation token (assumes the App has the
         Variables: Read & Write permission) and sets AWS_ROLE_ARN,
         AWS_REGION, S3_BUCKET as repository variables on GITHUB_REPO, so
-        your private copy's upload-to-s3.yml workflow works with no manual setup
+        your private copy's bootstrap.yml workflow works with no manual setup
 
     Idempotent — safe to re-run.
 
@@ -1007,8 +1007,8 @@ Set-GithubVariable -Name "AWS_REGION" -Value $Region
 Set-GithubVariable -Name "S3_BUCKET" -Value $outputBucket
 
 # Distinct names, not reused from above -- eksmanager-prefix-lists has its
-# own role and bucket, separate from eksmanager-bootstrap's. add-cluster.yml
-# and destroy-cluster.yml read these.
+# own role and bucket, separate from eksmanager-bootstrap's. add-cluster-network.yml
+# and remove-cluster-network.yml read these.
 # Region is the same value as AWS_REGION above (one shared_services_region
 # for both modules), so it isn't duplicated under a second name.
 Set-GithubVariable -Name "PREFIX_LISTS_ROLE_ARN" -Value $prefixListsRoleArn
@@ -1018,7 +1018,7 @@ Set-GithubVariable -Name "PREFIX_LISTS_S3_BUCKET" -Value $prefixListsBucket
 # third distinct role and bucket.
 Set-GithubVariable -Name "LETS_ENCRYPT_ROLE_ARN" -Value $letsEncryptRoleArn
 Set-GithubVariable -Name "LETS_ENCRYPT_S3_BUCKET" -Value $letsEncryptBucket
-# sync-hosted-zones.yml assumes this one -- a different identity from the
+# sync-crt-mgr-arns.yml assumes this one -- a different identity from the
 # artifact upload above, because it writes an IAM policy rather than an object.
 Set-GithubVariable -Name "LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN" -Value $letsEncryptPolicySyncRoleArn
 
@@ -1028,7 +1028,7 @@ Set-GithubVariable -Name "LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN" -Value $letsEncrypt
 # script, not editing a request or clicking Generate in the GUI. Committed
 # directly into the private repo (Contents API, different from the repo
 # *variables* API used above) so it's present the next time
-# upload-to-s3.yml bundles eksmanager-bootstrap.zip. Terraform auto-loads
+# bootstrap.yml bundles eksmanager-bootstrap.zip. Terraform auto-loads
 # any *.auto.tfvars.json file in its working directory, same mechanism
 # buildspec.yml already relies on for role-override.auto.tfvars.json.
 Write-Host ""
@@ -1105,7 +1105,7 @@ Write-Host "Confirm the NAT Gateway's Elastic IP for VPC $VpcId is allowlisted"
 Write-Host "on the client's API/EKS Manager endpoint firewalls."
 Write-Host ""
 Write-Host "AWS_ROLE_ARN, AWS_REGION, S3_BUCKET are set on $GithubRepo — the"
-Write-Host "upload-to-s3.yml workflow there is ready to run with no manual setup."
+Write-Host "bootstrap.yml workflow there is ready to run with no manual setup."
 Write-Host ""
 Write-Host "Nothing has been uploaded to the bucket and no build has run yet — the"
 Write-Host "eksmanager-bootstrap CodeBuild project starts automatically (via"

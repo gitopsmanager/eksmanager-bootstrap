@@ -565,7 +565,7 @@ resource "aws_secretsmanager_secret_version" "github_app" {
   })
 }
 
-# ── GitHub Actions OIDC — .github/workflows/upload-to-s3.yml in your private copy ────
+# ── GitHub Actions OIDC — .github/workflows/bootstrap.yml in your private copy ────
 # Coexists with the persisted GitHub App credentials above (two independent
 # ways to get eksmanager-bootstrap.zip into S3, not a replacement for
 # either). No long-lived secret: GitHub mints a short-lived token per
