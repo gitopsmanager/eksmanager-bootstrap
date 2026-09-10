@@ -30,6 +30,14 @@ name: Sync cluster ARNs to EKSManager-push-ecr
 
 on:
   push:
+    # main only, matching sync-crt-mgr-arns.yml. This rewrites the LIVE trust
+    # policy on EKSManager-push-ecr from whatever clusters.json says on the
+    # branch that triggered it -- so without this filter a push to any feature
+    # branch touching the file would republish the registry's trust from an
+    # unreviewed copy, and a branch that had dropped a cluster would revoke its
+    # push access until the next run on main put it back.
+    branches:
+      - main
     paths:
       - "clusters.json"
   workflow_dispatch:
