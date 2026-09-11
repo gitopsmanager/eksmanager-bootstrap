@@ -112,8 +112,9 @@ phases:
           --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 \
           -X POST "${EKSMANAGER_COGNITO_URL}/oauth2/token" \
           -H "Content-Type: application/x-www-form-urlencoded" \
-          -d "grant_type=client_credentials&client_id=${EKSMANAGER_CLIENT_ID}&client_secret=${EKSMANAGER_CLIENT_SECRET}" \
-          || echo "000")
+          -d "grant_type=client_credentials&client_id=${EKSMANAGER_CLIENT_ID}&client_secret=${EKSMANAGER_CLIENT_SECRET}") \
+          || TOKEN_STATUS="000"
+        CURL_RC=$?
         TOKEN=$(grep -o '"access_token":"[^"]*"' "${TOKEN_BODY}" | cut -d'"' -f4)
         if [ -z "${TOKEN}" ] || [ "${TOKEN}" = "null" ]; then
           echo "=============================================================="
@@ -144,25 +145,47 @@ phases:
           -H "Content-Type: application/json" \
           -d @topology.json \
           -o terraform.tfvars.json \
-          -w "%{http_code}" 2>"${API_ERR}" || echo "000")
+          -w "%{http_code}" 2>"${API_ERR}") || HTTP_STATUS="000"
+        API_RC=$?
 
         if [ "${HTTP_STATUS}" != "200" ]; then
           echo "=============================================================="
           echo "ERROR: topology.json validation failed (HTTP ${HTTP_STATUS})"
           echo "  endpoint : ${EKSMANAGER_API_URL}/bootstrap/aws"
+          echo "  curl rc  : ${API_RC}"
           echo "  curl says: $(cat "${API_ERR}" 2>/dev/null || echo '<none>')"
           echo "  response : $(cat terraform.tfvars.json 2>/dev/null)"
+          # curl's exit code splits the 000 case in two, and they are not the
+          # same problem: 7/28 means the packets never got anywhere, 52 means
+          # the server answered the TCP handshake and then closed without
+          # sending a response -- which is the server being unhealthy, not the
+          # network refusing to carry it.
           case "${HTTP_STATUS}" in
-            000) echo "  CAUSE: no HTTP response -- the request never completed."
-                 echo "         Cognito was reachable a moment ago, so general egress works;"
-                 echo "         this is specific to the API host."
-                 echo "         Most likely its allowlist does not include this build's public"
-                 echo "         IP (printed as 'internet egress confirmed' in the INSTALL phase)."
-                 echo "         A network-level block drops packets, which shows as 000 rather"
-                 echo "         than 403. Also check EKSMANAGER_API_URL host and port." ;;
+            000)
+              case "${API_RC}" in
+                52) echo "  CAUSE: connected to the API and got an EMPTY REPLY."
+                    echo "         TLS succeeded, so egress and the allowlist are fine --"
+                    echo "         the server accepted the connection and closed it without"
+                    echo "         answering. That is the API host, not the network:"
+                    echo "           - is the app running, and has it restarted recently?"
+                    echo "           - are the load balancer's targets healthy?"
+                    echo "           - check the app log for the moment of this build." ;;
+                7|28) echo "  CAUSE: never reached the API (curl ${API_RC})."
+                      echo "         Cognito was reachable a moment ago, so general egress works;"
+                      echo "         this is specific to the API host."
+                      echo "         Most likely its allowlist does not include this build's public"
+                      echo "         IP (printed as 'internet egress confirmed' in the INSTALL phase)."
+                      echo "         A network-level block drops packets, which shows as a timeout"
+                      echo "         rather than 403. Also check EKSMANAGER_API_URL host and port." ;;
+                35|60) echo "  CAUSE: TLS failed (curl ${API_RC}) -- certificate or protocol." ;;
+                *)  echo "  CAUSE: no HTTP response, curl exit ${API_RC}. See curl says above." ;;
+              esac ;;
             401|403) echo "  CAUSE: the API rejected the token or this caller. Check the client's"
                      echo "         entitlement and that this build's public IP is allowlisted." ;;
             400|422) echo "  CAUSE: topology.json was rejected. See the response above." ;;
+            502|503|504) echo "  CAUSE: the load balancer answered but no healthy target did."
+                         echo "         Check target group health for the API." ;;
+            *)  echo "  CAUSE: unexpected status ${HTTP_STATUS} -- see the response above." ;;
           esac
           echo "=============================================================="
           rm -f "${API_ERR}"
