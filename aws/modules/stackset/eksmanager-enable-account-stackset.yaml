@@ -286,6 +286,10 @@ Resources:
                 Action:
                   - eks:CreateAddon
                   - eks:CreatePodIdentityAssociation
+                  # Cluster Access. Created with the managed tags like anything
+                  # else here, so the RequestTag condition below is satisfied
+                  # rather than needing a statement of its own.
+                  - eks:CreateAccessEntry
                 Resource: "*"
                 Condition:
                   StringEquals:
@@ -311,6 +315,21 @@ Resources:
                   - eks:UpdateClusterConfig
                   - eks:UpdateClusterVersion
                   - eks:AssociateIdentityProviderConfig
+                  # Cluster Access: granting and revoking a permission set on a
+                  # cluster that is already ours. These send no tags, so they
+                  # cannot go with the create statement above -- its RequestTag
+                  # condition would deny them outright, the same trap the
+                  # comment there records for UpdateClusterConfig.
+                  #
+                  # Whether aws:ResourceTag reads the CLUSTER for access-entry
+                  # actions is the open question flagged at the top of this
+                  # block -- it is not uniform across the eks: surface. If these
+                  # are denied on a correctly tagged cluster, that is why, and
+                  # the fix is their own statement rather than removing the
+                  # condition.
+                  - eks:AssociateAccessPolicy
+                  - eks:DisassociateAccessPolicy
+                  - eks:DeleteAccessEntry
                 Resource: "*"
                 Condition:
                   StringEquals:
@@ -516,7 +535,9 @@ Resources:
               # Reads stay unscoped on purpose. The agent inspects roles it did
               # not create -- a pod identity association can point at a
               # customer-supplied role, and reporting on one means reading it.
-              # Read-only, no resource exposure beyond policy text.
+              # Read-only. ListRoles also returns each role's trust policy,
+              # so this statement discloses policy text and role names for
+              # the account it is deployed into, and nothing outside it.
               - Sid: AllowIAMRead
                 Effect: Allow
                 Action:
@@ -526,6 +547,24 @@ Resources:
                   - iam:ListAttachedRolePolicies
                   - iam:GetPolicy
                   - iam:GetPolicyVersion
+                  # Cluster RBAC. IAM Identity Center provisions a permission
+                  # set into an account as AWSReservedSSO_<name>_<hash>, and the
+                  # hash is DIFFERENT in every account -- verified across two
+                  # accounts, same five permission sets, five different
+                  # suffixes. So an access entry's principal ARN cannot be
+                  # constructed from the account id and the permission set
+                  # name; it has to be looked up where the cluster lives.
+                  #
+                  # ListRoles takes no resource types and has no condition key
+                  # for path, so this cannot be narrowed to
+                  # /aws-reserved/sso.amazonaws.com/ -- it is "*" or nothing.
+                  # That is bounded by where the role lives rather than by the
+                  # policy: this role is deployed per account by the StackSet,
+                  # and IAM has no cross-account list, so it can only ever
+                  # enumerate the account the cluster is in. Against the
+                  # GetRole/GetRolePolicy already granted here it adds
+                  # discovery, not capability.
+                  - iam:ListRoles
                 Resource: "*"
               # Service-linked roles are created by AWS under a reserved path
               # and cannot be named by the caller, so this is scoped to that
