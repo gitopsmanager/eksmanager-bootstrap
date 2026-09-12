@@ -318,7 +318,8 @@ eksmanager-bootstrap/
 │       ├── remove-cluster-network.yml   # Manual, takes account_id/region/cluster_name inputs
 │       ├── lets-encrypt.yml             # Manual — validates hosted-zones.json, zips terraform/lets-encrypt to S3
 │       ├── sync-crt-mgr-arns.yml        # Automatic on hosted-zones.json push — writes the AssumeRole grant only
-│       └── sync-ecr-push-trust.yml      # Automatic on clusters.json push — writes EKSManager-push-ecr's trust policy
+│       ├── sync-ecr-push-trust.yml      # Automatic on clusters.json push — writes EKSManager-push-ecr's trust policy
+│       └── sync-ecr-pull-access.yml     # Automatic on clusters.json push — writes the shared registry's ECR pull policy
 ├── aws/                        # AWS infrastructure module
 │   └── modules/
 │       ├── stackset/           # Per-account enablement

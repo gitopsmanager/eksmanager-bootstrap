@@ -1048,6 +1048,11 @@ OIDC_PROVIDER_ARN=$(terraform output -raw github_oidc_provider_arn)
 # Rebuilds EKSManager-push-ecr's trust from clusters.json -- see
 # .github/workflows/sync-ecr-push-trust.yml.
 ECR_PUSH_TRUST_SYNC_ROLE_ARN=$(terraform output -raw ecr_push_trust_sync_role_arn)
+# Writes the shared registry's resource policy from clusters.json -- see
+# .github/workflows/sync-ecr-pull-access.yml. A separate identity from the one
+# above: that decides who may ASSUME EKSManager-push-ecr, this decides who may
+# PULL from the registry, and neither should imply the other.
+ECR_PULL_ACCESS_SYNC_ROLE_ARN=$(terraform output -raw ecr_pull_access_sync_role_arn)
 
 # ── iam/prefix-lists-pipeline-tf — the eksmanager-prefix-lists CodeBuild
 # project ─────────────────────────────────────────────────────────────────
@@ -1228,6 +1233,7 @@ set_github_variable "LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN" "$LETS_ENCRYPT_POLICY_SY
 # whenever clusters.json changes. Its own identity, holding one action on one
 # role, rather than reusing an upload role that also writes to S3.
 set_github_variable "ECR_PUSH_TRUST_SYNC_ROLE_ARN" "$ECR_PUSH_TRUST_SYNC_ROLE_ARN"
+set_github_variable "ECR_PULL_ACCESS_SYNC_ROLE_ARN" "$ECR_PULL_ACCESS_SYNC_ROLE_ARN"
 
 # ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
 # Values the aws/ Terraform module needs but that must never come from

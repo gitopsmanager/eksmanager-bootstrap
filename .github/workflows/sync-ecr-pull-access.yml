@@ -1,0 +1,234 @@
+# Copyright (c) 2026 GitOps Manager, S.L. All rights reserved.
+name: Sync cluster ARNs to shared ECR pull policy
+
+# Keeps the shared services ECR REGISTRY policy in step with clusters.json, and
+# does nothing else.
+#
+# The sibling of sync-ecr-push-trust.yml, and the other half of the same story.
+# Push is an identity chain: an ARC pod assumes EKSManager-<cluster>-push-ecr,
+# which assumes EKSManager-push-ecr, and a TRUST policy decides who may do that.
+# Pull is not a chain at all -- kubelet pulls the image using the node's
+# instance profile, before the pod exists, so there is no pod identity involved
+# and nothing to trust. What authorises it is a RESOURCE policy on the registry.
+#
+# Cross-account ECR needs an allow on BOTH sides. The cluster account's half is
+# already there: awsapi.py attaches AmazonEC2ContainerRegistryReadOnly to
+# EKSManager-<cluster>-node, which carries ecr:GetAuthorizationToken (a
+# registry-wide action that a resource policy cannot grant, so it can only come
+# from the puller's own identity policy). This workflow writes the other half.
+#
+# Registry level rather than per repository, which is what makes this tractable:
+# Resource is repository/*, so a repository created by tomorrow's build is
+# pullable the moment it exists. multicloud-build-action creates repositories on
+# demand and sets no policy on them, so a per-repository scheme would need
+# something watching for new ones -- EventBridge, or a reconciler racing the
+# build. None of that is needed here.
+#
+# Requires (from iam/codebuild-pipeline-tf outputs):
+#   ECR_PULL_ACCESS_SYNC_ROLE_ARN - ecr_pull_access_sync_role_arn
+#   AWS_REGION                    - the shared services region
+
+on:
+  push:
+    # main only, for the same reason as sync-ecr-push-trust.yml, and it matters
+    # more here. A feature branch touching clusters.json would republish the
+    # LIVE registry policy from an unreviewed copy, and a branch that had
+    # dropped a cluster would revoke its PULL access until the next run on main.
+    # On the push side that breaks builds, which fail loudly and get retried.
+    # Here it breaks image pulls on a running cluster -- pods wedged in
+    # ImagePullBackOff, far from the cause.
+    branches:
+      - main
+    paths:
+      - "clusters.json"
+  workflow_dispatch:
+
+# No inputs, deliberately. This rebuilds the whole document from clusters.json
+# every run. A cluster_name input could only merge one cluster in -- which
+# cannot revoke anything and races itself -- or be ignored, which is worse,
+# because someone will eventually run it believing only that cluster is touched.
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Credentials first, unlike sync-ecr-push-trust.yml, because the policy
+      # document has to name the registry's own account in its Resource ARN and
+      # STS is the honest place to get it -- deriving it from a variable means a
+      # second thing to keep correct.
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.ECR_PULL_ACCESS_SYNC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build the registry policy
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -eu
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          export ACCOUNT_ID
+
+          python3 - <<'PY'
+          import json, os, re, sys
+
+          region  = os.environ["AWS_REGION"]
+          account = os.environ["ACCOUNT_ID"]
+
+          try:
+              clusters = json.load(open("clusters.json"))
+          except FileNotFoundError:
+              sys.exit("clusters.json not found -- nothing to sync.")
+          except json.JSONDecodeError as e:
+              sys.exit(f"clusters.json is not valid JSON: {e}")
+
+          if not isinstance(clusters, dict):
+              sys.exit("clusters.json must be an object keyed by cluster name.")
+
+          arns, problems = [], []
+
+          for name, entry in clusters.items():
+              if not isinstance(entry, dict):
+                  problems.append(f"{name}: not an object")
+                  continue
+
+              acct = str(entry.get("account", ""))
+              if not re.fullmatch(r"\d{12}", acct):
+                  problems.append(f"{name}: account '{acct}' is not a 12-digit AWS account id")
+                  continue
+
+              # Must match create_eks_node_role's naming in awsapi.py. If that
+              # ever changes, this list stops matching the roles that exist --
+              # and unlike the push side, which fails loudly at AssumeRole, this
+              # fails as ImagePullBackOff on a running cluster. Quiet, and a
+              # long way from the cause.
+              arns.append(f"arn:aws:iam::{acct}:role/EKSManager-{name}-node")
+
+          if problems:
+              print("Cannot sync -- clusters.json has problems:")
+              for p in problems:
+                  print(f"  - {p}")
+              sys.exit(1)
+
+          arns = sorted(set(arns))
+
+          # No clusters means DELETE the policy, not a Deny document -- the one
+          # place this deliberately diverges from sync-ecr-push-trust.yml.
+          #
+          # There, Deny-to-everyone is safe: EKSManager-push-ecr exists for that
+          # chain alone, so denying its assumption affects nothing else. A
+          # REGISTRY policy is not like that. An explicit Deny in a resource
+          # policy beats any identity policy, including the shared services
+          # account's own -- so a Deny on BatchGetImage would stop the ARC
+          # runners pulling their own base images, in the account that owns the
+          # registry. Absence of a policy grants nothing, which is exactly the
+          # wanted state, and breaks nothing.
+          if not arns:
+              print("No clusters configured -- the registry policy will be removed.")
+              open("action", "w").write("delete")
+              raise SystemExit(0)
+
+          print(f"Granting pull to {len(arns)} cluster node role(s):")
+          for a in arns:
+              print(f"  {a}")
+
+          # Principal is the account root with the real constraint in an
+          # ArnEquals condition, not the node roles named directly. IAM
+          # validates principals on write, and registration pushes clusters.json
+          # BEFORE add-cluster-network runs -- so a role listed here may not
+          # exist yet and would fail the whole update with
+          # MalformedPolicyDocument, taking every other cluster's pull access
+          # down with it. Conditions are not validated that way.
+          #
+          # ArnEquals, not ArnLike on EKSManager-*-node: a wildcard is satisfied
+          # by anyone in a trusted account able to create a role by that name.
+          # Same reasoning that put an exact list in the push trust.
+          accounts = sorted({a.split(":")[4] for a in arns})
+          policy = {
+              "Version": "2012-10-17",
+              "Statement": [{
+                  "Sid": "AllowClusterNodePull",
+                  "Effect": "Allow",
+                  "Principal": {"AWS": [f"arn:aws:iam::{acct}:root" for acct in accounts]},
+                  # No ecr:GetAuthorizationToken here -- it is registry-wide with
+                  # no resource, so a resource policy cannot grant it. It comes
+                  # from the node role's own AmazonEC2ContainerRegistryReadOnly.
+                  #
+                  # BatchCheckLayerAvailability is easy to leave out and produces
+                  # confusing partial-pull failures rather than a clean denial.
+                  "Action": [
+                      "ecr:GetDownloadUrlForLayer",
+                      "ecr:BatchGetImage",
+                      "ecr:BatchCheckLayerAvailability",
+                  ],
+                  "Resource": f"arn:aws:ecr:{region}:{account}:repository/*",
+                  "Condition": {"ArnEquals": {"aws:PrincipalArn": arns}},
+              }],
+          }
+
+          json.dump(policy, open("registry-policy.json", "w"), indent=2)
+          open("action", "w").write("put")
+          PY
+
+      - name: Apply to the shared services registry
+        run: |
+          set -eu
+
+          echo "--- registry policy before ---"
+          aws ecr get-registry-policy --query policyText --output text || true
+
+          if [ "$(cat action)" = "delete" ]; then
+            # Tolerates absence: removing a policy that is already gone is the
+            # wanted end state, not a failure.
+            aws ecr delete-registry-policy || true
+            echo "Registry policy removed."
+            exit 0
+          fi
+
+          aws ecr put-registry-policy --policy-text file://registry-policy.json
+
+          # Read it back and compare. put-registry-policy returning zero says the
+          # call was accepted, not that the registry now says what was intended
+          # -- and this is the only thing standing between a departed account and
+          # pull access to every image in the shared registry.
+          aws ecr get-registry-policy --query policyText --output text > after.json
+
+          python3 - <<'PY'
+          import json, sys
+
+          want = json.load(open("registry-policy.json"))["Statement"][0]
+          got  = json.load(open("after.json"))["Statement"][0]
+
+          if got.get("Effect") != want["Effect"]:
+              sys.exit(f"Policy not applied: wanted Effect {want['Effect']}, got {got.get('Effect')}")
+
+          def arns(stmt):
+              v = stmt.get("Condition", {}).get("ArnEquals", {}).get("aws:PrincipalArn", [])
+              return sorted([v] if isinstance(v, str) else v)
+
+          def principals(stmt):
+              v = stmt.get("Principal", {}).get("AWS", [])
+              return sorted([v] if isinstance(v, str) else v)
+
+          if arns(want) != arns(got):
+              sys.exit(
+                  "Policy not applied as intended.\n"
+                  f"  wanted: {arns(want)}\n"
+                  f"  got:    {arns(got)}"
+              )
+
+          if principals(want) != principals(got):
+              sys.exit(
+                  "Principals not applied as intended.\n"
+                  f"  wanted: {principals(want)}\n"
+                  f"  got:    {principals(got)}"
+              )
+
+          print(f"Verified: {len(arns(got))} node role(s) may pull from this registry.")
+          PY

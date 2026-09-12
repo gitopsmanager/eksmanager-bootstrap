@@ -58,3 +58,8 @@ output "ecr_push_trust_sync_role_arn" {
   description = "ARN to set as the ECR_PUSH_TRUST_SYNC_ROLE_ARN repository variable, for .github/workflows/sync-ecr-push-trust.yml."
   value       = aws_iam_role.ecr_push_trust_sync.arn
 }
+
+output "ecr_pull_access_sync_role_arn" {
+  description = "ARN to set as the ECR_PULL_ACCESS_SYNC_ROLE_ARN repository variable, for .github/workflows/sync-ecr-pull-access.yml."
+  value       = aws_iam_role.ecr_pull_access_sync.arn
+}

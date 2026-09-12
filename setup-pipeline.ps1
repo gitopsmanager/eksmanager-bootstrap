@@ -856,6 +856,17 @@ $identityCenterRoleArn = terraform output -raw eks_manager_identity_center_role_
 $identityStoreId = terraform output -raw identity_store_id
 $identityCenterResolvedRegion = terraform output -raw identity_center_region
 $oidcProviderArn = terraform output -raw github_oidc_provider_arn
+# Rebuilds EKSManager-push-ecr's trust from clusters.json -- see
+# .github/workflows/sync-ecr-push-trust.yml. Read here and set below, matching
+# setup-pipeline.sh; without it that workflow reaches
+# configure-aws-credentials with an empty role-to-assume and every cluster
+# registered from a Windows install silently never gets push access to ECR.
+$ecrPushTrustSyncRoleArn = terraform output -raw ecr_push_trust_sync_role_arn
+# Writes the shared registry's resource policy from clusters.json -- see
+# .github/workflows/sync-ecr-pull-access.yml. A separate identity from the one
+# above: that decides who may ASSUME EKSManager-push-ecr, this decides who may
+# PULL from the registry, and neither should imply the other.
+$ecrPullAccessSyncRoleArn = terraform output -raw ecr_pull_access_sync_role_arn
 
 # ── iam/prefix-lists-pipeline-tf — the eksmanager-prefix-lists CodeBuild
 # project ─────────────────────────────────────────────────────────────────
@@ -1028,6 +1039,10 @@ Set-GithubVariable -Name "LETS_ENCRYPT_S3_BUCKET" -Value $letsEncryptBucket
 # sync-crt-mgr-arns.yml assumes this one -- a different identity from the
 # artifact upload above, because it writes an IAM policy rather than an object.
 Set-GithubVariable -Name "LETS_ENCRYPT_POLICY_SYNC_ROLE_ARN" -Value $letsEncryptPolicySyncRoleArn
+# sync-ecr-push-trust.yml assumes this one. Same pattern again: a role that
+# writes an IAM document rather than uploading an artifact.
+Set-GithubVariable -Name "ECR_PUSH_TRUST_SYNC_ROLE_ARN" -Value $ecrPushTrustSyncRoleArn
+Set-GithubVariable -Name "ECR_PULL_ACCESS_SYNC_ROLE_ARN" -Value $ecrPullAccessSyncRoleArn
 
 # ── Write pinned.auto.tfvars.json ───────────────────────────────────────────
 # Values the aws/ Terraform module needs but that must never come from

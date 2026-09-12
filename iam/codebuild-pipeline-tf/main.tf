@@ -674,6 +674,81 @@ resource "aws_iam_role_policy" "ecr_push_trust_sync" {
   })
 }
 
+# The pull half of the same story, written by
+# .github/workflows/sync-ecr-pull-access.yml.
+#
+# Push and pull are authorised by completely different mechanisms, which is why
+# this is a second role rather than another statement on the one above. Push is
+# an assume-role chain gated by a TRUST policy on EKSManager-push-ecr. Pull is
+# kubelet using the node instance profile, gated by a RESOURCE policy on the
+# registry -- no chain, no pod identity, nothing to trust.
+#
+# Separate identities rather than one that does both: rewriting who may assume a
+# role and rewriting who may read every image in the registry are each serious,
+# and neither should imply the other. One role holding both means a compromise
+# of either workflow gets both capabilities.
+resource "aws_iam_role" "ecr_pull_access_sync" {
+  provider = aws.shared
+  name     = "EKSManagerEcrPullAccessSyncRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = local.github_oidc_provider_final_arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        # Push-triggered on clusters.json, so the sub carries a ref claim.
+        # Same immutable-subject handling as every other OIDC role here.
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:${local.github_sub_repo}:*"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "ecr_pull_access_sync" {
+  provider = aws.shared
+  name     = "EKSManagerEcrPullAccessSyncPolicy"
+  role     = aws_iam_role.ecr_pull_access_sync.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      # Resource is "*" because it has to be: the registry policy is not a
+      # repository, and ECR exposes no ARN for it. There is exactly one registry
+      # per account per region, and this role exists only in shared services, so
+      # "*" here means that one registry and nothing else.
+      #
+      # What it can do is bounded by the actions, not the resource. It can decide
+      # who may PULL from the registry. It cannot push, cannot create or delete a
+      # repository, cannot touch an image, and cannot alter a repository-level
+      # policy -- all of which remain outside this identity entirely.
+      #
+      # Delete as well as Put: with no clusters registered the correct state is
+      # no policy at all, not a Deny document. An explicit Deny in a resource
+      # policy overrides identity policies including this account's own, so it
+      # would stop the ARC runners pulling their own base images from the
+      # registry they own.
+      #
+      # Get so the workflow can log the before and after and read back what it
+      # wrote; a policy change that reports nothing is a change nobody can audit.
+      Sid    = "MaintainEcrRegistryPullPolicy"
+      Effect = "Allow"
+      Action = [
+        "ecr:PutRegistryPolicy",
+        "ecr:GetRegistryPolicy",
+        "ecr:DeleteRegistryPolicy",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_iam_role" "github_actions_upload" {
   provider = aws.shared
   name     = "EKSManagerBootstrapGithubActionsRole"
