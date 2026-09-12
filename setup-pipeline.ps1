@@ -69,7 +69,7 @@
     $env:GITHUB_OIDC_PROVIDER_ARN = ""             # optional — see main.tf's github_oidc_provider_arn
     $env:VPC_ID = "vpc-..."
     $env:SUBNET_ID = "subnet-..."
-    $env:REGION = "eu-west-1"                     # optional, default shown
+    $env:SHARED_SERVICES_REGION = "eu-west-1"     # required
     $env:EKSMANAGER_CLIENT_ID = "..."
     $env:EKSMANAGER_CLIENT_SECRET = "..."
     $env:EKSMANAGER_COGNITO_URL = "..."
@@ -108,7 +108,7 @@
     provider detection, role reconciliation, bucket emptying on -Destroy)
     and credential resolution for Terraform -- it does NOT change which
     region your infrastructure gets created in. That's controlled entirely
-    by $env:REGION above (-> shared_services_region).
+    by $env:SHARED_SERVICES_REGION above.
 #>
 
 param(
@@ -198,7 +198,13 @@ $GithubOwnerId           = $env:GITHUB_OWNER_ID
 $GithubRepoId            = $env:GITHUB_REPO_ID
 $VpcId                   = $env:VPC_ID
 $VpcSubnetId             = $env:SUBNET_ID
-$Region                  = if ($env:REGION) { $env:REGION } else { "eu-west-1" }
+# Named to match the Settings -> Terraform tile, and to sit beside
+# MANAGEMENT_ACCOUNT_REGION rather than being the one bare REGION among them.
+# Required, not defaulted: it decides the Terraform state bucket and backend as
+# well as shared_services_region, and flows on into pinned.auto.tfvars.json, the
+# app's global config and the ECR registry host. A default made a forgotten
+# variable indistinguishable from a deliberate choice.
+$Region                  = $env:SHARED_SERVICES_REGION
 $EksManagerClientId      = $env:EKSMANAGER_CLIENT_ID
 $EksManagerClientSecret  = $env:EKSMANAGER_CLIENT_SECRET
 $CognitoUrl              = $env:EKSMANAGER_COGNITO_URL
@@ -222,6 +228,7 @@ foreach ($pair in @(
     @{ Name = "EKSMANAGER_API_URL";          Value = $ApiUrl }
     @{ Name = "GITHUB_APP_ID";               Value = $env:GITHUB_APP_ID }
     @{ Name = "GITHUB_APP_INSTALL_ID";       Value = $env:GITHUB_APP_INSTALL_ID }
+    @{ Name = "SHARED_SERVICES_REGION";      Value = $env:SHARED_SERVICES_REGION }
     @{ Name = "GITHUB_APP_PRIVATE_KEY";      Value = $env:GITHUB_APP_PRIVATE_KEY }
 )) {
     if ([string]::IsNullOrWhiteSpace($pair.Value)) {

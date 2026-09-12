@@ -64,7 +64,7 @@
 #   export SUBNET_ID="subnet-..."
 #   export RESOURCE_TAG_NAME="CostCentre"           # optional — tags every resource
 #   export RESOURCE_TAG_VALUE="platform"            # optional — paired with the above
-#   export REGION="eu-west-1"                    # optional, default shown
+#   export SHARED_SERVICES_REGION="eu-west-1"       # required
 #   export IDENTITY_CENTER_REGION="eu-west-1"       # optional — skips the region search
 #                                                   # entirely. Cached from the previous
 #                                                   # run when not set; needed only on a
@@ -106,7 +106,7 @@
 #   (OIDC provider detection, role reconciliation, bucket emptying on
 #   --destroy) and credential resolution for Terraform -- it does NOT
 #   change which region your infrastructure gets created in. That's
-#   controlled entirely by REGION above (-> shared_services_region).
+#   controlled entirely by SHARED_SERVICES_REGION above.
 # ==============================================================================
 
 set -euo pipefail
@@ -208,7 +208,18 @@ GITHUB_OWNER_ID="${GITHUB_OWNER_ID:-}"
 GITHUB_REPO_ID="${GITHUB_REPO_ID:-}"
 VPC_ID="${VPC_ID:-}"
 SUBNET_ID="${SUBNET_ID:-}"
-REGION="${REGION:-eu-west-1}"
+# Named to match the field in the Settings -> Terraform tile, and to sit
+# beside MANAGEMENT_ACCOUNT_REGION and IDENTITY_CENTER_REGION rather than
+# being the one bare REGION among them. The tile emits this name, so there
+# is nothing else to accept.
+#
+# Worth knowing what it decides: not just shared_services_region, but the
+# Terraform state bucket and the backend config too -- which is why it was
+# generic to begin with. The script goes on using REGION internally.
+# :- so an unset value reaches the required-variable check below as empty,
+# rather than tripping `set -u` here and reporting "unbound variable" --
+# which names the shell feature rather than the thing the operator forgot.
+REGION="${SHARED_SERVICES_REGION:-}"
 MANAGEMENT_ACCOUNT_REGION="${MANAGEMENT_ACCOUNT_REGION:-}"
 AGENT_NAME="${AGENT_NAME:-aws-eksmanager-agent}"
 AGENT_AMI="${AGENT_AMI:-}"
@@ -219,7 +230,18 @@ EKSMANAGER_CLIENT_SECRET="${EKSMANAGER_CLIENT_SECRET:-}"
 COGNITO_URL="${EKSMANAGER_COGNITO_URL:-}"
 API_URL="${EKSMANAGER_API_URL:-}"
 
-for required in MANAGEMENT_ACCOUNT_ID MANAGEMENT_ACCOUNT_REGION SHARED_SERVICES_ACCOUNT_ID VPC_ID SUBNET_ID AGENT_AMI \
+# SHARED_SERVICES_REGION joins the required list rather than defaulting.
+# It decides where the whole estate is built -- shared_services_region, the
+# Terraform state bucket, the backend -- and it flows onward into
+# pinned.auto.tfvars.json, then the app's global config, then the ECR registry
+# host the build runners push to. A default made a forgotten variable
+# indistinguishable from a deliberate eu-west-1, and the mismatch only showed up
+# four layers away as an IAM denial on a repository in an unexpected region.
+#
+# Nothing is lost by requiring it: the Settings -> Terraform tile cannot
+# generate the export block without it, so every legitimate caller already
+# has it.
+for required in MANAGEMENT_ACCOUNT_ID MANAGEMENT_ACCOUNT_REGION SHARED_SERVICES_ACCOUNT_ID SHARED_SERVICES_REGION VPC_ID SUBNET_ID AGENT_AMI \
                 EKSMANAGER_CLIENT_ID EKSMANAGER_CLIENT_SECRET COGNITO_URL API_URL \
                 GITHUB_REPO GITHUB_APP_ID GITHUB_APP_INSTALL_ID GITHUB_APP_PRIVATE_KEY; do
   if [ -z "${!required:-}" ]; then
