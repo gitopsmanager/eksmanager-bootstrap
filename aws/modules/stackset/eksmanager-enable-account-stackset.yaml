@@ -119,36 +119,6 @@ Resources:
               - ssmmessages:*
               - ec2messages:*
             Resource: "*"
-          # The ONLY sts the boundary permits, and only onto one role name.
-          #
-          # A permissions boundary caps what a role may DO; a trust policy says
-          # who may assume it. Both are needed for a cross-account chain and
-          # they fail identically from outside, which is what made this hard to
-          # find: EKSManager-<cluster>-push-ecr trusted pods.eks.amazonaws.com
-          # correctly, EKSManager-push-ecr trusted the cluster role correctly,
-          # its own AssumeSharedServicesEcrPush policy granted sts:AssumeRole --
-          # and the boundary listed no sts action at all, so the intersection
-          # was empty and the role could assume nothing. The EKS Pod Identity
-          # agent reports that as "EKS does not have permissions to assume the
-          # associated role", which points at the first hop when the failure is
-          # the second.
-          #
-          # Scoped to the role NAME rather than "*": these roles have exactly
-          # one reason to assume anything, which is pushing to the shared
-          # registry. The account is left open because the shared services
-          # account id is not known when this template is written, and the
-          # target's own trust policy already restricts which cluster roles may
-          # assume it -- rebuilt from clusters.json by sync-ecr-push-trust.yml.
-          #
-          # TagSession as well as AssumeRole: pod identity associations carry
-          # session tags (disableSessionTags is false), and a chain missing
-          # TagSession is refused even when AssumeRole is allowed.
-          - Sid: AssumeSharedServicesPushEcr
-            Effect: Allow
-            Action:
-              - sts:AssumeRole
-              - sts:TagSession
-            Resource: "arn:aws:iam::*:role/EKSManager-push-ecr"
           # The only IAM the boundary permits, and all three are read-only or
           # service-linked. The LBC policy needs the server certificate reads;
           # CreateServiceLinkedRole is needed by both the LBC and the cluster
