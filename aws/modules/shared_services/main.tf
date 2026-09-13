@@ -351,6 +351,29 @@ resource "aws_iam_role" "agent" {
   assume_role_policy = file("${path.module}/agent-role-trust.json")
 }
 
+# The one statement in agent-role-policy.json whose Resource is not prefix-scoped
+# is SecretsManagerList, and it is worth saying why here rather than in a JSON
+# file that cannot carry a comment -- IAM rejects unrecognised elements inside a
+# statement, so there is nowhere in that document to explain itself.
+#
+# secretsmanager:ListSecrets is an account-level operation. It has no resource to
+# scope to and honours no name condition, exactly like ecr:GetAuthorizationToken,
+# so "*" is the only form it can take. What that widens is what the agent may
+# ENUMERATE, not what it may READ: every other statement stays scoped to
+# /EKSManager*, /EKSManagerZones/* or /EKSManagerBootstrap/headlamp-*, so a
+# secret value outside those prefixes is still refused. Names, ARNs and metadata
+# are what this exposes.
+#
+# It exists because the Settings status flags answer from what is actually in the
+# store rather than from an onboarding step somebody ticked. agent_cache.py lists
+# the store on its cache cycle and the server reconciles the flags from the
+# reply. Without this the listing returns AccessDenied, the agent reports an
+# error, the server correctly declines to act on an answer it did not get -- and
+# every flag stays exactly as wrong as it was, with nothing on screen saying why.
+#
+# The prefix filter the agent passes to ListSecrets is the agent choosing to look
+# narrowly. It is not a constraint this policy imposes and should not be read as
+# one.
 resource "aws_iam_role_policy" "agent" {
   name = "EKSManagerAgentPolicy"
   role = aws_iam_role.agent.id

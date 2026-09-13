@@ -27,6 +27,14 @@
       "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManager/*"
     },
     {
+      "Sid": "SecretsManagerList",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:ListSecrets"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "SecretsManagerZoneCertsRead",
       "Effect": "Allow",
       "Action": [
