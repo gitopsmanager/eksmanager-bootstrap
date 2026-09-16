@@ -310,10 +310,21 @@ jobs:
               print(f"  unexpected statements: {extra}")
               sys.exit(1)
 
+          def principal(stmt):
+              """
+              Normalised principal. IAM returns a ONE-element list as a bare
+              string -- so a document sent as {"AWS": ["...:root"]} reads back
+              as {"AWS": "...:root"} and compares unequal while being identical.
+              """
+              p = stmt.get("Principal", {})
+              if not isinstance(p, dict):
+                  p = {"": p}
+              return {k: sorted([v] if isinstance(v, str) else v) for k, v in p.items()}
+
           def values(stmt):
               """Everything that decides who may assume, order-independent."""
               cond = stmt.get("Condition", {})
-              out = {"Effect": stmt.get("Effect"), "Principal": stmt.get("Principal")}
+              out = {"Effect": stmt.get("Effect"), "Principal": principal(stmt)}
               for op, key in (("ArnEquals", "aws:PrincipalArn"),
                               ("StringLike", "token.actions.githubusercontent.com:sub"),
                               ("StringEquals", "token.actions.githubusercontent.com:aud")):
