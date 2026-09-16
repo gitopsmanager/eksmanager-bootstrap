@@ -401,8 +401,16 @@ to push:
 | field | required | what it does |
 |---|---|---|
 | `org` | yes | GitHub organisation. Every repo in it may push. |
-| `owner_id` | yes | The org's immutable numeric id — `GET /orgs/<org>` → `.id`. |
+| `owner_id` | yes | The org's immutable numeric id. See below. |
 | `ref` | no | Git ref allowed to push. Defaults to `refs/heads/main`. |
+
+Find `owner_id` with either of these — the endpoint is public, so no token is
+needed:
+
+```bash
+curl -s https://api.github.com/orgs/<org> | jq .id
+gh api /orgs/<org> --jq .id
+```
 
 **`owner_id` is not optional, and not decoration.** GitHub auto-enforces an
 immutable subject claim — `repo:OWNER@OWNER-ID/REPO@REPO-ID` — for every repo
@@ -422,11 +430,10 @@ rebuilds `EKSManager-push-ecr`'s trust policy from `clusters.json` **and** this
 file together, then reads it back to confirm it applied. One writer, whole
 document — which is why this rides the existing workflow rather than a new one.
 
-Requires one repository variable, from an output the pipeline already has:
-
-```
-GITHUB_OIDC_PROVIDER_ARN = <terraform output github_oidc_provider_arn>
-```
+Nothing else to configure. The OIDC provider named in the trust is derived from
+the account of `ECR_PUSH_TRUST_SYNC_ROLE_ARN`, the variable this workflow
+already uses — a role's trust can only name a provider in its own account, so
+there is nothing to choose.
 
 Then the build workflow passes the role to
 [multicloud-build-action](https://github.com/gitopsmanager/multicloud-build-action)

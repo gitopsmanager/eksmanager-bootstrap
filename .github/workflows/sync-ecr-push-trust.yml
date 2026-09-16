@@ -36,8 +36,10 @@ name: Sync cluster ARNs to EKSManager-push-ecr
 # Requires (from iam/codebuild-pipeline-tf outputs):
 #   ECR_PUSH_TRUST_SYNC_ROLE_ARN - ecr_push_trust_sync_role_arn
 #   AWS_REGION                   - the shared services region
-#   GITHUB_OIDC_PROVIDER_ARN     - github_oidc_provider_arn, needed only when
-#                                  github-orgs-for-oidc-ecr-push.json is present
+#
+# The OIDC provider for the federated statement is NOT configured: it is
+# derived from ECR_PUSH_TRUST_SYNC_ROLE_ARN's account, since the provider a
+# role's trust can name must live in that role's own account.
 
 on:
   push:
@@ -66,7 +68,7 @@ jobs:
 
       - name: Build the trust policy
         env:
-          OIDC_PROVIDER_ARN: ${{ vars.GITHUB_OIDC_PROVIDER_ARN }}
+          SYNC_ROLE_ARN: ${{ vars.ECR_PUSH_TRUST_SYNC_ROLE_ARN }}
         run: |
           python3 - <<'PY'
           import json, os, re, sys
@@ -195,11 +197,30 @@ jobs:
               })
 
           if subs:
-              provider = (os.environ.get("OIDC_PROVIDER_ARN") or "").strip()
-              if not provider:
-                  sys.exit(
-                      "github-orgs-for-oidc-ecr-push.json lists orgs but GITHUB_OIDC_PROVIDER_ARN is not set. "
-                      "Set it from the iam/codebuild-pipeline-tf output github_oidc_provider_arn.")
+              # The federated principal is the OIDC provider in the account that
+              # owns EKSManager-push-ecr -- the same account this workflow
+              # assumes into, and the path after it is a fixed string. So it is
+              # derived rather than configured: a variable here would be one
+              # more thing to set, and the mistake it invites is naming a
+              # CLUSTER account, whose provider cannot be trusted by a role in
+              # shared services.
+              #
+              # A provider that does not exist is caught on write -- IAM
+              # validates principals and rejects the document -- so there is
+              # nothing to check for here.
+              sync_role = (os.environ.get("SYNC_ROLE_ARN") or "").strip()
+              try:
+                  account = sync_role.split(":")[4]
+              except IndexError:
+                  account = ""
+              if not re.fullmatch(r"\d{12}", account):
+                  print("Cannot work out the shared services account.")
+                  print(f"  ECR_PUSH_TRUST_SYNC_ROLE_ARN = {sync_role!r}")
+                  print("  Expected arn:aws:iam::<12-digit-account>:role/<name>")
+                  sys.exit(1)
+
+              provider = (f"arn:aws:iam::{account}:oidc-provider/"
+                          "token.actions.githubusercontent.com")
 
               subs = sorted(set(subs))
               print(f"Trusting {len(subs)} GitHub subject pattern(s):")
