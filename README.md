@@ -308,6 +308,8 @@ eksmanager-bootstrap/
 ├── clusters.json                 # Created by you — GUI-maintained cluster selections
 ├── example-hosted-zones.json    # Reference copy for the lets-encrypt pipeline
 ├── hosted-zones.json             # Created by you — zones, cert_manager/external_dns roles, ACME settings
+├── example-github-orgs-for-oidc-ecr-push.json     # Reference copy for the ECR push trust sync
+├── github-orgs-for-oidc-ecr-push.json              # OPTIONAL, created by you — GitHub orgs allowed to push to shared ECR over OIDC
 ├── example-cert-manager-trust-statement.json      # Reference — trust YOU add to each cert_manager role
 ├── example-external-dns-pod-identity-trust.json   # Reference — trust YOU add to each external_dns role
 ├── buildspec.yml                # CodeBuild pipeline (S3-sourced, no git)
@@ -375,6 +377,66 @@ role this repo creates. Its inline `EKSManagerAdminPolicy` is in that file, and
 around it. See
 [`EKSManagerAdminRole` deploys to every account in a targeted OU](#eksmanageradminrole-deploys-to-every-account-in-a-targeted-ou-not-just-enrolled-ones)
 for what happens in an account that was never enrolled.
+
+## github-orgs-for-oidc-ecr-push.json — pushing to shared ECR from GitHub Actions
+
+Optional. Without this file nothing changes: images reach the registry the way
+they always have, from each cluster's own `EKSManager-<cluster>-push-ecr` role
+through Pod Identity.
+
+It exists for builds that have no cluster identity to use — a workflow on a
+GitHub-hosted runner, or one in an EKS cluster pushing to a registry in another
+cloud. Those authenticate with **GitHub OIDC** instead: GitHub issues a signed
+token at run time, STS exchanges it, and no key or secret is stored anywhere.
+
+Copy `example-github-orgs-for-oidc-ecr-push.json` → `github-orgs-for-oidc-ecr-push.json` and list the orgs allowed
+to push:
+
+```json
+[
+  { "org": "acme-platform", "owner_id": 123456, "ref": "refs/heads/main" }
+]
+```
+
+| field | required | what it does |
+|---|---|---|
+| `org` | yes | GitHub organisation. Every repo in it may push. |
+| `owner_id` | yes | The org's immutable numeric id — `GET /orgs/<org>` → `.id`. |
+| `ref` | no | Git ref allowed to push. Defaults to `refs/heads/main`. |
+
+**`owner_id` is not optional, and not decoration.** GitHub auto-enforces an
+immutable subject claim — `repo:OWNER@OWNER-ID/REPO@REPO-ID` — for every repo
+created after 15 July 2026, so a trust condition matching on the org *name*
+alone silently stops matching those repos. The sync writes both forms, so old
+and new repos in the same org both work. The id also survives a rename, where
+the name could later be claimed by someone else.
+
+**`ref` is why a pull request cannot push.** A subject ending `:*` also matches
+`repo:<org>/<repo>:pull_request`, so a PR — including one opened from a fork —
+would satisfy the trust. Anchoring to a ref removes that, and the sync refuses a
+`ref` that does not start with `refs/`.
+
+Committing the file to `main` triggers
+[`sync-ecr-push-trust.yml`](.github/workflows/sync-ecr-push-trust.yml), which
+rebuilds `EKSManager-push-ecr`'s trust policy from `clusters.json` **and** this
+file together, then reads it back to confirm it applied. One writer, whole
+document — which is why this rides the existing workflow rather than a new one.
+
+Requires one repository variable, from an output the pipeline already has:
+
+```
+GITHUB_OIDC_PROVIDER_ARN = <terraform output github_oidc_provider_arn>
+```
+
+Then the build workflow passes the role to
+[multicloud-build-action](https://github.com/gitopsmanager/multicloud-build-action)
+and grants the token:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+```
 
 ## eksmanager-prefix-lists pipeline
 

@@ -24,9 +24,20 @@ name: Sync cluster ARNs to EKSManager-push-ecr
 # clusters.json and then dispatches add-cluster-network, so this fires on the push in
 # between and the trust is in place before anything tries to use it.
 #
+# Two sources, one document. clusters.json trusts each cluster's own
+# EKSManager-<cluster>-push-ecr role; github-orgs-for-oidc-ecr-push.json trusts GitHub Actions
+# directly through OIDC, so a workflow can push to the registry with no key and
+# no secret, from a runner in any cloud or none.
+#
+# github-orgs-for-oidc-ecr-push.json is OPTIONAL. Absent, the federated statement is simply not
+# written and this behaves exactly as it did before the file existed -- which is
+# the state every installation is in until someone adds one.
+#
 # Requires (from iam/codebuild-pipeline-tf outputs):
 #   ECR_PUSH_TRUST_SYNC_ROLE_ARN - ecr_push_trust_sync_role_arn
 #   AWS_REGION                   - the shared services region
+#   GITHUB_OIDC_PROVIDER_ARN     - github_oidc_provider_arn, needed only when
+#                                  github-orgs-for-oidc-ecr-push.json is present
 
 on:
   push:
@@ -40,6 +51,7 @@ on:
       - main
     paths:
       - "clusters.json"
+      - "github-orgs-for-oidc-ecr-push.json"
   workflow_dispatch:
 
 permissions:
@@ -53,9 +65,11 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build the trust policy
+        env:
+          OIDC_PROVIDER_ARN: ${{ vars.GITHUB_OIDC_PROVIDER_ARN }}
         run: |
           python3 - <<'PY'
-          import json, re, sys
+          import json, os, re, sys
 
           try:
               clusters = json.load(open("clusters.json"))
@@ -66,6 +80,20 @@ jobs:
 
           if not isinstance(clusters, dict):
               sys.exit("clusters.json must be an object keyed by cluster name.")
+
+          # OPTIONAL, unlike clusters.json. An installation that pushes only
+          # from its clusters never creates this file, and a missing file means
+          # "no GitHub orgs" rather than an error -- otherwise adding OIDC
+          # support would break every existing install on its next sync.
+          try:
+              orgs = json.load(open("github-orgs-for-oidc-ecr-push.json"))
+          except FileNotFoundError:
+              orgs = []
+          except json.JSONDecodeError as e:
+              sys.exit(f"github-orgs-for-oidc-ecr-push.json is not valid JSON: {e}")
+
+          if not isinstance(orgs, list):
+              sys.exit("github-orgs-for-oidc-ecr-push.json must be a list of objects.")
 
           arns, problems = [], []
 
@@ -85,8 +113,44 @@ jobs:
               # AssumeRole -- which is the loud failure, not a silent one.
               arns.append(f"arn:aws:iam::{account}:role/EKSManager-{name}-push-ecr")
 
+          subs = []
+          for i, entry in enumerate(orgs):
+              if not isinstance(entry, dict):
+                  problems.append(f"github-orgs-for-oidc-ecr-push.json[{i}]: not an object")
+                  continue
+
+              org = str(entry.get("org", "")).strip()
+              if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", org):
+                  problems.append(f"github-orgs-for-oidc-ecr-push.json[{i}]: org '{org}' is not a GitHub org name")
+                  continue
+
+              # Anchored to a ref on purpose. A subject ending ":*" also matches
+              # repo:<org>/<repo>:pull_request -- so a pull request, including
+              # one opened from a fork, could assume a role that pushes images.
+              ref = str(entry.get("ref", "refs/heads/main")).strip()
+              if not ref.startswith("refs/"):
+                  problems.append(f"github-orgs-for-oidc-ecr-push.json[{i}]: ref '{ref}' must start with refs/")
+                  continue
+
+              # Both subject formats. GitHub moved to
+              # repo:OWNER@OWNER-ID/REPO@REPO-ID for every repo created after
+              # 15 Jul 2026, and a client's repos are a mix of the two -- a
+              # name-only condition silently stops matching the newer ones.
+              subs.append(f"repo:{org}/*:ref:{ref}")
+              owner_id = entry.get("owner_id")
+              if owner_id is None:
+                  problems.append(
+                      f"github-orgs-for-oidc-ecr-push.json[{i}]: owner_id is required -- without it the trust "
+                      f"cannot match repos created after 15 Jul 2026 "
+                      f"(GET /orgs/{org} -> .id)")
+                  continue
+              if not re.fullmatch(r"\d+", str(owner_id)):
+                  problems.append(f"github-orgs-for-oidc-ecr-push.json[{i}]: owner_id '{owner_id}' is not numeric")
+                  continue
+              subs.append(f"repo:{org}@{owner_id}/*:ref:{ref}")
+
           if problems:
-              print("Cannot sync -- clusters.json has problems:")
+              print("Cannot sync -- configuration has problems:")
               for p in problems:
                   print(f"  - {p}")
               sys.exit(1)
@@ -105,6 +169,8 @@ jobs:
           # replacement cannot match it. A string condition has no such
           # protection -- an offboarded account could recreate a role by the
           # same name and satisfy the condition again.
+          statements = []
+
           if arns:
               print(f"Trusting {len(arns)} cluster role(s):")
               for a in arns:
@@ -118,18 +184,45 @@ jobs:
               # MalformedPolicyDocument. Conditions are not validated that way,
               # so this stays correct whatever order things are created in.
               accounts = sorted({a.split(":")[4] for a in arns})
-              policy = {
-                  "Version": "2012-10-17",
-                  "Statement": [{
-                      "Sid": "AllowClusterPushEcrRoles",
-                      "Effect": "Allow",
-                      "Principal": {"AWS": [f"arn:aws:iam::{acct}:root" for acct in accounts]},
-                      # TagSession as well as AssumeRole: Pod Identity carries
-                      # session tags through the chain and the hop fails without it.
-                      "Action": ["sts:AssumeRole", "sts:TagSession"],
-                      "Condition": {"ArnEquals": {"aws:PrincipalArn": arns}},
-                  }],
-              }
+              statements.append({
+                  "Sid": "AllowClusterPushEcrRoles",
+                  "Effect": "Allow",
+                  "Principal": {"AWS": [f"arn:aws:iam::{acct}:root" for acct in accounts]},
+                  # TagSession as well as AssumeRole: Pod Identity carries
+                  # session tags through the chain and the hop fails without it.
+                  "Action": ["sts:AssumeRole", "sts:TagSession"],
+                  "Condition": {"ArnEquals": {"aws:PrincipalArn": arns}},
+              })
+
+          if subs:
+              provider = (os.environ.get("OIDC_PROVIDER_ARN") or "").strip()
+              if not provider:
+                  sys.exit(
+                      "github-orgs-for-oidc-ecr-push.json lists orgs but GITHUB_OIDC_PROVIDER_ARN is not set. "
+                      "Set it from the iam/codebuild-pipeline-tf output github_oidc_provider_arn.")
+
+              subs = sorted(set(subs))
+              print(f"Trusting {len(subs)} GitHub subject pattern(s):")
+              for sub in subs:
+                  print(f"  {sub}")
+
+              # A separate statement rather than another principal on the one
+              # above: the principal type differs (Federated, not AWS) and so
+              # does the action -- AssumeRoleWithWebIdentity, with no TagSession,
+              # because nothing chains session tags through this path.
+              statements.append({
+                  "Sid": "AllowGitHubActionsOidc",
+                  "Effect": "Allow",
+                  "Principal": {"Federated": provider},
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                      "StringEquals": {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"},
+                      "StringLike": {"token.actions.githubusercontent.com:sub": subs},
+                  },
+              })
+
+          if statements:
+              policy = {"Version": "2012-10-17", "Statement": statements}
           else:
               # A single Deny, rather than an Allow that happens to match
               # nothing. There is no account left to name as a principal, and
@@ -139,7 +232,7 @@ jobs:
               #
               # The role itself is left in place. Deleting it is not this
               # workflow's job, and Terraform owns it.
-              print("No clusters configured -- writing a trust that denies everyone.")
+              print("No clusters and no GitHub orgs configured -- writing a trust that denies everyone.")
               policy = {
                   "Version": "2012-10-17",
                   "Statement": [{
@@ -181,25 +274,45 @@ jobs:
           python3 - <<'PY'
           import json, sys
 
-          want = json.load(open("trust.json"))["Statement"][0]
-          got  = json.load(open("after.json"))["Statement"][0]
+          # Matched by Sid, not by position. The document now carries up to two
+          # statements and IAM does not promise to return them in the order they
+          # were sent -- comparing Statement[0] would verify whichever came back
+          # first and silently ignore the other.
+          want = {st["Sid"]: st for st in json.load(open("trust.json"))["Statement"]}
+          got  = {st.get("Sid"): st for st in json.load(open("after.json"))["Statement"]}
 
-          if got.get("Effect") != want["Effect"]:
-              sys.exit(f"Trust not applied: wanted Effect {want['Effect']}, got {got.get('Effect')}")
+          missing = sorted(set(want) - set(got))
+          extra   = sorted(set(got) - set(want))
+          if missing or extra:
+              print("Trust not applied as intended.")
+              print(f"  missing statements:    {missing}")
+              print(f"  unexpected statements: {extra}")
+              sys.exit(1)
 
-          def arns(stmt):
-              v = stmt.get("Condition", {}).get("ArnEquals", {}).get("aws:PrincipalArn", [])
-              return sorted([v] if isinstance(v, str) else v)
+          def values(stmt):
+              """Everything that decides who may assume, order-independent."""
+              cond = stmt.get("Condition", {})
+              out = {"Effect": stmt.get("Effect"), "Principal": stmt.get("Principal")}
+              for op, key in (("ArnEquals", "aws:PrincipalArn"),
+                              ("StringLike", "token.actions.githubusercontent.com:sub"),
+                              ("StringEquals", "token.actions.githubusercontent.com:aud")):
+                  v = cond.get(op, {}).get(key, [])
+                  out[key] = sorted([v] if isinstance(v, str) else v)
+              return out
 
-          if arns(want) != arns(got):
-              sys.exit(
-                  "Trust not applied as intended.\n"
-                  f"  wanted: {arns(want)}\n"
-                  f"  got:    {arns(got)}"
-              )
+          for sid in sorted(want):
+              w, g = values(want[sid]), values(got[sid])
+              if w != g:
+                  print(f"Trust not applied as intended for {sid}.")
+                  print(f"  wanted: {w}")
+                  print(f"  got:    {g}")
+                  sys.exit(1)
 
-          if want["Effect"] == "Deny":
-              print("Verified: no clusters, trust denies everyone.")
+          if "NoClustersTrustNothing" in want:
+              print("Verified: nothing configured, trust denies everyone.")
           else:
-              print(f"Verified: {len(arns(got))} trusted cluster role ARN(s).")
+              for sid in sorted(want):
+                  v = values(got[sid])
+                  n = len(v["aws:PrincipalArn"]) + len(v["token.actions.githubusercontent.com:sub"])
+                  print(f"Verified: {sid} -- {n} trusted principal(s).")
           PY
