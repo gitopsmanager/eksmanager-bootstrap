@@ -394,7 +394,7 @@ to push:
 
 ```json
 [
-  { "org": "acme-platform", "owner_id": 123456, "ref": "refs/heads/main" }
+  { "org": "acme-platform", "owner_id": 123456, "ref": "refs/heads/*" }
 ]
 ```
 
@@ -402,7 +402,7 @@ to push:
 |---|---|---|
 | `org` | yes | GitHub organisation. Every repo in it may push. |
 | `owner_id` | yes | The org's immutable numeric id. See below. |
-| `ref` | no | Git ref allowed to push. Defaults to `refs/heads/main`. |
+| `ref` | no | Git ref allowed to push. Defaults to `refs/heads/*`, every branch. Set `refs/heads/main` to allow only the default branch. |
 
 Find `owner_id` with either of these — the endpoint is public, so no token is
 needed:
@@ -419,10 +419,20 @@ alone silently stops matching those repos. The sync writes both forms, so old
 and new repos in the same org both work. The id also survives a rename, where
 the name could later be claimed by someone else.
 
-**`ref` is why a pull request cannot push.** A subject ending `:*` also matches
-`repo:<org>/<repo>:pull_request`, so a PR — including one opened from a fork —
-would satisfy the trust. Anchoring to a ref removes that, and the sync refuses a
-`ref` that does not start with `refs/`.
+**`ref` is why a pull request cannot push — even with the wildcard.** A subject
+ending `:*` also matches `repo:<org>/<repo>:pull_request`, so a PR would satisfy
+the trust. `refs/heads/*` does not: a pull request's subject carries no `:ref:`
+segment at all, so however wide the branch pattern, branches and pull requests
+stay distinct. The sync refuses any `ref` that does not start with `refs/`.
+
+**What the default does allow** is every branch, because builds are not confined
+to `main`. The boundary that leaves is *anyone who can push a branch to a repo in
+the org can push images* — the same population that can merge to it. Where that
+is too wide, name the branch instead:
+
+```json
+{ "org": "acme-platform", "owner_id": 123456, "ref": "refs/heads/main" }
+```
 
 Committing the file to `main` triggers
 [`sync-ecr-push-trust.yml`](.github/workflows/sync-ecr-push-trust.yml), which

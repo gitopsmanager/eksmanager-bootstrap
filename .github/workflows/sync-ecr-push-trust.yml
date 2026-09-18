@@ -126,10 +126,21 @@ jobs:
                   problems.append(f"github-orgs-for-oidc-ecr-push.json[{i}]: org '{org}' is not a GitHub org name")
                   continue
 
-              # Anchored to a ref on purpose. A subject ending ":*" also matches
-              # repo:<org>/<repo>:pull_request -- so a pull request, including
-              # one opened from a fork, could assume a role that pushes images.
-              ref = str(entry.get("ref", "refs/heads/main")).strip()
+              # Anchored to a REF on purpose, even when the branch is a
+              # wildcard. A subject ending ":*" also matches
+              # repo:<org>/<repo>:pull_request -- so a pull request could assume
+              # a role that pushes images. "refs/heads/*" does not: a pull
+              # request's subject has no ":ref:" segment at all, so branches and
+              # pull requests stay distinct however wide the branch pattern is.
+              #
+              # Default is every branch, because builds are not confined to main
+              # -- a feature branch building an image is ordinary. The boundary
+              # this leaves is "anyone who can push a branch to a repo in the
+              # org can push images", which is the same population that can
+              # merge. Narrow it per entry where that is too wide:
+              #
+              #   { "org": "acme", "owner_id": 1, "ref": "refs/heads/main" }
+              ref = str(entry.get("ref", "refs/heads/*")).strip()
               if not ref.startswith("refs/"):
                   problems.append(f"github-orgs-for-oidc-ecr-push.json[{i}]: ref '{ref}' must start with refs/")
                   continue

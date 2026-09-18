@@ -2,6 +2,6 @@
   {
     "org": "acme-platform",
     "owner_id": 123456,
-    "ref": "refs/heads/main"
+    "ref": "refs/heads/*"
   }
 ]
