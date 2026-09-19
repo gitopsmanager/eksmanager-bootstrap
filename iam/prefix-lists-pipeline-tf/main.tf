@@ -273,17 +273,34 @@ resource "aws_iam_role_policy" "codebuild" {
         # Terraform state in the same bucket, so it needs a data key for the
         # writes as well as Decrypt for the reads.
         #
-        # ViaService bounds it to S3: the role cannot decrypt anything with this
-        # key by calling KMS directly. DescribeKey is deliberately absent -- S3
-        # resolves the key itself, and nothing here does a Terraform-style alias
-        # lookup at runtime.
+        # ViaService bounds this to the two services that legitimately use the
+        # key on this role's behalf: the role cannot decrypt anything by calling
+        # KMS directly. DescribeKey is deliberately absent -- S3 resolves the
+        # key itself, and nothing here does a Terraform-style alias lookup at
+        # runtime.
+        #
+        # The secretsmanager entry is not redundant, though it looks it.
+        # The SecretsManagerM2M statement below reads the M2M client secret, and
+        # that secret is encrypted with this same CMK. A Secrets Manager read
+        # reaches KMS as ViaService secretsmanager.<region>.amazonaws.com, so an
+        # S3-only condition denies the decrypt while GetSecretValue itself is
+        # allowed. CodeBuild resolves the buildspec's `env: secrets-manager:`
+        # block during DOWNLOAD_SOURCE and reports the denial as
+        # "Secrets Manager Error Message: AccessDeniedException: Access to KMS
+        # is not allowed" AFTER the source has downloaded successfully -- which
+        # reads as an S3 problem and is not. Every add-cluster build failed this
+        # way from 11 Sep 2026, while the dispatching GitHub workflow stayed
+        # green because it only uploads the zip and never waits for the build.
         Sid      = "EKSManagerCMK"
         Effect   = "Allow"
         Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
         Resource = data.aws_kms_key.eksmanager.arn
         Condition = {
           StringEquals = {
-            "kms:ViaService" = "s3.${var.shared_services_region}.amazonaws.com"
+            "kms:ViaService" = [
+              "s3.${var.shared_services_region}.amazonaws.com",
+              "secretsmanager.${var.shared_services_region}.amazonaws.com",
+            ]
           }
         }
       },
