@@ -1,0 +1,972 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  EKSManager Enable Account StackSet — deploys EKSManagerAdminRole with an
+  inline region restriction policy to each explicitly enabled spoke account.
+  AllowedRegions are baked into the policy at deploy time; update the StackSet
+  to change them. Run by the agent when an account is enabled via Terraform or GUI.
+
+Parameters:
+  SharedServicesAccountId:
+    Type: String
+    Description: >
+      Account ID of the shared-services account where EKSManagerAgentRole
+      lives. Used to build the trust principal for EKSManagerAdminRole.
+
+Mappings:
+  AccountRegionMap:
+${account_region_mappings}
+
+Conditions:
+  # True only for accounts actually listed in org_config -- reuses the same
+  # AllowedRegions lookup rather than a second per-account Mapping field.
+  # Falling through to the "none" sentinel means this account was never
+  # enrolled at all.
+  AccountIsEnrolled: !Not
+    - !Equals
+      - !FindInMap [AccountRegionMap, !Ref "AWS::AccountId", "AllowedRegions", DefaultValue: "none"]
+      - "none"
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Permissions boundary for every role the agent creates
+  # ---------------------------------------------------------------------------
+  # A ceiling, not a grant. Nothing is permitted by attaching this -- the actual
+  # permissions still come from the managed and inline policies on each role.
+  # What it does is cap them, which is what makes iam:PutRolePolicy safe: the
+  # agent can write "Action": "*" onto EKSManager-<cluster>-node and the role's
+  # effective permissions are still the intersection with this, so it cannot
+  # become an admin whose credentials a pod then reads off the instance.
+  #
+  # Enumerated by service rather than written as "everything except iam" --
+  # that shorter form would still leave s3:*, secretsmanager:* and dynamodb:*
+  # inside the ceiling, and reading every secret in the account is not much
+  # better than the escalation it is meant to prevent.
+  #
+  # The list is derived from what is actually attached to these roles:
+  #   AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy      -> ec2
+  #   AmazonEC2ContainerRegistryReadOnly                   -> ecr
+  #   AmazonEBSCSIDriverPolicy                             -> ec2, kms
+  #   AutoScalingFullAccess                                -> autoscaling,
+  #                                                           cloudwatch, elb
+  #   AmazonEKSClusterPolicy                               -> ec2, elb
+  #   Route53Access (inline, external-dns)                 -> route53
+  #   AWSLoadBalancerControllerPolicy (inline, from
+  #     kmcore/eks/aws-load-balancer-controller/base/aws_lbc_iam_policy.json)
+  #     -> acm, cognito-idp, ec2, elasticloadbalancing, shield, waf-regional,
+  #        wafv2, plus the three iam actions carved out below
+  #   AssumeSharedServicesEcrPush (inline)                 -> sts:AssumeRole
+  #
+  # Adding a capability to a per-cluster role means adding its service here
+  # too, or it is denied by the boundary -- which presents as the attached
+  # policy not working, so check here first.
+  EKSManagerRoleBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: EKSManagerRoleBoundary
+      # >- not > : the folded scalar keeps a trailing newline, and IAM validates
+      # a managed policy description against [\p{L}\p{M}\p{Z}\p{S}\p{N}\p{P}]*
+      # -- letters, marks, separators, symbols, numbers, punctuation. A newline
+      # is a control character and matches none of those, so the StackSet
+      # operation fails per account with "Value at 'description' failed to
+      # satisfy constraint", which reads like the text is wrong rather than the
+      # whitespace after it.
+      #
+      # The template's own Description above uses > safely: CloudFormation does
+      # not apply this constraint to itself, only IAM does to this field.
+      Description: >-
+        Ceiling for roles created by EKSManagerAdminRole. Caps what any
+        EKSManager-* role can do regardless of the policies attached to it.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ServicesTheseRolesUse
+            Effect: Allow
+            Action:
+              - ec2:*
+              - elasticloadbalancing:*
+              - ecr:*
+              - route53:*
+              - acm:*
+              - wafv2:*
+              - waf-regional:*
+              - shield:*
+              - cognito-idp:Describe*
+              - kms:CreateGrant
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+              - cloudwatch:PutMetricData
+              - cloudwatch:GetMetricData
+              - cloudwatch:GetMetricStatistics
+              - cloudwatch:ListMetrics
+              - tag:GetResources
+              - eks:Describe*
+              - eks:List*
+              - eks-auth:AssumeRoleForPodIdentity
+              # AmazonSSMManagedInstanceCore, attached to the node role, is what
+              # gives Session Manager and SSM agent registration. It needs the
+              # whole ssm agent surface plus the two message services, not the
+              # two parameter reads this originally allowed -- a ceiling tighter
+              # than an AWS-managed policy the role legitimately carries breaks
+              # it, and presents as the attached policy not working.
+              - ssm:*
+              - ssmmessages:*
+              - ec2messages:*
+            Resource: "*"
+          # The only IAM the boundary permits, and all three are read-only or
+          # service-linked. The LBC policy needs the server certificate reads;
+          # CreateServiceLinkedRole is needed by both the LBC and the cluster
+          # role. Everything else under iam: is outside the ceiling, which is
+          # what stops a role written by this agent from granting itself more.
+          # Deliberately NOT autoscaling:*. Creating, scaling and deleting node
+          # groups is done by EKSManagerAdminRole through the eks: API -- EKS
+          # owns the Auto Scaling Group, and the node role has no part in it.
+          # The only thing that needs these is cluster-autoscaler running as a
+          # pod.
+          #
+          # AutoScalingFullAccess is attached to the node role (see awsapi.py
+          # create_eks_node_role) and grants autoscaling:* account-wide, which
+          # every pod that can reach IMDS inherits -- enough to zero the
+          # desired capacity of any Auto Scaling Group in the account, EKS or
+          # otherwise. This caps it to what cluster-autoscaler actually calls.
+          #
+          # If cluster-autoscaler is not deployed, the better fix is dropping
+          # AutoScalingFullAccess from the node role entirely; this ceiling
+          # then costs nothing and leaves room for a dedicated CA pod identity
+          # role later without a template change.
+          # UpdateAutoScalingGroup is not cluster-autoscaler's -- it is in
+          # AmazonEKSClusterPolicy, which is attached to
+          # EKSManager-<cluster>-control-plane. A ceiling tighter than an
+          # AWS-managed policy the roles legitimately carry breaks them, and
+          # the symptom is an EKS operation failing for a role whose attached
+          # policy plainly allows it.
+          #
+          # Still nothing like autoscaling:* -- no CreateAutoScalingGroup, no
+          # DeleteAutoScalingGroup, no PutScalingPolicy, no lifecycle hooks.
+          - Sid: ClusterAutoscalerAndControlPlane
+            Effect: Allow
+            Action:
+              - autoscaling:Describe*
+              - autoscaling:SetDesiredCapacity
+              - autoscaling:TerminateInstanceInAutoScalingGroup
+              - autoscaling:UpdateAutoScalingGroup
+              - autoscaling:CreateOrUpdateTags
+            Resource: "*"
+          - Sid: NarrowIAMOnly
+            Effect: Allow
+            Action:
+              - iam:CreateServiceLinkedRole
+              - iam:GetServerCertificate
+              - iam:ListServerCertificates
+            Resource: "*"
+          # Only the cross-account ECR push hop. Without this constraint a role
+          # inside the ceiling could assume anything that trusted it, which is
+          # the escalation route reappearing one level down.
+          - Sid: EcrPushHopOnly
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: "arn:aws:iam::*:role/EKSManager-*"
+          # TEMPORARY -- MUST CHANGE. The External Secrets Operator's role on
+          # a cluster created by tofu/create-cluster (EKSManager-<cluster>-eso)
+          # reads the EKSManager secrets by assuming EKSManagerAgentRole in the
+          # shared services account: the one role the secrets SCP already
+          # exempts, so nothing else changes. The agent role has no hyphen, so
+          # EcrPushHopOnly above does not reach it. Replace with a dedicated
+          # read-only role once the SCP names it (core-stack
+          # docs/aws-roles-and-scp.md: EKSManager-eso-reader), then remove this.
+          - Sid: EsoSecretsHopTemporary
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Resource: !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerAgentRole"
+          # The node group operator: the ACK eks-controller, as
+          # EKSManager-<cluster>-ack (tofu/create-cluster 1-cluster, or
+          # tofu/cluster-identities on an existing cluster), creating, scaling
+          # and deleting the node groups written in the CD repo. The same
+          # actions and the same EKSManager tag conditions as
+          # EKSManagerAdminRole's AllowEKSCreateNodegroup and
+          # AllowEKSNodegroupScopedWrite: a node group the operator creates must
+          # be born tagged, and it can change or delete only tagged ones.
+          #
+          # This is the ceiling, not the grant. Only the ack role's own policy
+          # names these, scoped to its one cluster; no other EKSManager-* role
+          # carries them, the node role included.
+          - Sid: NodegroupOperatorCreate
+            Effect: Allow
+            Action: eks:CreateNodegroup
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:ResourceTag/EKSManager: 'Managed'
+                aws:RequestTag/EKSManager: 'Managed'
+          # CreateNodegroup with tags is also authorised as eks:TagResource on
+          # the new node group (as CreateCluster's tags are), and the operator
+          # sets tags as the file gives them. Never UntagResource: removing
+          # the EKSManager tag would put a node group outside every condition
+          # here.
+          - Sid: NodegroupOperatorTag
+            Effect: Allow
+            Action: eks:TagResource
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:RequestTag/EKSManager: 'Managed'
+          - Sid: NodegroupOperatorWrite
+            Effect: Allow
+            Action:
+              - eks:DeleteNodegroup
+              - eks:UpdateNodegroupConfig
+              - eks:UpdateNodegroupVersion
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:ResourceTag/EKSManager: 'Managed'
+          # A new node group needs its node role passed to EKS, and only the
+          # node role: EKSManager-<cluster>-node, to eks.amazonaws.com.
+          - Sid: NodegroupOperatorPassNodeRole
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: "arn:aws:iam::*:role/EKSManager-*-node"
+            Condition:
+              StringEquals:
+                iam:PassedToService: eks.amazonaws.com
+
+  EKSManagerAdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EKSManagerAdminRole
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        # Two roles in the shared-services account, neither of which is the
+        # spoke account this stack is deployed into. They are separate
+        # statements rather than one principal list because each is pinned to a
+        # different session name, and that pinning is what lets the identity
+        # policy tell them apart -- see DenyNonIngressWorkForPipelineSessions.
+        #
+        # Both halves are required. The trust condition stops the pipeline
+        # choosing a session name that would evade the Deny; the Deny is what
+        # actually removes the permissions. Drop either and the pipeline gets
+        # the whole policy back.
+        Statement:
+          # The runtime agent. Anything except the pipeline's reserved session
+          # name -- without this exclusion the agent could adopt that name and
+          # the Deny would apply to it too, breaking cluster builds in a way
+          # that points at the wrong thing entirely.
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerAgentRole"
+            Action: sts:AssumeRole
+            Condition:
+              StringNotEquals:
+                sts:RoleSessionName: eksmanager-prefix-lists-add-cluster
+          # The add-cluster CodeBuild pipeline. All it does is look prefix
+          # lists up by name and add ingress rules to the EKS and NLB security
+          # groups (see terraform/add-cluster) -- it does not create or modify
+          # the prefix lists themselves, which the client manages with their
+          # own Terraform.
+          #
+          # The session name is fixed here, matching terraform/add-cluster's
+          # providers.tf. Changing it there without changing it here fails the
+          # AssumeRole outright, which is the point: the alternative failure --
+          # a renamed session silently falling outside the Deny and regaining
+          # iam:* and eks: writes -- would be invisible.
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::$${SharedServicesAccountId}:role/EKSManagerPrefixListsSharedRole"
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:RoleSessionName: eksmanager-prefix-lists-add-cluster
+      Policies:
+        - PolicyName: EKSManagerAdminPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Read is wildcarded, write is enumerated. Describe/List on eks
+              # and ec2 is inventory data the agent reads constantly and is not
+              # worth chasing action by action; everything that mutates is
+              # listed explicitly so adding a capability is a visible change
+              # here rather than something a broad grant already covered.
+              #
+              # Derived from the calls the code actually makes, cross-checked
+              # against an IAM Access Analyzer policy generated from CloudTrail.
+              # That generation reported isComplete=false over a three-week
+              # window, so it was used to find *unused* services rather than as
+              # the source of truth for what is needed.
+              - Sid: AllowEKSRead
+                Effect: Allow
+                Action:
+                  - eks:Describe*
+                  - eks:List*
+                Resource: "*"
+              # EKS writes are scoped by the EKSManager tag the agent sets at
+              # creation (awsapi.py, managed_tags_cli_fragment). Which resource
+              # aws:ResourceTag reads is NOT uniform, which is why these are
+              # split rather than one statement:
+              #   - CreateNodegroup, CreateAddon, CreatePodIdentityAssociation
+              #     and the cluster Update* actions evaluate it against the
+              #     CLUSTER
+              #   - DeleteNodegroup and the nodegroup Update* actions evaluate
+              #     it against the NODE GROUP
+              # Tag only one of the two and half these actions stay open on
+              # every cluster in the account.
+              #
+              # A cluster or node group created before the agent set this tag
+              # carries no EKSManager tag and cannot be managed until someone adds
+              # it by hand. That is the intended behaviour -- adoption is a
+              # human action, see DenyEKSManagerTagWrites below.
+              - Sid: AllowEKSCreateCluster
+                Effect: Allow
+                Action: eks:CreateCluster
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/EKSManager: 'Managed'
+              # Both conditions apply: the cluster must already be ours, and
+              # the new node group must be born with the tag -- otherwise the
+              # agent could create one it is then unable to delete.
+              - Sid: AllowEKSCreateNodegroup
+                Effect: Allow
+                Action: eks:CreateNodegroup
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+                    aws:RequestTag/EKSManager: 'Managed'
+              # Creating something INSIDE a cluster: the cluster must be ours,
+              # and the new resource must be born tagged. Kept apart from the
+              # cluster Update* actions below precisely because of that second
+              # condition -- UpdateClusterConfig sends no tags, so folding it
+              # in here would deny it outright.
+              - Sid: AllowEKSCreateInCluster
+                Effect: Allow
+                Action:
+                  - eks:CreateAddon
+                  - eks:CreatePodIdentityAssociation
+                  # Cluster Access. Created with the managed tags like anything
+                  # else here, so the RequestTag condition below is satisfied
+                  # rather than needing a statement of its own.
+                  - eks:CreateAccessEntry
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+                    aws:RequestTag/EKSManager: 'Managed'
+              # AssociateIdentityProviderConfig belongs with the other cluster
+              # updates: EKS treats it as one, and runs only one at a time.
+              #
+              # It is what lets the API server validate an Entra token. AKS gets
+              # the equivalent from --enable-aad at creation and needs no
+              # permission of its own; EKS has no such flag, so the Headlamp
+              # install makes this call on a cluster that has no config yet.
+              # Without the grant, Headlamp installs cleanly and sign-in loops
+              # back to the login page -- the token is rejected before RBAC is
+              # ever consulted, so both the bindings and the app look correct.
+              #
+              # Disassociate is deliberately NOT granted. Nothing in the product
+              # removes an identity provider, and doing so would lock every
+              # operator out of the cluster at once.
+              - Sid: AllowEKSClusterUpdate
+                Effect: Allow
+                Action:
+                  - eks:UpdateClusterConfig
+                  - eks:UpdateClusterVersion
+                  - eks:AssociateIdentityProviderConfig
+                  # Cluster Access: granting and revoking a permission set on a
+                  # cluster that is already ours. These send no tags, so they
+                  # cannot go with the create statement above -- its RequestTag
+                  # condition would deny them outright, the same trap the
+                  # comment there records for UpdateClusterConfig.
+                  #
+                  # Whether aws:ResourceTag reads the CLUSTER for access-entry
+                  # actions is the open question flagged at the top of this
+                  # block -- it is not uniform across the eks: surface. If these
+                  # are denied on a correctly tagged cluster, that is why, and
+                  # the fix is their own statement rather than removing the
+                  # condition.
+                  - eks:AssociateAccessPolicy
+                  - eks:DisassociateAccessPolicy
+                  - eks:DeleteAccessEntry
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+              - Sid: AllowEKSNodegroupScopedWrite
+                Effect: Allow
+                Action:
+                  - eks:DeleteNodegroup
+                  - eks:UpdateNodegroupConfig
+                  - eks:UpdateNodegroupVersion
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+              # Scoped against the ADD-ON's own tags, not the cluster's. The
+              # install path deletes the existing add-on before recreating it,
+              # so DeleteAddon runs against one the agent tagged on the way in.
+              # An add-on predating that tag cannot be deleted here -- there
+              # are none, since every cluster is rebuilt on this code.
+              - Sid: AllowEKSAddonWrite
+                Effect: Allow
+                Action:
+                  - eks:UpdateAddon
+                  - eks:DeleteAddon
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+              # UpdatePodIdentityAssociation repoints an existing association
+              # at a new role, which is how a cluster built before the roles
+              # became per-cluster is reconciled. Only one association may
+              # exist per service account, so without it the only route is
+              # delete and recreate by hand. It is scoped against the
+              # association's own tags, so the ones it repoints must have been
+              # created by this code.
+              - Sid: AllowEKSPodIdentityWrite
+                Effect: Allow
+                Action:
+                  - eks:UpdatePodIdentityAssociation
+                  - eks:DeletePodIdentityAssociation
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+              - Sid: AllowEKSTagging
+                Effect: Allow
+                Action:
+                  - eks:TagResource
+                  - eks:UntagResource
+                Resource: "*"
+              # ec2:Get* was here and is not needed: the agent makes no EC2
+              # Get* calls at all (the only matches in the code are boto3's
+              # client-side get_paginator). It did reach GetConsoleOutput and
+              # GetPasswordData on any instance in the region, neither of which
+              # this system has a use for.
+              #
+              # GetManagedPrefixListEntries is the single exception, and is not
+              # the agent's: the add-cluster pipeline's
+              # data "aws_ec2_managed_prefix_list" needs it to resolve a list
+              # by name.
+              - Sid: AllowEC2Read
+                Effect: Allow
+                Action:
+                  - ec2:Describe*
+                  - ec2:GetManagedPrefixListEntries
+                Resource: "*"
+              # Read-only, and used before creating a node group: EC2 caps
+              # running vCPUs per instance-family bucket, and exceeding it does
+              # not fail the create call. The node group is accepted, the Auto
+              # Scaling Group silently launches nothing, and it only surfaces
+              # ~30 minutes later as CREATE_FAILED -- which is terminal and
+              # blocks the node group name until deleted. ListServiceQuotas as
+              # well as Get, because which quota governs a family is resolved by
+              # reading the quota list rather than hardcoding codes.
+              - Sid: AllowServiceQuotasRead
+                Effect: Allow
+                Action:
+                  - servicequotas:GetServiceQuota
+                  - servicequotas:ListServiceQuotas
+                Resource: "*"
+              # The agent creates exactly one security group -- the Traefik NLB
+              # frontend -- and tags it at creation. Requiring the tag on the
+              # request means it cannot create an untagged group it would then
+              # be unable to modify.
+              # Two statements, because ec2:CreateSecurityGroup authorises
+              # against TWO resources: the group being created, and the VPC it
+              # is created in. aws:RequestTag only exists for the resource being
+              # tagged -- the VPC is not tagged by this call, so a single
+              # statement with the tag condition denies the VPC leg and the call
+              # fails with:
+              #   not authorized to perform: ec2:CreateSecurityGroup on
+              #   resource: arn:aws:ec2:<region>:<account>:vpc/vpc-...
+              # which names the VPC and reads like a VPC permission problem.
+              - Sid: AllowEC2CreateSecurityGroup
+                Effect: Allow
+                Action: ec2:CreateSecurityGroup
+                Resource: "arn:aws:ec2:*:*:security-group/*"
+                Condition:
+                  StringEquals:
+                    aws:RequestTag/EKSManager: 'Managed'
+              # The VPC leg. No tag condition is possible here, but this permits
+              # only "create a security group in a VPC" -- the group itself still
+              # has to carry the tag, per the statement above.
+              - Sid: AllowEC2CreateSecurityGroupInVpc
+                Effect: Allow
+                Action: ec2:CreateSecurityGroup
+                Resource: "arn:aws:ec2:*:*:vpc/*"
+              # Tagging a security group is allowed only as part of creating
+              # it. Without ec2:CreateAction this statement would hand back
+              # what the conditions below are for: tag any group in the
+              # account, then modify it.
+              - Sid: AllowEC2TagSecurityGroupOnCreate
+                Effect: Allow
+                Action: ec2:CreateTags
+                Resource: "arn:aws:ec2:*:*:security-group/*"
+                Condition:
+                  StringEquals:
+                    ec2:CreateAction: CreateSecurityGroup
+              # Subnets are tagged after the fact (kubernetes.io/role/* for
+              # load balancer discovery), and rule tags are written by the
+              # add-cluster pipeline's provider. Neither is a resource type
+              # anything here keys an access decision off.
+              - Sid: AllowEC2TagExistingResources
+                Effect: Allow
+                Action: ec2:CreateTags
+                Resource:
+                  - "arn:aws:ec2:*:*:subnet/*"
+                  - "arn:aws:ec2:*:*:security-group-rule/*"
+              # Two statements, not one with two conditions -- conditions
+              # within a statement are ANDed, and these are alternatives.
+              #
+              # The EKS cluster security group is created by EKS, not by us, so
+              # it carries no EKSManager tag. It does carry aws:eks:cluster-name,
+              # which is better: keys beginning with "aws:" are reserved, so no
+              # principal can write one to adopt a group it does not own.
+              - Sid: AllowIngressOnEKSClusterSecurityGroups
+                Effect: Allow
+                Action:
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:ModifySecurityGroupRules
+                Resource: "arn:aws:ec2:*:*:security-group/*"
+                Condition:
+                  "Null":
+                    aws:ResourceTag/aws:eks:cluster-name: "false"
+              - Sid: AllowIngressOnManagedSecurityGroups
+                Effect: Allow
+                Action:
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:ModifySecurityGroupRules
+                Resource: "arn:aws:ec2:*:*:security-group/*"
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/EKSManager: 'Managed'
+              # The rule leg of the same calls. AuthorizeSecurityGroupIngress
+              # authorises against TWO resources -- the group, and the rule it
+              # creates -- and the two statements above cover only the group.
+              # A rule being created has no tags yet, so their aws:ResourceTag
+              # conditions cannot match it and the whole call is denied with
+              # "not authorized ... on resource: security-group-rule/*".
+              #
+              # Unconditioned, and that grants nothing on its own: a rule
+              # cannot be created, revoked or modified without naming a group,
+              # and the group is still gated above. This is the second half of
+              # a call already authorised, not a second way in.
+              - Sid: AllowIngressRuleResourceLeg
+                Effect: Allow
+                Action:
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:ModifySecurityGroupRules
+                Resource: "arn:aws:ec2:*:*:security-group-rule/*"
+              # PassRole is NOT in this list -- see AllowPassRoleToEKSManager
+              # below. On Resource "*" it is a privilege-escalation primitive:
+              # any role in the account trusting ec2 or pods.eks could be
+              # handed to a node group or pod identity association this role
+              # controls, and its credentials read from there.
+              # Writes are scoped here rather than left on "*" and clawed back
+              # by DenyIAMOutsideEKSManagerPrefix below. Same effective
+              # permissions, but the constraint is stated where the grant is
+              # instead of two statements away -- a reader should not have to
+              # find a Deny to know that iam:PutRolePolicy is bounded.
+              #
+              # Every role the agent writes to is one it created:
+              # EKSManager-<cluster>-{control-plane,node,external-dns,ebs-csi,
+              # aws-lbc,push-ecr}. The Deny stays as defence in depth, so
+              # widening this statement later does not silently widen the
+              # blast radius.
+              #
+              # Note EKSManagerAdminRole itself does NOT match EKSManager-* --
+              # no hyphen -- so this role cannot rewrite its own policy.
+              - Sid: AllowIAMRoleWrites
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:TagRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                Resource: "arn:aws:iam::*:role/EKSManager-*"
+              # Reads stay unscoped on purpose. The agent inspects roles it did
+              # not create -- a pod identity association can point at a
+              # customer-supplied role, and reporting on one means reading it.
+              # Read-only. ListRoles also returns each role's trust policy,
+              # so this statement discloses policy text and role names for
+              # the account it is deployed into, and nothing outside it.
+              - Sid: AllowIAMRead
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  # Cluster RBAC. IAM Identity Center provisions a permission
+                  # set into an account as AWSReservedSSO_<name>_<hash>, and the
+                  # hash is DIFFERENT in every account -- verified across two
+                  # accounts, same five permission sets, five different
+                  # suffixes. So an access entry's principal ARN cannot be
+                  # constructed from the account id and the permission set
+                  # name; it has to be looked up where the cluster lives.
+                  #
+                  # ListRoles takes no resource types and has no condition key
+                  # for path, so this cannot be narrowed to
+                  # /aws-reserved/sso.amazonaws.com/ -- it is "*" or nothing.
+                  # That is bounded by where the role lives rather than by the
+                  # policy: this role is deployed per account by the StackSet,
+                  # and IAM has no cross-account list, so it can only ever
+                  # enumerate the account the cluster is in. Against the
+                  # GetRole/GetRolePolicy already granted here it adds
+                  # discovery, not capability.
+                  - iam:ListRoles
+                Resource: "*"
+              # Service-linked roles are created by AWS under a reserved path
+              # and cannot be named by the caller, so this is scoped to that
+              # path rather than to the EKSManager- prefix.
+              - Sid: AllowCreateServiceLinkedRole
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "arn:aws:iam::*:role/aws-service-role/*"
+              # Every role passed is one the agent created with this prefix:
+              # the control plane role, the node role, and the per-cluster pod
+              # identity roles. Deliberately no iam:PassedToService condition
+              # -- the correct service string differs between CreateNodegroup
+              # and CreatePodIdentityAssociation, and getting it wrong fails at
+              # cluster-create time for no extra safety over the prefix.
+              - Sid: AllowPassRoleToEKSManagerRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: "arn:aws:iam::*:role/EKSManager-*"
+              # Roles the CUSTOMER provides, which by design do not carry the
+              # EKSManager- prefix -- today that means roles.external_dns from
+              # hosted-zones.json, the role external-dns runs as. The reseller
+              # contract commits us to using the role they supply rather than
+              # creating one, so the statement above cannot cover it.
+              #
+              # Scoped by tag rather than by ARN because hosted-zones.json and
+              # topology.json are deliberately independent: zones change through
+              # sync-crt-mgr-arns, this StackSet changes through a bootstrap run.
+              # Rendering the ARNs in here would couple them, so adding a zone
+              # would silently need a StackSet redeploy before a cluster could be
+              # built in it. A tag is declared once on the role and never drifts.
+              #
+              # The alternative -- a sync workflow writing this grant with
+              # iam:PutRolePolicy -- was rejected: that action on
+              # EKSManagerAdminRole is denied by ProtectEKSManagerAdminRole in
+              # the spoke SCP, and exempting a sync role from it would hand that
+              # role total control of the admin role in every spoke. Not a trade
+              # worth making to avoid a tag.
+              #
+              # Both conditions, not either. The tag says which roles may be
+              # passed; PassedToService says where they may go, so a tagged role
+              # still cannot be handed to EC2 or Lambda. Tagging a role is an
+              # account-admin action, and an account admin could grant themselves
+              # this directly, so it concedes nothing they did not already have.
+              #
+              # iam:ResourceTag rather than aws:ResourceTag: this is the IAM
+              # service evaluating a condition on an IAM role. aws:ResourceTag
+              # appears elsewhere in this policy on EKS resources, where it is
+              # the right key.
+              - Sid: AllowPassRoleToTaggedCustomerRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:ResourceTag/EKSManager: "PassRole"
+                    iam:PassedToService: "pods.eks.amazonaws.com"
+              # ListHostedZones only -- the cluster's own DNS records are
+              # written by external-dns under its own Pod Identity role, not
+              # by this one.
+              # ListHostedZonesByVPC is what the CheckDNSHostedZoneResolution
+              # step uses to find the private zones a cluster's VPC resolves,
+              # before checking the agent's own VPC is associated with each. It
+              # is a separate action from ListHostedZones and is not implied by
+              # it, so the step fails with an explicit AccessDenied without it.
+              #
+              # Read-only, like the rest of this statement. Nothing here writes
+              # DNS: records are written by external-dns under its own Pod
+              # Identity role, and zone associations are a customer
+              # prerequisite this product deliberately does not create.
+              - Sid: AllowRoute53Read
+                Effect: Allow
+                Action:
+                  - route53:ListHostedZones
+                  - route53:ListHostedZonesByVPC
+                  - route53:GetHostedZone
+                  - route53:ListResourceRecordSets
+                Resource: "*"
+              # Node group tags do not reach the instances EKS launches, so the
+              # cost tag goes on the Auto Scaling Group with PropagateAtLaunch.
+              - Sid: AllowAutoScaling
+                Effect: Allow
+                Action:
+                  - autoscaling:CreateOrUpdateTags
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeTags
+                Resource: "*"
+              - Sid: AllowSSMReadOnly
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:DescribeParameters
+                Resource: !Sub "arn:aws:ssm:*:*:parameter/EKSManager/*"
+              - Sid: AllowSTS
+                Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                  - sts:TagSession
+                  - sts:DecodeAuthorizationMessage
+                Resource: "*"
+              # The single most useful line in this policy. sts:AssumeRole on
+              # "*" is what turns "can create a role under EKSManager-*" into
+              # "can become account admin": create EKSManager-x with a trust
+              # policy naming this role, give it *:*, assume it, and every Deny
+              # below stops applying because the caller is a different
+              # principal. Scoped here, that role cannot be assumed.
+              #
+              # One ARN is all the agent needs -- awsapi.py pins
+              # CROSS_ACCOUNT_ROLE_NAME = "EKSManagerAdminRole" and every
+              # assume path resolves through it. The account wildcard is the
+              # cross-account hop and is bounded by the target's own trust.
+              - Sid: AllowAssumeAdminRoleOnly
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: "arn:aws:iam::*:role/EKSManagerAdminRole"
+              # Cuts the add-cluster pipeline down to the eight EC2 actions it
+              # actually uses, without a second role in this template. The
+              # pipeline assumes this role, so its permissions come from this
+              # policy -- a Deny on EKSManagerPrefixListsSharedRole itself
+              # would not follow the session across the hop and would do
+              # nothing.
+              #
+              # aws:userid on an assumed session is "<RoleId>:<session-name>",
+              # and the trust policy above pins that name for this principal
+              # and forbids it for the agent. So this matches the pipeline's
+              # sessions and only those.
+              #
+              # NotAction, so anything not listed is denied: iam:*, every eks:
+              # write, sts:AssumeRole, Route53, ssm. The list is inverted, so
+              # an action the provider needs and this omits shows up as a
+              # broken build rather than a review finding -- deliberate, but
+              # worth knowing before adding a resource type to
+              # terraform/add-cluster.
+              #
+              # ModifySecurityGroupRules is here because the provider updates a
+              # rule's description in place rather than replacing the rule.
+              - Sid: DenyNonIngressWorkForPipelineSessions
+                Effect: Deny
+                NotAction:
+                  - ec2:Describe*
+                  - ec2:GetManagedPrefixListEntries
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:ModifySecurityGroupRules
+                  - ec2:CreateTags
+                  - sts:GetCallerIdentity
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    aws:userid: "*:eksmanager-prefix-lists-add-cluster"
+              # Every role this agent creates must carry the boundary. Without
+              # this, iam:PutRolePolicy on EKSManager-* is a privilege
+              # escalation: write "Action": "*" onto the node role, schedule a
+              # pod, read the credentials from IMDS.
+              #
+              # The condition is on CreateRole rather than PutRolePolicy
+              # because iam:PermissionsBoundary is only present on requests
+              # that SET a boundary -- there is no such key on PutRolePolicy.
+              # The boundary does not block the write; it caps what the role
+              # can do afterwards, which makes the write pointless.
+              #
+              # REQUIRES the agent to pass PermissionsBoundary on create_role.
+              # Deploy that first: this deny fails every role creation until it
+              # does, which means no cluster builds.
+              - Sid: DenyCreateRoleWithoutBoundary
+                Effect: Deny
+                Action: iam:CreateRole
+                Resource: "*"
+                Condition:
+                  StringNotEquals:
+                    iam:PermissionsBoundary: !Sub "arn:aws:iam::$${AWS::AccountId}:policy/EKSManagerRoleBoundary"
+              # Setting the boundary at creation is worth nothing if it can be
+              # removed a moment later. The agent never calls either of these.
+              - Sid: DenyBoundaryTampering
+                Effect: Deny
+                Action:
+                  - iam:DeleteRolePermissionsBoundary
+                  - iam:PutRolePermissionsBoundary
+                Resource: "*"
+              - Sid: DenyEKSClusterDelete
+                Effect: Deny
+                Action: ["eks:DeleteCluster"]
+                Resource: "*"
+              # DenyIAMOutsideEKSManagerPrefix bounds WHICH roles can be
+              # written; this bounds WHAT can be attached to them. Without it,
+              # AttachRolePolicy on an EKSManager-* role can pull in
+              # AdministratorAccess, and that role is then attached to compute
+              # this same principal schedules onto.
+              #
+              # These six are every managed policy the agent attaches --
+              # AmazonEKSClusterPolicy on the control plane role, the other
+              # five on the node role (see awsapi.py create_eks_node_role).
+              # Adding a seventh means adding it here, which is the point:
+              # a new managed policy becomes a visible change rather than
+              # something the existing grant already allowed.
+              #
+              # Inline policies are not covered -- iam:PutRolePolicy can still
+              # write arbitrary permissions to an EKSManager-* role. Closing
+              # that needs a permissions boundary, which is a separate change
+              # requiring the agent to pass PermissionsBoundary on CreateRole.
+              - Sid: DenyAttachingUnapprovedManagedPolicies
+                Effect: Deny
+                Action: iam:AttachRolePolicy
+                Resource: "*"
+                Condition:
+                  ArnNotEquals:
+                    iam:PolicyARN:
+                      - "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+                      - "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+                      - "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+                      - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+                      - "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+                      - "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+              # What makes the EKSManager tag a boundary rather than a label. Without
+              # this the conditions above cost an attacker one extra call:
+              # tag someone else's node group, then delete it. The agent can
+              # still set the tag at CREATION -- that path goes through
+              # aws:RequestTag on CreateCluster/CreateNodegroup, not through
+              # TagResource, so it is unaffected.
+              #
+              # UntagResource is included for the reverse: removing the tag
+              # would orphan a resource out of every condition above, leaving
+              # it unmanageable and invisible to the same policy that is
+              # supposed to govern it.
+              #
+              # Adopting an untagged cluster or node group is therefore a
+              # human action -- add EKSManager=Managed by hand and the agent
+              # picks it up.
+              # UntagResource only. eks:TagResource was here too, and it broke
+              # cluster creation: EKS authorises `CreateCluster --tags` as TWO
+              # actions -- eks:CreateCluster AND eks:TagResource on the cluster
+              # being created -- so a deny keyed on aws:TagKeys fires on the
+              # create itself, with "not authorized to perform: eks:TagResource
+              # ... explicit deny".
+              #
+              # There is no eks:CreateAction key to distinguish create-time
+              # tagging the way EC2 allows, and conditioning on aws:ResourceTag
+              # does not help: the resource does not exist yet, so it evaluates
+              # null and the deny still fires.
+              #
+              # What is lost: the agent can tag an untagged cluster or node
+              # group and thereby adopt it. That is one extra API call for a
+              # compromised agent, and a visible one -- the tag appears on the
+              # resource. What is kept is the more important half: it cannot
+              # REMOVE the tag, so it cannot orphan a resource out of every
+              # condition above and leave it unmanageable.
+              - Sid: DenyEKSManagerTagRemoval
+                Effect: Deny
+                Action: eks:UntagResource
+                Resource: "*"
+                Condition:
+                  "ForAnyValue:StringEquals":
+                    aws:TagKeys: EKSManager
+              - Sid: DenyDestructiveEC2
+                Effect: Deny
+                Action:
+                  - ec2:DeleteVpc
+                  - ec2:DeleteSubnet
+                  - ec2:DeleteInternetGateway
+                  - ec2:DeleteRouteTable
+                  - ec2:DeleteNatGateway
+                  - ec2:DeleteTransitGateway
+                  - ec2:DeleteVpcPeeringConnection
+                  - ec2:TerminateInstances
+                  - ec2:DeleteSnapshot
+                  - ec2:DeleteVolume
+                Resource: "*"
+              - Sid: DenyIAMOutsideEKSManagerPrefix
+                Effect: Deny
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                NotResource:
+                  - "arn:aws:iam::*:role/EKSManager-*"
+                  - "arn:aws:iam::*:instance-profile/EKSManager-*"
+                  - "arn:aws:iam::*:role/aws-service-role/*"
+              - Sid: DenyPersistentCredentials
+                Effect: Deny
+                Action:
+                  - iam:CreateUser
+                  - iam:CreateAccessKey
+                  - iam:CreatePolicyVersion
+                  - iam:SetDefaultPolicyVersion
+                  - iam:AttachUserPolicy
+                  - iam:CreateLoginProfile
+                  - iam:UpdateLoginProfile
+                Resource: "*"
+              - Sid: DenySecretsOutsideEKSManager
+                Effect: Deny
+                Action: ["secretsmanager:*"]
+                NotResource: !Sub "arn:aws:secretsmanager:*:*:secret:/EKSManager/*"
+              - Sid: DenyKMSDestructive
+                Effect: Deny
+                Action:
+                  - kms:ScheduleKeyDeletion
+                  - kms:DisableKey
+                  - kms:DeleteAlias
+                  - kms:DeleteImportedKeyMaterial
+                Resource: "*"
+              - Sid: DenyDestructiveECR
+                Effect: Deny
+                Action:
+                  - ecr:DeleteRepository
+                  - ecr:BatchDeleteImage
+                  - ecr:DeleteLifecyclePolicy
+                  - ecr:DeleteRegistryPolicy
+                  - ecr:DeleteRepositoryPolicy
+                Resource: "*"
+              - Sid: DenyOutsideAllowedRegions
+                Effect: Deny
+                NotAction: !If
+                  - AccountIsEnrolled
+                  - ["iam:*", "sts:*", "route53:*"]
+                  - ["ec2:DescribeRegions"]
+                Resource: "*"
+                Condition:
+                  StringNotEquals:
+                    aws:RequestedRegion: !Split
+                      - ","
+                      - !FindInMap
+                        - AccountRegionMap
+                        - !Ref "AWS::AccountId"
+                        - "AllowedRegions"
+                        - DefaultValue: "none"
+      Tags:
+        - Key: ManagedBy
+          Value: EKSManager
+
+Outputs:
+  EKSManagerAdminRoleArn:
+    Value: !GetAtt EKSManagerAdminRole.Arn

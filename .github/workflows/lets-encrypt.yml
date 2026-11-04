@@ -1,0 +1,143 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+name: Publish lets encrypt certificate pipeline
+
+# Manually dispatched. Packages tofu/lets-encrypt together with
+# hosted-zones.json and uploads it, which starts a CodeBuild run via
+# EventBridge.
+#
+# Run this after editing hosted-zones.json -- adding a zone, changing a
+# cert_manager role -- or after syncing new module code from the public repo.
+# You do NOT need to run it for renewals: a weekly EventBridge schedule applies
+# the artifact already in the bucket, and Terraform reissues only certificates
+# inside min_days_remaining.
+#
+# Requires these repository variables, from the
+# iam/lets-encrypt-pipeline-tf outputs:
+#   LETS_ENCRYPT_ROLE_ARN   - github_actions_role_arn
+#   LETS_ENCRYPT_S3_BUCKET  - lets_encrypt_bucket
+#   AWS_REGION              - the shared services region
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  package-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fail here rather than in CodeBuild. A malformed zone list would
+      # otherwise surface as a Terraform or Python error several minutes into a
+      # build, and a zone silently missing from the artifact makes Terraform
+      # destroy that certificate and its secret.
+      - name: Validate hosted-zones.json
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+
+          try:
+              doc = json.load(open("hosted-zones.json"))
+          except FileNotFoundError:
+              sys.exit("hosted-zones.json not found. Copy example-hosted-zones.json and fill it in.")
+          except json.JSONDecodeError as e:
+              sys.exit(f"hosted-zones.json is not valid JSON: {e}")
+
+          zones = doc.get("hosted-zones")
+          if not zones:
+              sys.exit("hosted-zones.json has no 'hosted-zones' entries.")
+
+          problems, seen, seen_prefix = [], set(), set()
+
+          # Top-level ACME settings. These sit beside the zone list rather than
+          # being pipeline inputs, so changing the contact or moving to staging
+          # is a file edit and a workflow run -- no Terraform apply, no setup.
+          email = doc.get("acme-email", "")
+          if not email:
+              problems.append(
+                  "missing top-level 'acme-email' -- Let's Encrypt requires a "
+                  "registration contact, and it is where expiry warnings go")
+          elif "@" not in email:
+              problems.append(f"acme-email '{email}' does not look like an address")
+
+          staging = doc.get("acme-staging", False)
+          if not isinstance(staging, bool):
+              problems.append(
+                  f"acme-staging must be true or false, not {staging!r}")
+
+          for i, z in enumerate(zones):
+              where = z.get("public-hosted-zone") or f"entry {i}"
+              for field in ("public-hosted-zone", "account"):
+                  if not z.get(field):
+                      problems.append(f"{where}: missing '{field}'")
+              if not z.get("roles", {}).get("cert_manager"):
+                  problems.append(f"{where}: missing roles.cert_manager -- the role DNS-01 assumes to write the challenge record")
+
+              # Names the secret: /EKSManagerZones/<prefix>-dns-zone-certs.
+              prefix = z.get("dns-zone-prefix", "")
+              if not prefix:
+                  problems.append(f"{where}: missing 'dns-zone-prefix' (dev, int, uat, we_prod ...) -- it names the secret")
+              else:
+                  if prefix in seen_prefix:
+                      problems.append(f"{where}: dns-zone-prefix '{prefix}' used more than once -- two zones would share one secret")
+                  seen_prefix.add(prefix)
+                  # Secrets Manager names allow alphanumerics and /_+=.@-
+                  if not re.fullmatch(r"[A-Za-z0-9_+=.@-]+", prefix):
+                      problems.append(f"{where}: dns-zone-prefix '{prefix}' has characters not valid in a Secrets Manager name")
+              acct = str(z.get("account", ""))
+              if acct and not (acct.isdigit() and len(acct) == 12):
+                  problems.append(f"{where}: account '{acct}' is not a 12-digit AWS account id")
+              # One certificate per zone; a duplicate would mean two Terraform
+              # resources fighting over the same secret.
+              name = z.get("public-hosted-zone")
+              if name in seen:
+                  problems.append(f"{name}: listed more than once")
+              seen.add(name)
+
+          if problems:
+              print("hosted-zones.json has problems:")
+              for p in problems:
+                  print(f"  - {p}")
+              sys.exit(1)
+
+          print(f"OK: {len(zones)} zone(s) valid, acme-email={email}")
+          if staging:
+              print("NOTE: acme-staging is true -- certificates will chain to an")
+              print("      untrusted root. Correct for rebuild testing, wrong for")
+              print("      anything anyone actually uses.")
+          for z in zones:
+              print(f"  {z.get('dns-zone-prefix','?'):10} {z['public-hosted-zone']}  account={z['account']}")
+          PY
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.LETS_ENCRYPT_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Flattened so buildspec.yml sits at the zip root, where CodeBuild looks
+      # for it, and hosted-zones.json sits beside it where the
+      # buildspec's pre_build step reads it.
+      - name: Package and upload
+        run: |
+          set -eu
+          BUILD_DIR=build/lets-encrypt
+          mkdir -p "$BUILD_DIR"
+          # `/.` not `/*` -- the glob skips dotfiles, which would silently
+          # leave .terraform.lock.hcl behind. Without it CodeBuild resolves
+          # whatever provider version is newest that day, so the acme provider
+          # could change under a renewal run with nothing in the diff to show
+          # it. The add-cluster module gets this right via shutil.copytree.
+          cp -r tofu/lets-encrypt/. "$BUILD_DIR"/
+          cp hosted-zones.json "$BUILD_DIR"/
+
+          echo "--- artifact contents ---"
+          ls -1 "$BUILD_DIR"
+
+          cd "$BUILD_DIR"
+          zip -qr /tmp/lets-encrypt.zip .
+          aws s3 cp /tmp/lets-encrypt.zip "s3://${{ vars.LETS_ENCRYPT_S3_BUCKET }}/lets-encrypt.zip"
+          echo "Uploaded -- a CodeBuild run starts automatically via EventBridge."

@@ -1,0 +1,66 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+output "codebuild_project_name" {
+  description = "Name of the CodeBuild project."
+  value       = aws_codebuild_project.eksmanager_bootstrap.name
+}
+
+output "codebuild_role_arn" {
+  description = "ARN of EKSManagerBootstrapSharedRole."
+  value       = aws_iam_role.codebuild.arn
+}
+
+output "management_bootstrap_role_arn" {
+  description = "ARN of EKSManagerBootstrap in the management account."
+  value       = aws_iam_role.management_bootstrap.arn
+}
+
+output "eks_manager_user_view_permission_set_arn" {
+  description = "ARN of the EKSManagerUserView permission set."
+  value       = aws_ssoadmin_permission_set.eks_user_view.arn
+}
+
+output "eks_manager_user_admin_permission_set_arn" {
+  description = "ARN of the EKSManagerUserAdmin permission set."
+  value       = aws_ssoadmin_permission_set.eks_user_admin.arn
+}
+
+output "eks_manager_identity_center_role_arn" {
+  description = "ARN of EKSManagerIdentityCenterRole -- EKSManagerAgentRole assumes this to create/delete account assignments."
+  value       = aws_iam_role.identity_center.arn
+}
+
+output "identity_store_id" {
+  description = "ID of the IAM Identity Center identity store, auto-discovered -- needed by EKSManagerAgentRole at runtime to resolve a group name to a GroupId via identitystore:GetGroupId."
+  value       = local.identity_center_identity_store_id
+}
+
+output "identity_center_region" {
+  description = "Region IAM Identity Center actually lives in, auto-discovered -- needed by EKSManagerAgentRole at runtime to target SSO Admin/Identity Store API calls at the right regional endpoint, same reason aws_ssoadmin_permission_set_inline_policy needed it explicitly."
+  value       = length(local.identity_center_matches) > 0 ? local.identity_center_matches[0].region : null
+}
+
+output "bootstrap_bucket" {
+  description = "Name of the S3 bucket used for bootstrap artifacts."
+  value       = aws_s3_bucket.bootstrap.bucket
+}
+
+output "github_actions_role_arn" {
+  description = "ARN to set as the AWS_ROLE_ARN repository variable on your private copy, for .github/workflows/bootstrap.yml."
+  value       = aws_iam_role.github_actions_upload.arn
+}
+
+output "github_oidc_provider_arn" {
+  description = "ARN of the GitHub Actions OIDC provider — either the one this module created, or the pre-existing one it was pointed at via github_oidc_provider_arn. Other modules (e.g. iam/prefix-lists-pipeline-tf) reuse this rather than creating a second provider, since an AWS account can only have one per URL."
+  value       = local.github_oidc_provider_final_arn
+}
+
+output "ecr_push_trust_sync_role_arn" {
+  description = "ARN to set as the ECR_PUSH_TRUST_SYNC_ROLE_ARN repository variable, for .github/workflows/sync-ecr-push-trust.yml."
+  value       = aws_iam_role.ecr_push_trust_sync.arn
+}
+
+output "ecr_pull_access_sync_role_arn" {
+  description = "ARN to set as the ECR_PULL_ACCESS_SYNC_ROLE_ARN repository variable, for .github/workflows/sync-ecr-pull-access.yml."
+  value       = aws_iam_role.ecr_pull_access_sync.arn
+}

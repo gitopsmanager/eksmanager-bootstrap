@@ -1,0 +1,203 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeAdminRoleInSpokeAccounts",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::*:role/EKSManagerAdminRole"
+    },
+    {
+      "Sid": "AssumeIdentityCenterRole",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "${IDENTITY_CENTER_ROLE_ARN}"
+    },
+    {
+      "Sid": "SecretsManager",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:CreateSecret",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:TagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManager/*"
+    },
+    {
+      "Sid": "SecretsManagerList",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:ListSecrets"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SecretsManagerZoneCertsRead",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerZones/*"
+    },
+    {
+      "Sid": "SecretsManagerHeadlampIdentityRead",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerBootstrap/headlamp-*"
+    },
+    {
+      "Sid": "SecretsManagerM2MRead",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerBootstrap/client-m2m-cognito-secret-??????"
+    },
+    {
+      "Sid": "EKSManagerCMK",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext"
+      ],
+      "Resource": "arn:aws:kms:*:${SHARED_SERVICES_ACCOUNT_ID}:key/*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "s3.${SHARED_SERVICES_REGION}.amazonaws.com",
+            "secretsmanager.${SHARED_SERVICES_REGION}.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ParameterStoreReadConfig",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": [
+        "arn:aws:ssm:*:${SHARED_SERVICES_ACCOUNT_ID}:parameter/EKSManager/config/*",
+        "arn:aws:ssm:*:*:parameter/EKSManager/*/AllowedRegions"
+      ]
+    },
+    {
+      "Sid": "SharedConfigBucketRead",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}/allowed_regions.json"
+    },
+    {
+      "Sid": "SharedConfigBucketList",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}"
+    },
+    {
+      "Sid": "LogBucketWrite",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}/*"
+    },
+    {
+      "Sid": "LogBucketRead",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}",
+        "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}/*"
+      ]
+    },
+    {
+      "Sid": "ParameterStoreDenyAllWrites",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:DeleteParameters",
+        "ssm:LabelParameterVersion"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/EKSManager/*"
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:PutRetentionPolicy"
+      ],
+      "Resource": "arn:aws:logs:*:${SHARED_SERVICES_ACCOUNT_ID}:log-group:/eksmanager/*"
+    },
+    {
+      "Sid": "ECRCrossAccountPolicyManagement",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetRepositoryPolicy",
+        "ecr:SetRepositoryPolicy",
+        "ecr:DeleteRepositoryPolicy",
+        "ecr:DescribeRepositories",
+        "ecr:CreateRepository",
+        "ecr:PutLifecyclePolicy",
+        "ecr:GetAuthorizationToken"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "LetsEncryptPipelineHealthRead",
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:ListBuildsForProject",
+        "codebuild:BatchGetBuilds"
+      ],
+      "Resource": "arn:aws:codebuild:*:${SHARED_SERVICES_ACCOUNT_ID}:project/eksmanager-lets-encrypt"
+    },
+    {
+      "Sid": "OrganizationsRead",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:ListOrganizationalUnitsForParent",
+        "organizations:ListAccountsForParent",
+        "organizations:ListChildren",
+        "organizations:DescribeAccount",
+        "organizations:ListTagsForResource",
+        "organizations:DescribeOrganizationalUnit"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "STSCallerIdentity",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "sts:TagSession"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DescribeOwnInstance",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstances",
+      "Resource": "*"
+    }
+  ]
+}

@@ -1,0 +1,214 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+# Add a missing identity to an EKS cluster that already exists -- one the
+# agent built -- with OpenTofu, on GitOps Manager's long-job runners.
+# Started by the GUI's "set up new node pools" run (Node pools tab), first
+# step: the ACK eks-controller needs EKSManager-<cluster>-ack before
+# components/ack-eks-controller is installed.
+#
+# Create-if-missing, never anything else. Per identity:
+#   - its own state (accounts/<account>/clusters/<cluster>/identity-<id>.tfstate):
+#     a run continues it, so a run that failed half way can be re-run
+#   - no state yet, and the role and its association are already there: done,
+#     nothing is touched
+#   - no state yet, and the role is there but was not made here: refused. It
+#     is never imported, changed or replaced
+# A cluster made by bootstrap-create-cluster.yml (clusters/<cluster>.json)
+# is refused too: re-run that create instead, which adds the identity in its
+# own stages (1-cluster, 3-addons).
+#
+# Uses the same repository variables, runner and role as
+# bootstrap-create-cluster.yml.
+name: bootstrap-cluster-identities
+
+run-name: "Cluster identity ${{ inputs.identity }} for ${{ inputs.cluster }}${{ inputs.dry_run && ' (plan only)' || '' }} -- ${{ inputs.requested_by || github.actor }} [${{ inputs.plan_step }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: "EKS cluster name"
+        required: true
+        type: string
+      account_id:
+        description: "The cluster's AWS account"
+        required: true
+        type: string
+      region:
+        description: "The cluster's region"
+        required: true
+        type: string
+      identity:
+        description: "Which identity"
+        required: true
+        type: choice
+        options:
+          - ack
+      dry_run:
+        description: "Plan only; change nothing"
+        type: boolean
+        default: false
+      requested_by:
+        description: "The GUI user, when the GUI starts it"
+        type: string
+        default: ""
+      plan_step:
+        description: "The GUI's plan step id, for matching this run (in the run name)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: create-cluster-${{ inputs.cluster }}
+  cancel-in-progress: false
+
+env:
+  STATE_BUCKET: ${{ vars.CREATE_CLUSTER_STATE_BUCKET }}
+  STATE_REGION: ${{ vars.AWS_REGION }}
+  TFVARS: build/create-cluster/identity.auto.tfvars.json
+  ADMIN_ROLE_NAME: EKSManagerAdminRole
+
+jobs:
+  identity:
+    runs-on: ${{ vars.CREATE_CLUSTER_RUNNER || 'gom-aws-long' }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v7
+
+      - name: Inputs
+        shell: bash
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          ACCOUNT: ${{ inputs.account_id }}
+          REGION: ${{ inputs.region }}
+          IDENTITY: ${{ inputs.identity }}
+        run: |
+          set -euo pipefail
+          [[ "$CLUSTER" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$ ]] || { echo "::error::Not a cluster name: $CLUSTER"; exit 1; }
+          [[ "$ACCOUNT" =~ ^[0-9]{12}$ ]] || { echo "::error::Not an AWS account id: $ACCOUNT"; exit 1; }
+          [[ "$REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]$ ]] || { echo "::error::Not an AWS region: $REGION"; exit 1; }
+          if [ -f "clusters/$CLUSTER.json" ]; then
+            echo "::error::$CLUSTER was made by bootstrap-create-cluster.yml. Re-run that create: its 1-cluster and 3-addons stages add the $IDENTITY identity."
+            exit 1
+          fi
+          echo "AWS_REGION=${{ vars.AWS_REGION }}" >> "$GITHUB_ENV"
+          echo "AWS_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> "$GITHUB_ENV"
+
+      - name: Tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          tofu version
+          aws --version
+          aws sts get-caller-identity --query Arn --output text
+
+      - name: Credentials
+        if: ${{ vars.CREATE_CLUSTER_ROLE_ARN != '' && vars.CREATE_CLUSTER_ROLE_ARN != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.CREATE_CLUSTER_ROLE_ARN }}
+          role-chaining: true
+          unset-current-credentials: true
+          role-session-name: identity-${{ inputs.cluster }}-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      # Create-if-missing. Read through EKSManagerAdminRole in the cluster's
+      # account (a read-only session; OpenTofu makes its own below).
+      - name: Already there?
+        id: check
+        shell: bash
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          ACCOUNT: ${{ inputs.account_id }}
+          REGION: ${{ inputs.region }}
+          IDENTITY: ${{ inputs.identity }}
+        run: |
+          set -euo pipefail
+          key="accounts/$ACCOUNT/clusters/$CLUSTER/identity-$IDENTITY.tfstate"
+          if aws s3api head-object --bucket "$STATE_BUCKET" --key "$key" --region "$STATE_REGION" >/dev/null 2>&1; then
+            echo "State $key exists: continuing it."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          case "$IDENTITY" in
+            ack) role="EKSManager-$CLUSTER-ack"; ns="ack-system"; sa="ack-eks-controller" ;;
+            *) echo "::error::Unknown identity $IDENTITY"; exit 1 ;;
+          esac
+          creds=$(aws sts assume-role --role-arn "arn:aws:iam::$ACCOUNT:role/$ADMIN_ROLE_NAME" \
+                    --role-session-name "eksmanager-create-cluster" --duration-seconds 900 \
+                    --query Credentials --output json)
+          export AWS_ACCESS_KEY_ID=$(printf '%s' "$creds" | python3 -c 'import json,sys;print(json.load(sys.stdin)["AccessKeyId"])')
+          export AWS_SECRET_ACCESS_KEY=$(printf '%s' "$creds" | python3 -c 'import json,sys;print(json.load(sys.stdin)["SecretAccessKey"])')
+          export AWS_SESSION_TOKEN=$(printf '%s' "$creds" | python3 -c 'import json,sys;print(json.load(sys.stdin)["SessionToken"])')
+
+          aws eks describe-cluster --name "$CLUSTER" --region "$REGION" --query cluster.status --output text >/dev/null ||
+            { echo "::error::No EKS cluster $CLUSTER in $ACCOUNT/$REGION"; exit 1; }
+
+          if ! aws iam get-role --role-name "$role" >/dev/null 2>"$RUNNER_TEMP/err"; then
+            grep -q NoSuchEntity "$RUNNER_TEMP/err" || { cat "$RUNNER_TEMP/err"; echo "::error::Could not read IAM role $role"; exit 1; }
+            echo "$role does not exist: creating it."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          assoc=$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER" --region "$REGION" \
+                    --namespace "$ns" --service-account "$sa" --query 'associations[0].associationArn' --output text)
+          if [ -n "$assoc" ] && [ "$assoc" != None ]; then
+            echo "$role and its association for $ns/$sa are already there: nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::$role exists but was not made by this workflow (no state at $key), and $ns/$sa has no Pod Identity association. It is never imported or changed here: add the association by hand, or delete the role if it is unused, and run again."
+          exit 1
+
+      - name: Settings
+        if: ${{ steps.check.outputs.run == 'true' }}
+        shell: bash
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          ACCOUNT: ${{ inputs.account_id }}
+          REGION: ${{ inputs.region }}
+        run: |
+          set -euo pipefail
+          # The optional cost tag, with bootstrap-create-cluster.yml's rules.
+          tag_name=$(aws ssm get-parameter --name /EKSManager/config/resource-tag-name --query Parameter.Value --output text 2>/dev/null || true)
+          tag_value=$(aws ssm get-parameter --name /EKSManager/config/resource-tag-value --query Parameter.Value --output text 2>/dev/null || true)
+          case "$tag_name" in ""|none|None) tag_name=""; tag_value="" ;; esac
+          case "$tag_value" in none|None) tag_value="" ;; esac
+          [ "$tag_name" = EKSManager ] && { tag_name=""; tag_value=""; }
+          mkdir -p build/create-cluster
+          TAG_NAME="$tag_name" TAG_VALUE="$tag_value" python3 - <<'EOF'
+          import json, os
+          json.dump({
+            "cluster": {"name": os.environ["CLUSTER"], "account_id": os.environ["ACCOUNT"], "region": os.environ["REGION"]},
+            "runtime": {"admin_role_name": os.environ["ADMIN_ROLE_NAME"],
+                        "cost_tag_name": os.environ["TAG_NAME"], "cost_tag_value": os.environ["TAG_VALUE"]},
+          }, open(os.environ["TFVARS"], "w"), indent=2)
+          EOF
+
+      - name: OpenTofu
+        if: ${{ steps.check.outputs.run == 'true' }}
+        shell: bash
+        env:
+          STAGE_DIR: tofu/cluster-identities/${{ inputs.identity }}
+        run: bash scripts/run_tofu_stage.sh "identity-${{ inputs.identity }}" "${{ inputs.account_id }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "$STATE_REGION" "${{ inputs.dry_run && 'plan' || 'apply' }}" "$TFVARS"
+
+      - name: Result
+        if: ${{ steps.check.outputs.run == 'true' && !inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          arn=$(python3 -c "import json;print(json.load(open('build/create-cluster/identity-${{ inputs.identity }}.outputs.json'))['role_arn']['value'])")
+          echo "${{ inputs.identity }} identity for ${{ inputs.cluster }}: $arn" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # After a cancel, as in bootstrap-create-cluster.yml.
+      - name: Stop OpenTofu gracefully
+        if: cancelled()
+        shell: bash
+        timeout-minutes: 15
+        run: bash scripts/run_tofu_stage.sh --stop

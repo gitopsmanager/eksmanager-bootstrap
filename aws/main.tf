@@ -1,0 +1,139 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+# -----------------------------------------------------------------------------
+# terraform-aws-eksmanager — main.tf
+# -----------------------------------------------------------------------------
+# Wires all submodules in dependency order.
+# Each module maps to one logical step of the bootstrap.
+# -----------------------------------------------------------------------------
+
+# Verify the runner is authenticated to the correct management account.
+data "aws_caller_identity" "management" {}
+
+locals {
+  assert_management_account = (
+    data.aws_caller_identity.management.account_id == var.management_account_id
+    ? true
+    : tobool("ERROR: Terraform runner is authenticated to account ${data.aws_caller_identity.management.account_id} but management_account_id is ${var.management_account_id}. Authenticate to the management account before running.")
+  )
+}
+
+# -----------------------------------------------------------------------------
+# Step 1 + 2 — Organizations: trusted access + delegated StackSet admin
+# -----------------------------------------------------------------------------
+module "org" {
+  source = "./modules/org"
+
+  shared_services_account_id = var.shared_services_account_id
+}
+
+# -----------------------------------------------------------------------------
+# Step 5 — Shared services: ECR, Secrets Manager, S3, IAM roles
+# -----------------------------------------------------------------------------
+module "shared_services" {
+  source = "./modules/shared_services"
+
+  providers = {
+    aws = aws.shared
+  }
+
+  shared_services_account_id           = var.shared_services_account_id
+  shared_services_region               = var.shared_services_region
+  config_bucket_name                   = local.config_bucket_name
+  allowed_regions_json                 = local.allowed_regions_json
+  secrets_editing                      = var.secrets_editing
+  eks_manager_identity_center_role_arn = var.eks_manager_identity_center_role_arn
+  agent_role_trusted_runner_role_arns  = var.agent_role_trusted_runner_role_arns
+  agent_role_trust_codebuild           = var.agent_role_trust_codebuild
+  agent_role_trust_ecs_tasks           = var.agent_role_trust_ecs_tasks
+  agent_role_trust_eso_account_ids     = var.agent_role_trust_eso ? keys(local.account_ou_map) : []
+}
+
+
+# -----------------------------------------------------------------------------
+# Step 7 — SSM Parameter Store: configuration in shared services
+# -----------------------------------------------------------------------------
+module "ssm" {
+  source = "./modules/ssm"
+
+  providers = {
+    aws = aws.shared
+  }
+
+  shared_services_account_id                = var.shared_services_account_id
+  shared_services_region                    = var.shared_services_region
+  management_account_id                     = var.management_account_id
+  management_account_region                 = var.management_account_region
+  agent_role_arn                            = module.shared_services.agent_role_arn
+  secrets_editing                           = var.secrets_editing
+  app_url                                   = var.app_url
+  client_id                                 = var.client_id
+  cognito_url                               = var.cognito_url
+  eks_manager_user_view_permission_set_arn  = var.eks_manager_user_view_permission_set_arn
+  eks_manager_user_admin_permission_set_arn = var.eks_manager_user_admin_permission_set_arn
+  identity_store_id                         = var.identity_store_id
+  resource_tag_name                         = var.resource_tag_name
+  resource_tag_value                        = var.resource_tag_value
+  eks_manager_identity_center_role_arn      = var.eks_manager_identity_center_role_arn
+  identity_center_resolved_region           = var.identity_center_resolved_region
+
+  depends_on = [module.shared_services]
+}
+
+# -----------------------------------------------------------------------------
+# Step 8 — CloudFormation StackSet skeleton (registered from shared services
+#           as delegated admin)
+# -----------------------------------------------------------------------------
+module "stackset" {
+  source = "./modules/stackset"
+
+  providers = {
+    aws = aws.shared
+  }
+
+  shared_services_account_id = var.shared_services_account_id
+  shared_services_region     = var.shared_services_region
+  account_ou_map             = local.account_ou_map
+
+  depends_on = [module.org]
+}
+
+module "scp" {
+  source = "./modules/scp"
+  count  = var.manage_scp_automatically ? 1 : 0
+
+  # Management account, but the untagged provider -- see providers.tf. Tagging
+  # these would cost the role organizations:TagResource and UntagResource for
+  # nothing that reads them.
+  providers = {
+    aws = aws.management_untagged
+  }
+
+  shared_services_account_id = var.shared_services_account_id
+  ou_ids                     = local.ou_ids
+
+  depends_on = [module.org]
+}
+
+# -----------------------------------------------------------------------------
+# Step 11 — Agent VM in shared services
+# -----------------------------------------------------------------------------
+module "agent" {
+  source = "./modules/agent"
+
+  providers = {
+    aws = aws.shared
+  }
+
+  agent_name                 = var.agent_name
+  agent_instance_type        = var.agent_instance_type
+  agent_ami                  = var.agent_ami
+  agent_subnet_id            = var.agent_subnet_id
+  agent_role_name            = module.shared_services.agent_role_name
+  af7_bundle_download_url    = var.af7_bundle_download_url
+  agent_upgrade_download_url = var.agent_upgrade_download_url
+  agent_download_url         = var.agent_download_url
+  agent_upload_url           = var.agent_upload_url
+
+  depends_on = [module.shared_services]
+}

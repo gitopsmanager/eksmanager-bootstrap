@@ -1,0 +1,374 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+# Create one EKS cluster from clusters/<cluster>.json, with OpenTofu, on
+# GitOps Manager's long-job runners (label gom-aws-long: ECS Fargate in the agent's
+# subnet, running as the agent role, started one per queued job -- runners/,
+# scripts/apply_runners.sh). CREATE_CLUSTER_RUNNER names another label.
+#
+#   validate the cluster file and resolve its zone (hosted-zones.json)
+#   -> 1-cluster  -> 2-nodepools  -> 3-addons (checked: ACTIVE, healthy, newest)
+#   -> 4-platform (StorageClasses, namespaces, secrets, Argo CD)
+#   -> record it (clusters.json, clusters/<cluster>.outputs.json)
+#   -> add-cluster-network.yml (prefix-list rules), unless "allow all"
+#
+# Safe to re-run: each stage is its own state, a stage that is up to date
+# plans no changes, and a re-run also brings every EKS add-on to the newest
+# compatible version, as an upgrade does. Two runs for the same cluster
+# queue rather than race (concurrency below, and each state's lock).
+#
+# Repository variables (set once from tofu/create-cluster-pipeline outputs):
+#   CREATE_CLUSTER_RUNNER        optional: the runs-on label (default gom-aws-long)
+#   CREATE_CLUSTER_STATE_BUCKET  eksmanager-clusters-<shared services account>
+#   CREATE_CLUSTER_ROLE_ARN      a role the run assumes before each stage, or
+#                                "none" to work as the container's own role.
+#                                TEMPORARY: "none" -- the runner runs as
+#                                EKSManagerAgentRole (its ECS task role).
+#                                MUST CHANGE with it.
+#   SHARED_SERVICES_ACCOUNT_ID, AWS_REGION (shared services region),
+#   RUNNER_SUBNET_CIDR           the agent subnet's CIDR
+#   CD_REPO                      owner/name of the CD repo
+#   CORE_STACK_REF               the core-stack tag or commit Argo CD comes from
+#   CORE_STACK_REPO              optional: owner/name of the core-stack repo (default
+#                                gitopsmanager/core-stack, public); a private one is
+#                                read as the GitHub App (GOM_APP_CLIENT_ID, secret
+#                                GOM_APP_PRIVATE_KEY)
+name: bootstrap-create-cluster
+
+run-name: "Create cluster ${{ inputs.cluster }}${{ inputs.dry_run && ' (plan only)' || '' }} -- ${{ inputs.requested_by || github.actor }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: "Cluster name: clusters/<cluster>.json"
+        required: true
+        type: string
+      # Stages 2-4 read the cluster stage 1 made, so on a cluster that does
+      # not exist yet only stage 1 can be planned: a dry run validates the
+      # file and plans 1-cluster, and changes nothing.
+      dry_run:
+        description: "Validate the file and plan 1-cluster only; change nothing"
+        type: boolean
+        default: false
+      requested_by:
+        description: "The GUI user, when the GUI starts it"
+        type: string
+        default: ""
+
+permissions:
+  contents: write       # clusters.json and clusters/<cluster>.outputs.json
+  pull-requests: write  # ... committed through a pull request
+  actions: write        # start add-cluster-network.yml
+
+concurrency:
+  group: create-cluster-${{ inputs.cluster }}
+  cancel-in-progress: false
+
+env:
+  STATE_BUCKET: ${{ vars.CREATE_CLUSTER_STATE_BUCKET }}
+  STATE_REGION: ${{ vars.AWS_REGION }}
+  TFVARS: build/create-cluster/create.auto.tfvars.json
+  ADMIN_ROLE_NAME: EKSManagerAdminRole
+
+jobs:
+  create:
+    runs-on: ${{ vars.CREATE_CLUSTER_RUNNER || 'gom-aws-long' }}
+    timeout-minutes: 110
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v7
+
+      # Argo CD's chart comes from core-stack: the public gitopsmanager/core-stack
+      # by default; a subscriber's own <client>-core-stack (private, synced)
+      # when CORE_STACK_REPO names it, read with the GitHub App's token.
+      - name: Token for the core-stack repo
+        id: core_stack_app
+        if: ${{ vars.CORE_STACK_REPO != '' && vars.CORE_STACK_REPO != 'gitopsmanager/core-stack' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GOM_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GOM_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Check out core-stack (Argo CD's chart)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.CORE_STACK_REPO || 'gitopsmanager/core-stack' }}
+          ref: ${{ vars.CORE_STACK_REF }}
+          path: core-stack
+          token: ${{ steps.core_stack_app.outputs.token || github.token }}
+          persist-credentials: false
+
+      - name: Tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          tofu version
+          aws --version
+          helm version --short
+          python3 --version
+
+      # The runner's own credentials (the ECS task role; ECS renews them) are
+      # used as they are when CREATE_CLUSTER_ROLE_ARN is "none". Otherwise: one assume
+      # per stage, because chained role sessions last at most an hour, so no
+      # stage may outlive the credentials it started with.
+      # unset-current-credentials drops the previous session and goes back to
+      # the container's own role before assuming again.
+      - name: Region
+        shell: bash
+        run: |
+          echo "AWS_REGION=${{ vars.AWS_REGION }}" >> "$GITHUB_ENV"
+          echo "AWS_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> "$GITHUB_ENV"
+          aws sts get-caller-identity --query Arn --output text
+
+      - name: Credentials (prepare)
+        if: ${{ vars.CREATE_CLUSTER_ROLE_ARN != '' && vars.CREATE_CLUSTER_ROLE_ARN != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.CREATE_CLUSTER_ROLE_ARN }}
+          role-chaining: true
+          unset-current-credentials: true
+          role-session-name: create-${{ inputs.cluster }}-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      - name: Validate the cluster file
+        id: prepare
+        shell: bash
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+        run: |
+          set -euo pipefail
+          # The optional cost tag, with the agent's rules (awsapi
+          # get_resource_tag, managed_tags_map): the bootstrap writes "none"
+          # for "not configured"; a value of "none" is an empty value; a key of
+          # EKSManager would overwrite the ownership tag IAM conditions match
+          # on, so it is ignored. ("None" is the CLI's text for a missing one.)
+          tag_name=$(aws ssm get-parameter --name /EKSManager/config/resource-tag-name --query Parameter.Value --output text 2>/dev/null || true)
+          tag_value=$(aws ssm get-parameter --name /EKSManager/config/resource-tag-value --query Parameter.Value --output text 2>/dev/null || true)
+          case "$tag_name" in ""|none|None) tag_name=""; tag_value="" ;; esac
+          case "$tag_value" in none|None) tag_value="" ;; esac
+          if [ "$tag_name" = EKSManager ]; then
+            echo "::warning::Resource tag key is 'EKSManager', which collides with the ownership tag IAM policy conditions match on. Ignoring the configured cost tag; set /EKSManager/config/resource-tag-name to something else."
+            tag_name=""; tag_value=""
+          fi
+          # The shared services region, where the EKSManager secrets are: from
+          # pinned.auto.tfvars.json, which setup checks in and which is what
+          # /EKSManager/config/shared-services-region is written from. Never a
+          # repository variable, which can go stale.
+          secrets_region=$(python3 -c 'import json; print(json.load(open("pinned.auto.tfvars.json")).get("shared_services_region", ""))' 2>/dev/null || true)
+          [ -n "$secrets_region" ] || { echo "::error::pinned.auto.tfvars.json has no shared_services_region (run setup)"; exit 1; }
+          runtime=$(python3 - <<EOF
+          import json, os
+          print(json.dumps({
+            "shared_services_account_id": "${{ vars.SHARED_SERVICES_ACCOUNT_ID }}",
+            "secrets_region": "$secrets_region",
+            "runner_subnet_cidr": "${{ vars.RUNNER_SUBNET_CIDR }}",
+            "admin_role_name": os.environ["ADMIN_ROLE_NAME"],
+            "cd_repo_url": "https://github.com/${{ vars.CD_REPO }}.git",
+            "cost_tag_name": """$tag_name""",
+            "cost_tag_value": """$tag_value""",
+            "core_stack_dir": os.path.abspath("core-stack"),
+          }))
+          EOF
+          )
+          python3 scripts/create_cluster.py prepare --cluster "$CLUSTER" --runtime "$runtime"
+
+      - name: Argo CD chart dependencies
+        shell: bash
+        run: helm dependency build core-stack/components/argo-cd
+
+      - name: Credentials (1-cluster)
+        if: ${{ vars.CREATE_CLUSTER_ROLE_ARN != '' && vars.CREATE_CLUSTER_ROLE_ARN != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.CREATE_CLUSTER_ROLE_ARN }}
+          role-chaining: true
+          unset-current-credentials: true
+          role-session-name: create-${{ inputs.cluster }}-${{ github.run_id }}
+          role-duration-seconds: 3600
+      - name: 1-cluster
+        shell: bash
+        run: bash scripts/run_tofu_stage.sh 1-cluster "${{ steps.prepare.outputs.account_id }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "$STATE_REGION" "${{ inputs.dry_run && 'plan' || 'apply' }}" "$TFVARS"
+
+      - name: Credentials (2-nodepools)
+        if: ${{ vars.CREATE_CLUSTER_ROLE_ARN != '' && vars.CREATE_CLUSTER_ROLE_ARN != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.CREATE_CLUSTER_ROLE_ARN }}
+          role-chaining: true
+          unset-current-credentials: true
+          role-session-name: create-${{ inputs.cluster }}-${{ github.run_id }}
+          role-duration-seconds: 3600
+      # Create, then forget: stage 2's pools leave its state once made (below),
+      # so a re-run must not make them again. A pool in the cloud but not in
+      # the state was made and forgotten: skipped. A pool in the state (a run
+      # that failed half way) is carried on as usual.
+      - name: Forgotten node pools
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        env:
+          ACCOUNT: ${{ steps.prepare.outputs.account_id }}
+          REGION: ${{ steps.prepare.outputs.region }}
+          CLUSTER: ${{ inputs.cluster }}
+        run: |
+          set -euo pipefail
+          key="accounts/$ACCOUNT/clusters/$CLUSTER/2-nodepools.tfstate"
+          aws s3 cp "s3://$STATE_BUCKET/$key" "$RUNNER_TEMP/2-nodepools.tfstate" --region "$STATE_REGION" --only-show-errors 2>/dev/null ||
+            echo '{"resources": []}' > "$RUNNER_TEMP/2-nodepools.tfstate"
+          creds=$(aws sts assume-role --role-arn "arn:aws:iam::$ACCOUNT:role/$ADMIN_ROLE_NAME" \
+                    --role-session-name eksmanager-create-cluster --duration-seconds 900 --query Credentials --output json)
+          live=$(AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds") AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$creds") \
+                 AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$creds") \
+                 aws eks list-nodegroups --cluster-name "$CLUSTER" --region "$REGION" --query nodegroups --output json)
+          skip=$(LIVE="$live" python3 - <<'EOF'
+          import json, os
+          state = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "2-nodepools.tfstate")))
+          held = {i.get("index_key") for r in state.get("resources", [])
+                  if r.get("type") == "aws_eks_node_group" and r.get("name") == "pool"
+                  for i in r.get("instances", [])}
+          live = set(json.loads(os.environ["LIVE"]) or [])
+          print(json.dumps(sorted(n for n in ("nodepool1", "general") if n in live and n not in held)))
+          EOF
+          )
+          echo "TF_VAR_skip_pools=$skip" >> "$GITHUB_ENV"
+          [ "$skip" = "[]" ] || echo "Already made and forgotten, not made again: $skip" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: 2-nodepools
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: bash scripts/run_tofu_stage.sh 2-nodepools "${{ steps.prepare.outputs.account_id }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "$STATE_REGION" apply "$TFVARS"
+      # Forget them: out of the state, not destroyed (OpenTofu's "removed,
+      # destroy = false", done as state rm because the resources stay in the
+      # config for the next cluster's create). From here they are the GUI's,
+      # and adopted into the CD repo when the node pool operator is installed.
+      - name: Forget the node pools
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir=tofu/create-cluster/2-nodepools
+          mapfile -t held < <(tofu -chdir="$dir" state list | grep -E '^(aws_eks_node_group\.pool|aws_autoscaling_group_tag\.)' || true)
+          if [ ${#held[@]} -eq 0 ]; then
+            echo "Nothing to forget."
+          else
+            tofu -chdir="$dir" state rm "${held[@]}"
+            echo "Forgotten (not destroyed): ${held[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Credentials (3-addons)
+        if: ${{ vars.CREATE_CLUSTER_ROLE_ARN != '' && vars.CREATE_CLUSTER_ROLE_ARN != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.CREATE_CLUSTER_ROLE_ARN }}
+          role-chaining: true
+          unset-current-credentials: true
+          role-session-name: create-${{ inputs.cluster }}-${{ github.run_id }}
+          role-duration-seconds: 3600
+      - name: 3-addons
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: bash scripts/run_tofu_stage.sh 3-addons "${{ steps.prepare.outputs.account_id }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "$STATE_REGION" apply "$TFVARS"
+
+      # A green run means every add-on really is ACTIVE, healthy and the
+      # newest compatible version: fails otherwise, with the table in the
+      # run summary.
+      - name: Check the add-ons
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=$(python3 -c "import json;print(json.load(open('build/create-cluster/3-addons.outputs.json'))['expected_addons']['value'])")
+          python3 scripts/create_cluster.py addon-report \
+            --cluster "${{ inputs.cluster }}" \
+            --region "${{ steps.prepare.outputs.region }}" \
+            --role-arn "arn:aws:iam::${{ steps.prepare.outputs.account_id }}:role/$ADMIN_ROLE_NAME" \
+            --expected "$expected"
+
+      - name: Credentials (4-platform)
+        if: ${{ vars.CREATE_CLUSTER_ROLE_ARN != '' && vars.CREATE_CLUSTER_ROLE_ARN != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.CREATE_CLUSTER_ROLE_ARN }}
+          role-chaining: true
+          unset-current-credentials: true
+          role-session-name: create-${{ inputs.cluster }}-${{ github.run_id }}
+          role-duration-seconds: 3600
+      - name: 4-platform
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: bash scripts/run_tofu_stage.sh 4-platform "${{ steps.prepare.outputs.account_id }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "$STATE_REGION" apply "$TFVARS"
+
+      - name: Record the cluster
+        id: register
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # One outputs file from the stages that report what the cluster is.
+          python3 - <<'EOF'
+          import json
+          merged = {}
+          for s in ("1-cluster", "4-platform"):
+              merged.update(json.load(open(f"build/create-cluster/{s}.outputs.json")))
+          json.dump(merged, open("build/create-cluster/outputs.json", "w"), indent=2)
+          EOF
+          python3 scripts/create_cluster.py register \
+            --cluster "${{ inputs.cluster }}" \
+            --account-id "${{ steps.prepare.outputs.account_id }}" \
+            --tofu-outputs build/create-cluster/outputs.json \
+            --addon-versions build/create-cluster/addon-versions.json
+
+      # Through a pull request squash-merged with retries
+      # (gitopsmanager/Auto-Commit-Squash-Merge): another run's record is
+      # merged with, never overwritten. Needs the repository to allow GitHub
+      # Actions to create pull requests.
+      - name: Commit the cluster record
+        if: ${{ !inputs.dry_run }}
+        uses: gitopsmanager/Auto-Commit-Squash-Merge@v2
+        with:
+          token: ${{ github.token }}
+          repo_owner: ${{ github.repository_owner }}
+          repo_name: ${{ github.event.repository.name }}
+          path: .
+          repo_path_rel: clusters
+          extra_paths: clusters.json
+          cluster: ${{ inputs.cluster }}
+          skip_if_unchanged: "true"
+          push_auth: token
+          commit_message: "Created cluster ${{ inputs.cluster }} (run ${{ github.run_id }})"
+
+      # After a cancel. The GUI offers none for a create, but GitHub's Cancel
+      # button does, and a cancelled step is killed about 10 seconds later.
+      # OpenTofu runs apart from the stage steps and has been asked to stop
+      # gracefully (one interrupt): it finishes what it is changing, writes
+      # its state and releases its lock. This waits for that, and removes a
+      # lock this runner left only if OpenTofu died holding it. Re-running
+      # the create continues from where it stopped (scripts/run_tofu_stage.sh).
+      - name: Stop OpenTofu gracefully
+        if: cancelled()
+        shell: bash
+        timeout-minutes: 45
+        run: bash scripts/run_tofu_stage.sh --stop
+
+      # The same hand-off the server makes for an agent-built cluster:
+      # add-cluster-network.yml opens the prefix-list rules on the cluster
+      # and NLB security groups. Started with this run's token: a dispatch is
+      # the one event GITHUB_TOKEN may start a run with.
+      - name: Start the network rules
+        if: ${{ !inputs.dry_run && steps.register.outputs.register_network == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/dispatch.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/add-cluster-network.yml/dispatches" \
+            -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"cluster_name\":\"${{ inputs.cluster }}\"}}")
+          [ "$code" = 204 ] || { echo "::error::add-cluster-network.yml dispatch failed (HTTP $code)"; cat /tmp/dispatch.json; exit 1; }
+          echo "Started add-cluster-network.yml for ${{ inputs.cluster }}" >> "$GITHUB_STEP_SUMMARY"
+

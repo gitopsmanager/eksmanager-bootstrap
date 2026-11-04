@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "EXAMPLE -- the trust policy for the role named in hosted-zones.json under",
+    "roles.external_dns. Not applied by this repo; the customer creates it in",
+    "the account that owns the zone.",
+    "",
+    "Different mechanism from cert_manager. external-dns runs INSIDE the",
+    "cluster, so it uses EKS Pod Identity: the pod identity agent obtains",
+    "credentials for this role and hands them to the external-dns pod. Nothing",
+    "outside the cluster assumes it, which is why there is no cross-account",
+    "principal here.",
+    "",
+    "sts:TagSession is required alongside sts:AssumeRole -- Pod Identity tags",
+    "the session with the cluster, namespace and service account, and the",
+    "AssumeRole call fails without permission to set those tags.",
+    "",
+    "The association is made separately, per cluster, with",
+    "eks:CreatePodIdentityAssociation naming this role, the namespace and the",
+    "service account -- so the trust policy needs no cluster-specific detail.",
+    "",
+    "Permissions on this role are the customer's decision. external-dns needs",
+    "route53:ChangeResourceRecordSets on the zone it manages, plus",
+    "route53:ListHostedZones and ListResourceRecordSets. Unlike cert_manager it",
+    "does need to write A and CNAME records, so it cannot be constrained to TXT."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowEksPodIdentity",
+      "Effect": "Allow",
+      "Principal": { "Service": "pods.eks.amazonaws.com" },
+      "Action": ["sts:AssumeRole", "sts:TagSession"]
+    }
+  ]
+}

@@ -1,0 +1,520 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3Bootstrap",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "${BOOTSTRAP_BUCKET_ARN}",
+        "${BOOTSTRAP_BUCKET_ARN}/*"
+      ]
+    },
+    {
+      "Sid": "TerraformStateBackend",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "${BOOTSTRAP_BUCKET_ARN}/state/*"
+    },
+    {
+      "Sid": "SecretsManager",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": [
+        "${CLIENT_SECRET_ARN}"
+      ]
+    },
+    {
+      "Sid": "AssumeManagementAccountBootstrapRole",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "${MANAGEMENT_BOOTSTRAP_ROLE_ARN}"
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:*:${SHARED_SERVICES_ACCOUNT_ID}:log-group:/aws/codebuild/*"
+    },
+    {
+      "Sid": "DelegatedStackSetOperations",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStackSet",
+        "cloudformation:UpdateStackSet",
+        "cloudformation:DeleteStackSet",
+        "cloudformation:DescribeStackSet",
+        "cloudformation:DescribeStackSetOperation",
+        "cloudformation:ListStackSetOperations",
+        "cloudformation:ListStackInstances",
+        "cloudformation:CreateStackInstances",
+        "cloudformation:UpdateStackInstances",
+        "cloudformation:DeleteStackInstances",
+        "cloudformation:DescribeStackInstance",
+        "cloudformation:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:*:*:stackset/EKSManagerEnableAccountStackSet:*",
+        "arn:aws:cloudformation::${MANAGEMENT_ACCOUNT_ID}:stackset-target/EKSManagerEnableAccountStackSet:*"
+      ]
+    },
+    {
+      "Sid": "ListStackSets",
+      "Effect": "Allow",
+      "Action": "cloudformation:ListStackSets",
+      "Resource": "*"
+    },
+    {
+      "Sid": "StackSetTemplateResourceTypes",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStackSet",
+        "cloudformation:UpdateStackSet",
+        "cloudformation:CreateStackInstances",
+        "cloudformation:UpdateStackInstances",
+        "cloudformation:DeleteStackInstances"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:*::type/resource/AWS-IAM-Role",
+        "arn:aws:cloudformation:*::type/resource/AWS-IAM-ManagedPolicy"
+      ]
+    },
+    {
+      "Sid": "OrganizationsReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:DescribeOrganization",
+        "organizations:ListRoots",
+        "organizations:ListOrganizationalUnitsForParent",
+        "organizations:ListAccountsForParent",
+        "organizations:ListDelegatedAdministrators",
+        "organizations:DescribeAccount"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassRoleForStackSets",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/stacksets.cloudformation.amazonaws.com/*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": "stacksets.cloudformation.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "AllowVPCAttachment",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateNetworkInterface",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DeleteNetworkInterface",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeDhcpOptions",
+        "ec2:DescribeVpcs"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowVPCNetworkInterfacePermission",
+      "Effect": "Allow",
+      "Action": "ec2:CreateNetworkInterfacePermission",
+      "Resource": "arn:aws:ec2:*:${SHARED_SERVICES_ACCOUNT_ID}:network-interface/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:AuthorizedService": "codebuild.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "PublicAmiLookup",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameter",
+      "Resource": "arn:aws:ssm:*::parameter/aws/service/canonical/ubuntu/*"
+    },
+    {
+      "Sid": "SsmConfigParameters",
+      "Effect": "Allow",
+      "Action": "ssm:*",
+      "Resource": "arn:aws:ssm:*:${SHARED_SERVICES_ACCOUNT_ID}:parameter/EKSManager/config/*"
+    },
+    {
+      "Sid": "SsmDescribeParameters",
+      "Effect": "Allow",
+      "Action": "ssm:DescribeParameters",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Ec2AmiLookup",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeImages",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Ec2AgentInstanceLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:ModifyInstanceAttribute",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "ec2:Describe*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassRoleForAgentInstanceProfile",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/EKSManagerAgentRole"
+    },
+    {
+      "Sid": "EKSManagerAgentRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:ListAttachedRolePolicies"
+      ],
+      "Resource": "arn:aws:iam::*:role/EKSManagerAgentRole"
+    },
+    {
+      "Sid": "EKSManagerEcrPushRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::*:role/EKSManager-push-ecr"
+    },
+    {
+      "Sid": "EKSManagerAgentInstanceProfile",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:TagInstanceProfile"
+      ],
+      "Resource": "arn:aws:iam::*:instance-profile/EKSManagerAgentRole"
+    },
+    {
+      "Sid": "EcrRepository",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:CreateRepository",
+        "ecr:DeleteRepository",
+        "ecr:DescribeRepositories",
+        "ecr:PutImageScanningConfiguration",
+        "ecr:TagResource",
+        "ecr:UntagResource",
+        "ecr:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:ecr:*:${SHARED_SERVICES_ACCOUNT_ID}:repository/eksmanager"
+    },
+    {
+      "Sid": "S3ConfigBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:ListBucket",
+        "s3:Get*",
+        "s3:Put*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}",
+        "arn:aws:s3:::eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}/*"
+      ]
+    },
+    {
+      "Sid": "S3LogBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:ListBucket",
+        "s3:Get*",
+        "s3:Put*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}",
+        "arn:aws:s3:::eksmanager-logs-${SHARED_SERVICES_ACCOUNT_ID}/*"
+      ]
+    },
+    {
+      "Sid": "EKSManagerCMKDescribe",
+      "Effect": "Allow",
+      "Action": "kms:DescribeKey",
+      "Resource": "arn:aws:kms:*:${SHARED_SERVICES_ACCOUNT_ID}:key/*"
+    },
+    {
+      "Sid": "EKSManagerCMKUse",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "arn:aws:kms:*:${SHARED_SERVICES_ACCOUNT_ID}:key/*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "s3.${SHARED_SERVICES_REGION}.amazonaws.com",
+            "secretsmanager.${SHARED_SERVICES_REGION}.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "AgentPrivateLinkEndpoint",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateVpcEndpoint",
+        "ec2:CreateSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:*:${SHARED_SERVICES_ACCOUNT_ID}:vpc-endpoint/*",
+        "arn:aws:ec2:*:${SHARED_SERVICES_ACCOUNT_ID}:security-group/*",
+        "arn:aws:ec2:*:${SHARED_SERVICES_ACCOUNT_ID}:vpc/*",
+        "arn:aws:ec2:*:${SHARED_SERVICES_ACCOUNT_ID}:subnet/*",
+        "arn:aws:ec2:*:${SHARED_SERVICES_ACCOUNT_ID}:route-table/*"
+      ]
+    },
+    {
+      "Sid": "AllowCrossRegionPrivateLink",
+      "Effect": "Allow",
+      "Action": [
+        "vpce:AllowMultiRegion"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AgentPrivateLinkPrivateZone",
+      "Effect": "Allow",
+      "Action": [
+        "route53:CreateHostedZone",
+        "route53:ChangeResourceRecordSets",
+        "route53:ListHostedZonesByName",
+        "route53:ListHostedZones",
+        "route53:GetHostedZone",
+        "route53:GetChange",
+        "route53:ChangeTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RunnersEcsCluster",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:CreateCluster",
+        "ecs:DeleteCluster",
+        "ecs:DescribeClusters",
+        "ecs:CreateService",
+        "ecs:UpdateService",
+        "ecs:DeleteService",
+        "ecs:DescribeServices",
+        "ecs:TagResource",
+        "ecs:UntagResource",
+        "ecs:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:ecs:*:${SHARED_SERVICES_ACCOUNT_ID}:cluster/runners-aws",
+        "arn:aws:ecs:*:${SHARED_SERVICES_ACCOUNT_ID}:service/runners-aws/*",
+        "arn:aws:ecs:*:${SHARED_SERVICES_ACCOUNT_ID}:task-definition/runners-aws-*"
+      ]
+    },
+    {
+      "Sid": "RunnersEcsTaskDefinitions",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:RegisterTaskDefinition",
+        "ecs:DeregisterTaskDefinition",
+        "ecs:DescribeTaskDefinition"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RunnersRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/EKSManager-runners-aws-*"
+    },
+    {
+      "Sid": "RunnersPassAgentRoleToTasks",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::${SHARED_SERVICES_ACCOUNT_ID}:role/EKSManagerAgentRole",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ecs-tasks.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "RunnersScaler",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:PutFunctionConcurrency",
+        "lambda:DeleteFunctionConcurrency",
+        "lambda:GetFunctionConcurrency",
+        "lambda:GetFunctionCodeSigningConfig",
+        "lambda:ListVersionsByFunction",
+        "lambda:CreateFunctionUrlConfig",
+        "lambda:UpdateFunctionUrlConfig",
+        "lambda:DeleteFunctionUrlConfig",
+        "lambda:GetFunctionUrlConfig",
+        "lambda:AddPermission",
+        "lambda:RemovePermission",
+        "lambda:GetPolicy",
+        "lambda:TagResource",
+        "lambda:UntagResource",
+        "lambda:ListTags"
+      ],
+      "Resource": "arn:aws:lambda:*:${SHARED_SERVICES_ACCOUNT_ID}:function:runners-aws-*"
+    },
+    {
+      "Sid": "RunnersScalerSchedule",
+      "Effect": "Allow",
+      "Action": [
+        "scheduler:CreateSchedule",
+        "scheduler:UpdateSchedule",
+        "scheduler:DeleteSchedule",
+        "scheduler:GetSchedule",
+        "scheduler:TagResource",
+        "scheduler:UntagResource",
+        "scheduler:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:scheduler:*:${SHARED_SERVICES_ACCOUNT_ID}:schedule/default/runners-aws-*"
+    },
+    {
+      "Sid": "RunnersLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:PutRetentionPolicy",
+        "logs:DeleteRetentionPolicy",
+        "logs:TagResource",
+        "logs:UntagResource",
+        "logs:ListTagsForResource",
+        "logs:TagLogGroup"
+      ],
+      "Resource": [
+        "arn:aws:logs:*:${SHARED_SERVICES_ACCOUNT_ID}:log-group:/gom/runners-aws*",
+        "arn:aws:logs:*:${SHARED_SERVICES_ACCOUNT_ID}:log-group:/aws/lambda/runners-aws-*"
+      ]
+    },
+    {
+      "Sid": "RunnersDescribeLogGroups",
+      "Effect": "Allow",
+      "Action": "logs:DescribeLogGroups",
+      "Resource": "*"
+    },
+    {
+      "Sid": "RunnersSecretsAndParameters",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:GetResourcePolicy",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource",
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:DeleteParameter",
+        "ssm:AddTagsToResource",
+        "ssm:RemoveTagsFromResource",
+        "ssm:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerRunners/*",
+        "arn:aws:ssm:*:${SHARED_SERVICES_ACCOUNT_ID}:parameter/EKSManagerRunners/*"
+      ]
+    },
+    {
+      "Sid": "RunnersReadTheirSecrets",
+      "Effect": "Allow",
+      "Action": "secretsmanager:DescribeSecret",
+      "Resource": [
+        "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManager/global-arc-*",
+        "arn:aws:secretsmanager:*:${SHARED_SERVICES_ACCOUNT_ID}:secret:/EKSManagerBootstrap/client-m2m-cognito-secret*"
+      ]
+    },
+    {
+      "Sid": "RunnersSecurityGroup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSecurityGroup",
+        "ec2:DeleteSecurityGroup",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

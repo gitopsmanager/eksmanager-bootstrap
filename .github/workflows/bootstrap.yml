@@ -1,0 +1,73 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+name: Publish bootstrap pipeline
+
+# Manually triggered — zips this repo and uploads it to the S3 bucket
+# setup-pipeline.sh/.ps1 created, which starts a CodeBuild run automatically
+# via EventBridge. Uses OIDC to assume an AWS role — no long-lived AWS
+# credential is stored in this repo.
+#
+# Must be run from the "main" branch — the AWS role's trust policy only
+# accepts an OIDC token whose ref is refs/heads/main, so dispatching this
+# from any other branch will fail at the "configure-aws-credentials" step.
+#
+# Requires these repository variables (Settings -> Secrets and variables ->
+# Actions -> Variables) — not secrets, none of these are sensitive:
+#   AWS_ROLE_ARN  - from the `github_actions_role_arn` OpenTofu output
+#   AWS_REGION    - the shared services region, e.g. eu-west-1
+#   S3_BUCKET     - from the `bootstrap_bucket` OpenTofu output
+#   RUNNER_IMAGE  - optional (SaaS): the runner image GitOps Manager's runners
+#                   use, by digest. With the subscription's runners/ in this
+#                   repo, the build applies them (scripts/apply_runners.sh).
+#   RUNNERS_HOT, RUNNERS_MAX, RUNNERS_LONG_MAX
+#                 - optional (SaaS): how many runners. Ad-hoc: RUNNERS_HOT always
+#                   running (default 3), up to RUNNERS_MAX (10). Long jobs start
+#                   from zero, up to RUNNERS_LONG_MAX (10). Unset keeps the
+#                   default.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # What the build cannot know from the zip alone: whose repo this is, and
+      # the runner image (scripts/apply_runners.sh).
+      - name: Build settings
+        env:
+          ORG: ${{ github.repository_owner }}
+          RUNNER_IMAGE: ${{ vars.RUNNER_IMAGE }}
+          RUNNERS_HOT: ${{ vars.RUNNERS_HOT }}
+          RUNNERS_MAX: ${{ vars.RUNNERS_MAX }}
+          RUNNERS_LONG_MAX: ${{ vars.RUNNERS_LONG_MAX }}
+        run: |
+          mkdir -p .gom
+          python3 -c '
+          import json, os
+          b = {"github_org": os.environ["ORG"], "runner_image": os.environ["RUNNER_IMAGE"]}
+          # The runner counts the repository sets; unset keeps the module default.
+          for key, var in (("hot", "RUNNERS_HOT"), ("max", "RUNNERS_MAX"), ("long_max", "RUNNERS_LONG_MAX")):
+              v = os.environ.get(var, "").strip()
+              if v:
+                  if not v.isdigit():
+                      raise SystemExit(f"::error::{var} must be a whole number, got {v!r}")
+                  b[key] = int(v)
+          print(json.dumps(b))' > .gom/build.json
+          cat .gom/build.json
+
+      - name: Zip and upload
+        run: |
+          zip -qr /tmp/eksmanager-bootstrap.zip . -x ".git/*"
+          aws s3 cp /tmp/eksmanager-bootstrap.zip "s3://${{ vars.S3_BUCKET }}/eksmanager-bootstrap.zip"

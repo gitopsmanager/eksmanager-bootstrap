@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "FOR THE CUSTOMER, not applied by this repo.",
+    "",
+    "Add this statement to the trust policy of every role named in",
+    "hosted-zones.json under roles.cert_manager. It goes ALONGSIDE any",
+    "statements already there -- it does not replace them.",
+    "",
+    "Replace SHARED_SERVICES_ACCOUNT_ID with the account the EKS Manager",
+    "pipeline runs in. The role name is fixed, so this can be added before the",
+    "role exists.",
+    "",
+    "Without it, the certificate pipeline fails in pre_build naming the role",
+    "that refused -- DNS-01 cannot write its _acme-challenge record.",
+    "",
+    "The permissions that role needs are the customer's own decision. The",
+    "minimum for DNS-01 is route53:ChangeResourceRecordSets on the public",
+    "hosted zone, route53:GetChange, and route53:ListHostedZonesByName. Both",
+    "can be constrained further with the RecordTypes and",
+    "NormalizedRecordNames condition keys, to TXT records named",
+    "_acme-challenge.* -- see the README."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowEKSManagerLetsEncrypt",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::SHARED_SERVICES_ACCOUNT_ID:role/EKSManagerLetsEncryptRole"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}

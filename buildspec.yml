@@ -1,0 +1,287 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+version: 0.2
+
+# -----------------------------------------------------------------------------
+# EKS Manager Bootstrap — AWS CodeBuild buildspec
+# -----------------------------------------------------------------------------
+# Sourced from S3 (see iam/codebuild-pipeline-tf/main.tf) — setup-pipeline.sh/
+# .ps1 clones your private copy with a GitHub App token, zips it, and uploads it here.
+# CodeBuild itself never touches GitHub. The server supplies presigned S3
+# URLs, SSO ARN and a bearer token via POST /bootstrap/aws.
+#
+# Entra SAML SSO is set up separately, outside this pipeline — see
+# the gitopsmanager-identity-bootstrap repository.
+#
+# Environment variables (set on the CodeBuild project):
+#   EKSMANAGER_CLIENT_ID    ← M2M client ID        (from Settings → Terraform tile)
+#   EKSMANAGER_COGNITO_URL  ← Cognito token endpoint
+#   EKSMANAGER_API_URL      ← EKS Manager API URL
+#
+# Management/shared-services account+region and the agent's name/subnet/
+# security group/AMI are NOT CodeBuild env vars and are not in topology.json --
+# they're pinned once via setup-pipeline.sh (Settings → Terraform tile's
+# Generate button), written to pinned.auto.tfvars.json, and committed straight
+# into this repo. Terraform loads that file automatically. To change any of
+# them, re-run setup-pipeline.sh -- not this buildspec, not a GUI edit.
+# The modules are applied with OpenTofu (tofu), never terraform.
+#
+# Secrets Manager (set once):
+#   /EKSManagerBootstrap/client-m2m-cognito-secret  ← M2M client secret
+# -----------------------------------------------------------------------------
+
+env:
+  secrets-manager:
+    EKSMANAGER_CLIENT_SECRET: "/EKSManagerBootstrap/client-m2m-cognito-secret"
+
+phases:
+  install:
+    commands:
+      # Egress check, first thing. This project is VPC-attached, so it has
+      # whatever internet access its subnet's route table gives it and no more
+      # -- with no NAT gateway everything outbound fails, and the first symptom
+      # used to be a bare "wget: unable to resolve host" on the Terraform
+      # download, which reads like a mirror problem rather than a network one.
+      #
+      # checkip.amazonaws.com is AWS-run and returns the caller's public IP as
+      # plain text, so this doubles as the whitelisting check: the address it
+      # prints is what the EKS Manager API sees.
+      - |
+        EGRESS_ERR=$(mktemp)
+        EGRESS_IP=$(curl -sS --connect-timeout 10 --max-time 20 https://checkip.amazonaws.com 2>"${EGRESS_ERR}") || EGRESS_IP=""
+        EGRESS_IP=$(printf '%s' "${EGRESS_IP}" | tr -d ' \t\r\n')
+        case "${EGRESS_IP}" in
+          ""|*[!0-9.]*)
+            echo "=============================================================="
+            echo "ERROR: no internet egress from this CodeBuild container."
+            echo "  curl said: $(cat "${EGRESS_ERR}" 2>/dev/null || echo '<no output>')"
+            echo ""
+            echo "  This project is attached to a VPC, so it can only reach what"
+            echo "  its subnet routes to. A private subnet with no NAT gateway"
+            echo "  has no outbound path at all."
+            echo ""
+            echo "  Check, for the subnet in the project's VPC config:"
+            echo "    - a route for 0.0.0.0/0 to a NAT gateway"
+            echo "    - the NAT gateway is in a PUBLIC subnet with an IGW route"
+            echo "    - the security group allows outbound 443"
+            echo "    - NACLs allow return traffic on ephemeral ports"
+            echo "=============================================================="
+            rm -f "${EGRESS_ERR}"
+            exit 1
+            ;;
+          *)
+            rm -f "${EGRESS_ERR}"
+            echo "OK: internet egress confirmed, public IP ${EGRESS_IP}"
+            ;;
+        esac
+      # OpenTofu, pinned, its checksum checked against the release's SHA256SUMS.
+      - TOFU_VERSION="1.13.1"
+      - |
+        set -eu
+        base="https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}"
+        wget -q -O tofu.zip "${base}/tofu_${TOFU_VERSION}_linux_amd64.zip"
+        wget -q -O tofu.sums "${base}/tofu_${TOFU_VERSION}_SHA256SUMS"
+        grep " tofu_${TOFU_VERSION}_linux_amd64.zip$" tofu.sums | sed "s/tofu_${TOFU_VERSION}_linux_amd64.zip/tofu.zip/" | sha256sum -c -
+        unzip -q tofu.zip -d /tmp/tofu-install && mv /tmp/tofu-install/tofu /usr/local/bin/ && rm -f tofu.zip tofu.sums
+      - tofu version
+
+  pre_build:
+    commands:
+      # Confirm AWS runner identity
+      - aws sts get-caller-identity
+      - "echo 'OK: AWS identity confirmed'"
+
+      # ── Get M2M bearer token and validate topology ────────────────────────
+      # Combined into one script so TOKEN is set and used in the same shell
+      # process -- CODEBUILD_ENV_FILE isn't populated in every CodeBuild
+      # environment, so it can't be relied on to pass it to a separate
+      # commands: list item.
+      # Comments live out here, at YAML level, NOT inside the `- |` block:
+      # CodeBuild echoes the whole block verbatim as the "command" it is
+      # running, so anything in there is reprinted into the log ahead of the
+      # actual output and buries it.
+      #
+      # Status and body are captured rather than discarded. This was
+      # `curl -fsSL`, where -f fails silently on an HTTP error and -s hides the
+      # body, so invalid credentials, a wrong Cognito URL and an unroutable
+      # subnet all produced the same bare "Failed to obtain M2M bearer token".
+      #
+      # --retry covers genuine transients only: curl does not retry a 4xx, so
+      # bad credentials still fail at once rather than three times slower.
+      #
+      # Cognito's error body names the cause (invalid_client,
+      # unauthorized_client, invalid_grant) and carries no secret -- the
+      # request holds the secret, the reply does not.
+      - |
+        TOKEN_BODY=$(mktemp)
+        TOKEN_STATUS=$(curl -sS -o "${TOKEN_BODY}" -w '%{http_code}' \
+          --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 \
+          -X POST "${EKSMANAGER_COGNITO_URL}/oauth2/token" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          -d "grant_type=client_credentials&client_id=${EKSMANAGER_CLIENT_ID}&client_secret=${EKSMANAGER_CLIENT_SECRET}") \
+          || TOKEN_STATUS="000"
+        CURL_RC=$?
+        TOKEN=$(grep -o '"access_token":"[^"]*"' "${TOKEN_BODY}" | cut -d'"' -f4)
+        if [ -z "${TOKEN}" ] || [ "${TOKEN}" = "null" ]; then
+          echo "=============================================================="
+          echo "ERROR: could not get the M2M bearer token (HTTP ${TOKEN_STATUS})"
+          echo "  endpoint : ${EKSMANAGER_COGNITO_URL}/oauth2/token"
+          echo "  client id: ${EKSMANAGER_CLIENT_ID}"
+          echo "  response : $(cat "${TOKEN_BODY}")"
+          case "${TOKEN_STATUS}" in
+            000) echo "  CAUSE: no HTTP response -- CodeBuild never reached Cognito."
+                 echo "         This project is VPC-attached; its subnet needs egress." ;;
+            400|401) echo "  CAUSE: Cognito rejected the credentials. Check EKSMANAGER_CLIENT_ID,"
+                     echo "         the Secrets Manager secret /EKSManagerBootstrap/client-m2m-cognito-secret,"
+                     echo "         and that client_credentials is enabled on the app client." ;;
+            404) echo "  CAUSE: endpoint not found -- EKSMANAGER_COGNITO_URL may have a trailing slash." ;;
+            *)   echo "  CAUSE: unexpected status -- see the response above." ;;
+          esac
+          echo "=============================================================="
+          rm -f "${TOKEN_BODY}"
+          exit 1
+        fi
+        rm -f "${TOKEN_BODY}"
+        echo "OK: M2M bearer token obtained"
+
+        API_ERR=$(mktemp)
+        HTTP_STATUS=$(curl -sSL -X POST "${EKSMANAGER_API_URL}/bootstrap/aws" \
+          --connect-timeout 10 --max-time 60 \
+          -H "Authorization: Bearer ${TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d @topology.json \
+          -o terraform.tfvars.json \
+          -w "%{http_code}" 2>"${API_ERR}") || HTTP_STATUS="000"
+        API_RC=$?
+
+        if [ "${HTTP_STATUS}" != "200" ]; then
+          echo "=============================================================="
+          echo "ERROR: topology.json validation failed (HTTP ${HTTP_STATUS})"
+          echo "  endpoint : ${EKSMANAGER_API_URL}/bootstrap/aws"
+          echo "  curl rc  : ${API_RC}"
+          echo "  curl says: $(cat "${API_ERR}" 2>/dev/null || echo '<none>')"
+          echo "  response : $(cat terraform.tfvars.json 2>/dev/null)"
+          # curl's exit code splits the 000 case in two, and they are not the
+          # same problem: 7/28 means the packets never got anywhere, 52 means
+          # the server answered the TCP handshake and then closed without
+          # sending a response -- which is the server being unhealthy, not the
+          # network refusing to carry it.
+          case "${HTTP_STATUS}" in
+            000)
+              case "${API_RC}" in
+                52) echo "  CAUSE: connected to the API and got an EMPTY REPLY."
+                    echo "         TLS succeeded, so egress and the allowlist are fine --"
+                    echo "         the server accepted the connection and closed it without"
+                    echo "         answering. That is the API host, not the network:"
+                    echo "           - is the app running, and has it restarted recently?"
+                    echo "           - are the load balancer's targets healthy?"
+                    echo "           - check the app log for the moment of this build." ;;
+                7|28) echo "  CAUSE: never reached the API (curl ${API_RC})."
+                      echo "         Cognito was reachable a moment ago, so general egress works;"
+                      echo "         this is specific to the API host."
+                      echo "         Most likely its allowlist does not include this build's public"
+                      echo "         IP (printed as 'internet egress confirmed' in the INSTALL phase)."
+                      echo "         A network-level block drops packets, which shows as a timeout"
+                      echo "         rather than 403. Also check EKSMANAGER_API_URL host and port." ;;
+                35|60) echo "  CAUSE: TLS failed (curl ${API_RC}) -- certificate or protocol." ;;
+                *)  echo "  CAUSE: no HTTP response, curl exit ${API_RC}. See curl says above." ;;
+              esac ;;
+            401|403) echo "  CAUSE: the API rejected the token or this caller. Check the client's"
+                     echo "         entitlement and that this build's public IP is allowlisted." ;;
+            400|422) echo "  CAUSE: topology.json was rejected. See the response above." ;;
+            502|503|504) echo "  CAUSE: the load balancer answered but no healthy target did."
+                         echo "         Check target group health for the API." ;;
+            *)  echo "  CAUSE: unexpected status ${HTTP_STATUS} -- see the response above." ;;
+          esac
+          echo "=============================================================="
+          rm -f "${API_ERR}"
+          exit 1
+        fi
+        rm -f "${API_ERR}"
+        echo "OK: topology.json validated (HTTP 200) — terraform.tfvars.json received"
+
+      - cp terraform.tfvars.json pinned.auto.tfvars.json aws/
+      - |
+        SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('pinned.auto.tfvars.json'))['shared_services_account_id'])")
+        SHARED_SERVICES_REGION=$(python3 -c "import json; print(json.load(open('pinned.auto.tfvars.json'))['shared_services_region'])")
+        STATE_BUCKET="eksmanager-bootstrap-${SHARED_SERVICES_ACCOUNT_ID}"
+
+        tofu -chdir=aws init -input=false \
+          -backend-config="bucket=${STATE_BUCKET}" \
+          -backend-config="region=${SHARED_SERVICES_REGION}"
+      - "echo 'OK: tofu init complete'"
+
+  build:
+    commands:
+      - |
+        set -eu
+        SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_account_id'])")
+        SHARED_SERVICES_REGION=$(python3 -c "import json; print(json.load(open('aws/pinned.auto.tfvars.json'))['shared_services_region'])")
+
+        if [ "${DESTROY_MODE:-}" = "true" ]; then
+          echo "DESTROY_MODE=true — tearing down the aws/ module."
+
+          CONFIG_BUCKET="eks-manager-config-store-${SHARED_SERVICES_ACCOUNT_ID}"
+          VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${CONFIG_BUCKET}" \
+            --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
+          if [ "$(echo "$VERSIONS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+            aws s3api delete-objects --bucket "${CONFIG_BUCKET}" --delete "$VERSIONS_JSON" >/dev/null
+          fi
+          MARKERS_JSON=$(aws s3api list-object-versions --bucket "${CONFIG_BUCKET}" \
+            --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}' 2>/dev/null || echo '{}')
+          if [ "$(echo "$MARKERS_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("Objects") or []))')" != "0" ]; then
+            aws s3api delete-objects --bucket "${CONFIG_BUCKET}" --delete "$MARKERS_JSON" >/dev/null
+          fi
+
+          IMAGE_IDS=$(aws ecr list-images --repository-name eksmanager --region "${SHARED_SERVICES_REGION}" \
+            --output json --query 'imageIds' 2>/dev/null || echo '[]')
+          if [ "$(echo "$IMAGE_IDS" | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')" != "0" ]; then
+            aws ecr batch-delete-image --repository-name eksmanager --region "${SHARED_SERVICES_REGION}" \
+              --image-ids "$IMAGE_IDS" >/dev/null
+          fi
+
+          # The runners first: they run as the agent role aws/ manages.
+          bash scripts/apply_runners.sh destroy
+
+          tofu -chdir=aws destroy -input=false -auto-approve
+          echo "OK: tofu destroy complete"
+
+        else
+          # PLAN_ONLY=true (an environment override on the build): plan aws/
+          # and the runners, say whether anything would change, and stop --
+          # the check after a change of tool or version (Terraform to
+          # OpenTofu), before anything is applied.
+          plan_rc=0
+          tofu -chdir=aws plan -input=false -out=tfplan -detailed-exitcode || plan_rc=$?
+          case "$plan_rc" in
+            0) echo "PLAN (aws/): no changes" ;;
+            2) echo "PLAN (aws/): changes, listed above" ;;
+            *) exit "$plan_rc" ;;
+          esac
+          if [ "${PLAN_ONLY:-}" = "true" ]; then
+            bash scripts/apply_runners.sh plan
+            echo "PLAN_ONLY=true: nothing applied."
+            exit 0
+          fi
+
+          tofu -chdir=aws apply -input=false tfplan
+          echo "OK: tofu apply complete"
+
+          # GitOps Manager's runners, when the subscription's sync has put
+          # runners/ here (does nothing otherwise). After aws/: they run as
+          # the agent role, in the agent's subnet.
+          bash scripts/apply_runners.sh apply
+
+          # Connect the agent to the server over PrivateLink. Skips itself when
+          # EKSMANAGER_ENDPOINT_SERVICE_NAME is unset, so installations not
+          # using it are unaffected.
+          #
+          # After the apply on purpose: the agent's VPC and subnet must exist,
+          # and the script proves the endpoint answers before creating the
+          # private hosted zone that shadows the server's hostname.
+          bash scripts/setup_agent_privatelink.sh aws/pinned.auto.tfvars.json
+        fi
+
+  post_build:
+    commands:
+      - echo "Bootstrap complete."
