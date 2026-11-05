@@ -126,17 +126,15 @@ a repository you own. They are named here because the IAM side has been taken as
 far as it can go without them: AWS can verify which repository and branch a
 workflow ran from, but not who approved the change that got it there.
 
-### Required: let workflows open pull requests
+### Required: a GitHub App
 
 Workflows that record something here (`bootstrap-create-cluster.yml`'s `clusters.json` and `clusters/<cluster>.outputs.json`) commit it through a pull
 request that is squash-merged at once (gitopsmanager/Auto-Commit-Squash-Merge),
-so two runs at the same time are merged, never overwritten. They use the run's
-own token, which GitHub lets open pull requests only when **Settings ->
-Actions -> General -> Workflow permissions -> Allow GitHub Actions to create
-and approve pull requests** is on (or the same setting for the whole
-organisation). It is off by default; without it the record step fails. With a
-required review on `main`, allow GitHub Actions to bypass it, or the merge
-waits for a review that never comes.
+so two runs at the same time are merged, never overwritten. They commit it as a GitHub App, so install one on this repository with
+**Contents** and **Pull requests** read and write, then set the repository
+variable `GOM_APP_CLIENT_ID` and the secret `GOM_APP_PRIVATE_KEY`. Without them
+the run stops at its first step. With a required review on `main`, allow the App
+to bypass it, or the merge waits for a review that never comes.
 
 ## Setup
 
