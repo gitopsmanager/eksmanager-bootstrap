@@ -66,7 +66,7 @@ resource "aws_eks_node_group" "bootstrap" {
   labels = { sku = "general", "gitopsmanager.io/bootstrap" = "true" }
 
   # Terraform's while it lives: the agent and the GUI leave it alone.
-  tags = merge(local.tags, { Name = "${var.cluster.name}-bootstrap", CreatedBy = "Terraform" })
+  tags = merge(local.tags, { Name = "${var.cluster.name}-bootstrap", CreatedBy = "GitOpsManager-Terraform" })
 
   timeouts {
     create = "40m"
