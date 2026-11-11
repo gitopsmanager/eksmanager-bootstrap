@@ -1,0 +1,4 @@
+[
+  { "environment": "dev",  "prefix-lists": ["corp_vpn", "azure_cluster_cidrs"] },
+  { "environment": "prod", "prefix-lists": ["corp_vpn", "office"] }
+]

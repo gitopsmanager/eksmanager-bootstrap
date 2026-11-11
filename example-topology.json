@@ -1,0 +1,10 @@
+{
+    "manageSCPAutomatically": true,
+    "secretsEditing": false,
+    "orgConfig": {
+      "ou-xxxx-workloads": {
+        "111111111111": ["eu-west-1"],
+        "222222222222": ["eu-west-1", "eu-central-1"]
+      }
+    }
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gitopsmanager/eksmanager-bootstrap/clusters/cluster.schema.json",
+  "title": "EKS cluster definition",
+  "description": "clusters/<name>.json, read by bootstrap-create-cluster.yml. Files named example-*.json are examples and never created. The zone prefix decides the account, the DNS zone and the external-dns role, from hosted-zones.json. scripts/create_cluster.py enforces the same rules (it has no jsonschema dependency).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "zone_prefix", "region", "kubernetes_version", "prefix_list_group", "network", "node_pools"],
+  "properties": {
+    "name": {
+      "description": "Cluster name. Must match the file name. Lowercase letters, digits and hyphens, starting with a letter; at most 100 characters (EKS).",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,99}$"
+    },
+    "zone_prefix": {
+      "description": "A dns-zone-prefix in hosted-zones.json.",
+      "type": "string"
+    },
+    "region": { "type": "string", "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$" },
+    "kubernetes_version": { "description": "Minor version, e.g. 1.36.", "type": "string", "pattern": "^1\\.[0-9]{2}$" },
+    "prefix_list_group": {
+      "description": "An environment in prefix-groups.json, or \"allow all\" (no prefix-list rules).",
+      "type": "string"
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subnet_ids"],
+      "properties": {
+        "subnet_ids": {
+          "description": "The cluster's subnets, one per availability zone, in one VPC. Also the internal NLB's subnets.",
+          "type": "array", "minItems": 2, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^subnet-[0-9a-f]{8,17}$" }
+        },
+        "service_cidr": { "type": "string", "default": "10.244.0.0/24", "pattern": "^[0-9.]+/[0-9]{1,2}$" }
+      }
+    },
+    "node_pools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "general"],
+      "properties": {
+        "system": { "$ref": "#/$defs/pool" },
+        "general": { "$ref": "#/$defs/pool" }
+      }
+    },
+    "global_namespaces": {
+      "description": "Namespaces created at create. Removing one later is refused, never a delete.",
+      "type": "array", "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" }
+    }
+  },
+  "$defs": {
+    "pool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instance_type", "count", "disk_size"],
+      "properties": {
+        "instance_type": { "type": "string", "pattern": "^[a-z0-9]+\\.[a-z0-9]+$" },
+        "count": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "disk_size": { "description": "GiB", "type": "integer", "minimum": 20, "maximum": 16384 }
+      }
+    }
+  }
+}

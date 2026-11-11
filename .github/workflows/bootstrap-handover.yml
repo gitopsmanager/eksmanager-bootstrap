@@ -1,0 +1,177 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+# The last step of a create: the bootstrap node group goes, now that the
+# cluster's operator runs the real pools. Started by the GUI's handover run
+# (a plan run, after the core stack), whose earlier steps
+#   1. wrote the system and general pools into the client's node pools file
+#      and rendered them (the core-stack nodepools task): ACK made them;
+#   2. handed the create's control plane and node roles to the iam-controller
+#      (cd-files.yml adopt-cluster-identities, core-stack tools/cd_adopt.py).
+# This run:
+#   - checks that every pool but bootstrap is ACTIVE with nodes, and refuses
+#     otherwise: deleting the bootstrap group with nothing to move to would
+#     leave the cluster's system pods nowhere to run;
+#   - runs 2-nodepools with bootstrap_pool false, which deletes the bootstrap
+#     group (EKS drains its nodes, respecting disruption budgets);
+#   - takes the control plane and node roles' managed policy attachments out
+#     of 1-cluster's state (never destroyed): the iam-controller changes
+#     them from now on. The roles stay in the state, their trust, description
+#     and tags ignored there (1-cluster's lifecycle).
+# Safe to run again: a group already gone and attachments already forgotten
+# are nothing to do.
+name: bootstrap-handover
+
+run-name: "Handover ${{ inputs.cluster }} -- ${{ inputs.requested_by || github.actor }} [${{ inputs.plan_step }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: "Cluster name: clusters/<cluster>.json"
+        required: true
+        type: string
+      requested_by:
+        description: "The GUI user, when the GUI starts it"
+        type: string
+        default: ""
+      plan_step:
+        description: "The GUI's plan step id, for matching this run (in the run name)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: create-cluster-${{ inputs.cluster }}
+  cancel-in-progress: false
+
+env:
+  STATE_BUCKET: ${{ vars.CREATE_CLUSTER_STATE_BUCKET }}
+  STATE_REGION: ${{ vars.AWS_REGION }}
+  TFVARS: build/create-cluster/create.auto.tfvars.json
+  ADMIN_ROLE_NAME: EKSManagerAdminRole
+
+jobs:
+  handover:
+    runs-on: ${{ vars.CREATE_CLUSTER_RUNNER || 'gom-aws-long' }}
+    timeout-minutes: 90
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v7
+
+      - name: The cluster file
+        shell: bash
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+        run: |
+          set -euo pipefail
+          [[ "$CLUSTER" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]] || { echo "::error::Not a cluster name: $CLUSTER"; exit 1; }
+          [ -f "clusters/$CLUSTER.json" ] || { echo "::error::No clusters/$CLUSTER.json: only a cluster made by bootstrap-create-cluster.yml has a bootstrap pool"; exit 1; }
+          echo "AWS_REGION=${{ vars.AWS_REGION }}" >> "$GITHUB_ENV"
+          echo "AWS_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> "$GITHUB_ENV"
+
+      - name: Credentials
+        if: ${{ vars.CREATE_CLUSTER_ROLE_ARN != '' && vars.CREATE_CLUSTER_ROLE_ARN != 'none' }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.CREATE_CLUSTER_ROLE_ARN }}
+          role-chaining: true
+          unset-current-credentials: true
+          role-session-name: handover-${{ inputs.cluster }}-${{ github.run_id }}
+          role-duration-seconds: 3600
+
+      # The same variables bootstrap-create-cluster.yml gives the stages.
+      - name: Settings
+        id: prepare
+        shell: bash
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+        run: |
+          set -euo pipefail
+          tag_name=$(aws ssm get-parameter --name /EKSManager/config/resource-tag-name --query Parameter.Value --output text 2>/dev/null || true)
+          tag_value=$(aws ssm get-parameter --name /EKSManager/config/resource-tag-value --query Parameter.Value --output text 2>/dev/null || true)
+          case "$tag_name" in ""|none|None) tag_name=""; tag_value="" ;; esac
+          case "$tag_value" in none|None) tag_value="" ;; esac
+          [ "$tag_name" = EKSManager ] && { tag_name=""; tag_value=""; }
+          secrets_region=$(python3 -c 'import json; print(json.load(open("pinned.auto.tfvars.json")).get("shared_services_region", ""))' 2>/dev/null || true)
+          [ -n "$secrets_region" ] || { echo "::error::pinned.auto.tfvars.json has no shared_services_region (run setup)"; exit 1; }
+          runtime=$(TAG_NAME="$tag_name" TAG_VALUE="$tag_value" SECRETS_REGION="$secrets_region" python3 - <<'EOF'
+          import json, os
+          print(json.dumps({
+            "shared_services_account_id": "${{ vars.SHARED_SERVICES_ACCOUNT_ID }}",
+            "secrets_region": os.environ["SECRETS_REGION"],
+            "runner_subnet_cidr": "${{ vars.RUNNER_SUBNET_CIDR }}",
+            "admin_role_name": os.environ["ADMIN_ROLE_NAME"],
+            "cd_repo_url": "https://github.com/${{ vars.CD_REPO }}.git",
+            "cost_tag_name": os.environ["TAG_NAME"],
+            "cost_tag_value": os.environ["TAG_VALUE"],
+          }))
+          EOF
+          )
+          python3 scripts/create_cluster.py prepare --cluster "$CLUSTER" --runtime "$runtime"
+
+      # Through EKSManagerAdminRole in the cluster's account, read only.
+      - name: The operator's pools are running
+        shell: bash
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          ACCOUNT: ${{ steps.prepare.outputs.account_id }}
+          REGION: ${{ steps.prepare.outputs.region }}
+        run: |
+          set -euo pipefail
+          creds=$(aws sts assume-role --role-arn "arn:aws:iam::$ACCOUNT:role/$ADMIN_ROLE_NAME" \
+                    --role-session-name eksmanager-handover --duration-seconds 900 --query Credentials --output json)
+          export AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds") AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$creds") \
+                 AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$creds")
+          others=0; system=0
+          for ng in $(aws eks list-nodegroups --cluster-name "$CLUSTER" --region "$REGION" --query 'nodegroups[]' --output text); do
+            [ "$ng" = bootstrap ] && continue
+            g=$(aws eks describe-nodegroup --cluster-name "$CLUSTER" --nodegroup-name "$ng" --region "$REGION" --output json)
+            status=$(jq -r .nodegroup.status <<<"$g"); desired=$(jq -r .nodegroup.scalingConfig.desiredSize <<<"$g")
+            echo "$ng: $status, $desired node(s)"
+            [ "$status" = ACTIVE ] && [ "$desired" -gt 0 ] || { echo "::error::$ng is $status with $desired nodes: the bootstrap pool stays until every operator pool runs"; exit 1; }
+            others=$((others + 1))
+            [ "$(jq -r '.nodegroup.labels.sku // ""' <<<"$g")" = system ] || [[ "$ng" == *system* || "$ng" == nodepool1 ]] && system=1
+          done
+          [ "$others" -gt 0 ] || { echo "::error::No node group but bootstrap: the handover's node pools step has not made any"; exit 1; }
+          [ "$system" = 1 ] || { echo "::error::No system pool among the operator's: the cluster's system pods need one before the bootstrap pool goes"; exit 1; }
+
+      - name: Install Terraform
+        # Pinned: must match TERRAFORM_VERSION in the buildspecs.
+        shell: bash
+        run: bash scripts/install_terraform.sh 1.11.0
+
+      - name: The bootstrap pool goes
+        shell: bash
+        env:
+          TF_VAR_bootstrap_pool: "false"
+        run: bash scripts/run_terraform_stage.sh 2-nodepools "${{ steps.prepare.outputs.account_id }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "$STATE_REGION" apply "$TFVARS"
+
+      # Out of the state, not destroyed: the iam-controller has them now.
+      - name: Forget the adopted roles' attachments
+        shell: bash
+        env:
+          ACCOUNT: ${{ steps.prepare.outputs.account_id }}
+          CLUSTER: ${{ inputs.cluster }}
+        run: |
+          set -euo pipefail
+          dir=terraform/create-cluster/1-cluster
+          terraform -chdir="$dir" init -input=false -reconfigure \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="key=accounts/$ACCOUNT/clusters/$CLUSTER/1-cluster.tfstate" \
+            -backend-config="region=$STATE_REGION" >/dev/null
+          mapfile -t held < <(terraform -chdir="$dir" state list | grep -E '^aws_iam_role_policy_attachment\.(control_plane|node)' || true)
+          if [ ${#held[@]} -eq 0 ]; then
+            echo "Nothing to forget."
+          else
+            terraform -chdir="$dir" state rm "${held[@]}"
+            echo "Forgotten (not destroyed), now the iam-controller's: ${held[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Stop Terraform gracefully
+        if: cancelled()
+        shell: bash
+        timeout-minutes: 45
+        run: bash scripts/run_terraform_stage.sh --stop

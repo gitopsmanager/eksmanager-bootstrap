@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "FOR THE CUSTOMER, not applied by this repo.",
+    "",
+    "The permissions policy for the role named in hosted-zones.json under",
+    "roles.cert_manager. Templated from a working deployment, so this is what",
+    "the role actually needs rather than a guess.",
+    "",
+    "Its trust policy is the separate example-cert-manager-trust-statement.json,",
+    "which lets EKSManagerLetsEncryptRole in the shared services account assume",
+    "it.",
+    "",
+    "Replace PUBLIC_ZONE_ID with the hosted zone id of the PUBLIC zone for this",
+    "environment. DNS-01 is validated over the public internet, so the",
+    "challenge record has to be written where Let's Encrypt can resolve it.",
+    "",
+    "This is the tightest role in the system, and worth keeping that way. Every",
+    "statement is scoped as far as Route 53 allows:",
+    "",
+    "  ResolveZoneId            ListHostedZonesByName takes no resource, so it",
+    "                           is unavoidably on '*'. It reveals zone names,",
+    "                           not records.",
+    "  ReadPublicZoneRecords    scoped to the one zone.",
+    "  WriteAcmeChallengeRecords scoped to the one zone AND to TXT records named",
+    "                           _acme-challenge.* -- so a role that leaked could",
+    "                           not be used to repoint a hostname.",
+    "  PollChangePropagation    GetChange is scoped to change/* rather than '*'.",
+    "",
+    "Permissions on this role are your decision. This pair is known to work."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ResolveZoneId",
+      "Effect": "Allow",
+      "Action": "route53:ListHostedZonesByName",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadPublicZoneRecords",
+      "Effect": "Allow",
+      "Action": "route53:ListResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/PUBLIC_ZONE_ID"
+    },
+    {
+      "Sid": "WriteAcmeChallengeRecords",
+      "Effect": "Allow",
+      "Action": "route53:ChangeResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/PUBLIC_ZONE_ID",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "route53:ChangeResourceRecordSetsRecordTypes": [
+            "TXT"
+          ]
+        },
+        "ForAllValues:StringLike": {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+            "_acme-challenge.*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "PollChangePropagation",
+      "Effect": "Allow",
+      "Action": "route53:GetChange",
+      "Resource": "arn:aws:route53:::change/*"
+    }
+  ]
+}

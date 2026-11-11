@@ -1,0 +1,16 @@
+{
+  "name": "use-dev-eks2",
+  "zone_prefix": "dev",
+  "region": "us-east-1",
+  "kubernetes_version": "1.36",
+  "prefix_list_group": "dev",
+  "network": {
+    "subnet_ids": ["subnet-0aaa1111bbbb2222c", "subnet-0ddd3333eeee4444f", "subnet-0fff5555aaaa6666b"],
+    "service_cidr": "10.244.0.0/24"
+  },
+  "node_pools": {
+    "system": { "instance_type": "m6i.large", "count": 1, "disk_size": 100 },
+    "general": { "instance_type": "r6i.xlarge", "count": 1, "disk_size": 150 }
+  },
+  "global_namespaces": ["argocd", "monitoring"]
+}
