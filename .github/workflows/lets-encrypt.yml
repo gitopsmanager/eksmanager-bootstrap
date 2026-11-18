@@ -80,14 +80,15 @@ jobs:
               # Names the secret: /EKSManagerZones/<prefix>-dns-zone-certs.
               prefix = z.get("dns-zone-prefix", "")
               if not prefix:
-                  problems.append(f"{where}: missing 'dns-zone-prefix' (dev, int, uat, we_prod ...) -- it names the secret")
+                  problems.append(f"{where}: missing 'dns-zone-prefix' (dev, int, uat, we-prod ...) -- it names the secret")
               else:
                   if prefix in seen_prefix:
                       problems.append(f"{where}: dns-zone-prefix '{prefix}' used more than once -- two zones would share one secret")
                   seen_prefix.add(prefix)
-                  # Secrets Manager names allow alphanumerics and /_+=.@-
-                  if not re.fullmatch(r"[A-Za-z0-9_+=.@-]+", prefix):
-                      problems.append(f"{where}: dns-zone-prefix '{prefix}' has characters not valid in a Secrets Manager name")
+                  # Lower-case letters, digits and dashes only, on every cloud
+                  # (11 Nov 2026): it names the secret as written.
+                  if not re.fullmatch(r"[a-z0-9-]+", prefix):
+                      problems.append(f"{where}: dns-zone-prefix '{prefix}' may contain only lower-case letters, digits and '-'")
               acct = str(z.get("account", ""))
               if acct and not (acct.isdigit() and len(acct) == 12):
                   problems.append(f"{where}: account '{acct}' is not a 12-digit AWS account id")
@@ -133,6 +134,9 @@ jobs:
           # it. The add-cluster module gets this right via shutil.copytree.
           cp -r terraform/lets-encrypt/. "$BUILD_DIR"/
           cp hosted-zones.json "$BUILD_DIR"/
+          # The Terraform installer and version guard the buildspec runs.
+          mkdir -p "$BUILD_DIR/scripts"
+          cp scripts/install_terraform.sh scripts/terraform_version_guard.sh "$BUILD_DIR/scripts/"
 
           echo "--- artifact contents ---"
           ls -1 "$BUILD_DIR"

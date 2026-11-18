@@ -9,9 +9,10 @@ variable "shared_services_region" {
 variable "acme_email" {
   type        = string
   description = <<-EOT
-    Registration contact for the ACME account. Let's Encrypt uses it for
-    expiry warnings, which are the backstop if a scheduled renewal silently
-    stops running.
+    Registration contact for the ACME account: Let's Encrypt's notices about
+    the account and its service. Not an expiry warning -- Let's Encrypt stopped
+    sending those in 2025 -- so a renewal that silently stops is caught by
+    EKS Manager's renewal-stalled and certificate-expiry alerts instead.
   EOT
 }
 
@@ -91,11 +92,11 @@ variable "public_resolvers" {
   description = <<-EOT
     Resolvers used for the DNS-01 pre-flight check.
 
-    Must be public. CodeBuild runs VPC-attached, and if that VPC is associated
-    with the private hosted zone then the build resolves the zone internally --
-    where the challenge TXT record does not exist, because it was written to
-    the public zone. lego would then wait for propagation it can never observe
-    and give up before Let's Encrypt is ever asked to validate. Pointing the
-    pre-check at public DNS makes it see what the CA will see.
+    Must be public, so the pre-check sees what the CA will see. The project is
+    deliberately not VPC-attached (iam/lets-encrypt-pipeline-tf), but if it
+    ever ran in a VPC associated with the private hosted zone, it would resolve
+    the zone internally, where the challenge TXT record does not exist because
+    it was written to the public zone. lego would then wait for propagation it
+    can never observe, and give up before Let's Encrypt is asked to validate.
   EOT
 }

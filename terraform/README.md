@@ -1,11 +1,25 @@
 <!-- Copyright (c) 2026 GitOps Manager, S.L. SPDX-License-Identifier: Apache-2.0 -->
 # terraform/
 
-Every module in this repo is run with **Terraform 1.11.0**, the version
+Every module in this repo is run with **Terraform 1.17.1**, the version
 `buildspec.yml`, the Let's Encrypt buildspec and the cluster buildspecs pin:
 the modules here, the root `aws/` module (the bootstrap build) and the three
 `iam/*-tf` modules (`setup-pipeline.sh`/`.ps1`, on your machine: run the same
 version there).
+
+Moving the pin is one-way. Terraform reads state written by an older 1.x, and
+records its own version when it next writes; an older Terraform is not promised
+to read state a newer one wrote. So raise the pin, never lower it: 1.11.0 to
+1.17.1 is safe, back again is not. Raise it in every buildspec, generator,
+workflow and setup script together (`grep -rn "install_terraform.sh 1\." .`,
+and `TF_PIN` / `$TfPin` in `setup-pipeline.sh` / `.ps1`).
+
+Every run also guards against going backwards, whatever the pin says. Before
+each `terraform init`, `scripts/terraform_version_guard.sh` reads which
+Terraform last wrote that state; if it is newer than the one installed, the
+buildspecs, workflows and `apply_runners.sh` install that version instead
+(`install_terraform.sh`, checksum verified), and `setup-pipeline` stops with a
+message, since it uses the Terraform on your machine.
 
 The create-cluster modules, the cluster identities and the handover are
 **opt-in** and not yet tested: they need `CREATE_CLUSTER=1` when

@@ -57,6 +57,11 @@ if [ -f .gom/build.json ]; then
   image=$(get .gom/build.json runner_image)
 fi
 
+# Never older than the Terraform that last wrote this state (CodeBuild: in place).
+here_rt=$(cd "$(dirname "$0")" && pwd)
+need=$(bash "$here_rt/terraform_version_guard.sh" s3 "eksmanager-bootstrap-${account}" "state/runners.tfstate" "$region")
+if [ -n "$need" ]; then TERRAFORM_INSTALL_DIR="${TERRAFORM_INSTALL_DIR:-/usr/local/bin}" bash "$here_rt/install_terraform.sh" "$need"; fi
+
 terraform -chdir=runners init -input=false -reconfigure \
   -backend-config="bucket=eksmanager-bootstrap-${account}" \
   -backend-config="region=${region}" \

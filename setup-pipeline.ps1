@@ -41,7 +41,7 @@
 
 .NOTES
     PREREQUISITES
-      - terraform >= 1.11.0 -- the version buildspec.yml pins; run the same
+      - terraform >= 1.17.1 -- the version buildspec.yml pins; run the same
         locally so the iam/* states this script writes stay in step
       - Credentials for the MANAGEMENT account already active in your shell
       - PowerShell 7.1 or later (`pwsh`) — not Windows PowerShell 5.1, and
@@ -492,6 +492,55 @@ and will not bypass it.
     return @($stateOut | Where-Object { $_ -notmatch '^data\.' }).Count
 }
 
+# ── Terraform on this machine: never older than the state ─────────────────────
+# Setup runs the Terraform installed here, not a pinned one. An older Terraform
+# is not promised to read state a newer one wrote, and these states are also
+# written elsewhere (another admin's machine). So before each init: read which
+# Terraform last wrote the state, and stop if this one is older. Nothing has
+# changed at that point. The state is read into memory only.
+$TfPin = "1.17.1"   # the version the buildspecs and workflows pin; move them together
+
+function Get-TfVersionOf([string] $Json) {
+    if ($Json -match '"terraform_version":\s*"([0-9][0-9.]*)') { return $Matches[1] }
+    return ""
+}
+
+function Get-LocalTfVersion {
+    $raw = (terraform version -json 2>$null) -join "`n"
+    return (Get-TfVersionOf $raw)
+}
+
+function Assert-TerraformNotOlderThanState([string] $RemoteKey) {
+    $have = Get-LocalTfVersion
+    if (Test-Path "terraform.tfstate") {
+        $state = Get-TfVersionOf (Get-Content "terraform.tfstate" -Raw)
+        $where = Join-Path (Get-Location) "terraform.tfstate"
+    } else {
+        $raw = aws s3 cp "s3://$StateBucket/$RemoteKey" - --region $Region 2>$null
+        $state = if ($LASTEXITCODE -eq 0) { Get-TfVersionOf ($raw -join "`n") } else { "" }
+        $where = "s3://$StateBucket/$RemoteKey"
+    }
+    if (-not $have -or -not $state) { return }
+    if ([version]$have -lt [version]$state) {
+        Write-Error @"
+This machine has Terraform $have, but $where
+was last written by Terraform $state.
+
+An older Terraform is not promised to read state a newer one wrote, so nothing
+has been changed. Install Terraform $state or newer ($TfPin is the version
+GitOps Manager pins) and run setup again.
+"@
+        exit 1
+    }
+}
+
+function Show-TfPinWarning {
+    $have = Get-LocalTfVersion
+    if ($have -and ([version]$have -lt [version]$TfPin)) {
+        Write-Warning "This machine has Terraform $have; GitOps Manager pins $TfPin. Setup goes on, and stops before touching any state a newer Terraform wrote. Installing $TfPin is recommended."
+    }
+}
+
 # Init against the shared backend. Migrates a local terraform.tfstate up on
 # first run, and refuses when both copies exist -- that is the one case where
 # guessing loses somebody's work.
@@ -531,6 +580,7 @@ the local one is, delete the remote object and re-run.
         $tfArgs += "-force-copy"
     }
 
+    Assert-TerraformNotOlderThanState $remoteKey
     terraform init @tfArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Error "terraform init failed for $ModuleName."
@@ -623,6 +673,7 @@ existing installation, re-run with `$env:EKSMANAGER_ALLOW_EMPTY_STATE = "true".
     }
 }
 
+Show-TfPinWarning
 Push-Location (Join-Path $ScriptDir "iam\codebuild-pipeline-tf")
 Invoke-TerraformInit -ModuleName "codebuild-pipeline"
 
@@ -1062,6 +1113,7 @@ if ($createClusterEnabled) {
     Write-Host ""
 
     Push-Location (Join-Path $ScriptDir "terraform\create-cluster-pipeline")
+    Assert-TerraformNotOlderThanState "setup/create-cluster-pipeline/terraform.tfstate"
     terraform init -input=false "-backend-config=bucket=$StateBucket" "-backend-config=region=$Region"
     if ($LASTEXITCODE -ne 0) { Pop-Location; Write-Error "terraform init failed (terraform/create-cluster-pipeline)."; exit 1 }
 

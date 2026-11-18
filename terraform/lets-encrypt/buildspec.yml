@@ -36,10 +36,10 @@ phases:
             ;;
           *) echo "OK: internet egress confirmed, public IP ${EGRESS_IP}" ;;
         esac
-      - TERRAFORM_VERSION="1.11.0"
-      - wget -q -O terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
-      - unzip -q terraform.zip -d /tmp/terraform-install && mv /tmp/terraform-install/terraform /usr/local/bin/ && rm terraform.zip
-      - terraform version
+      # Pinned, checksum verified. pre_build moves it up (never down) if the
+      # state was written by a newer Terraform. scripts/ is added to this zip
+      # by .github/workflows/lets-encrypt.yml.
+      - TERRAFORM_INSTALL_DIR=/usr/local/bin bash scripts/install_terraform.sh 1.17.1
 
   pre_build:
     commands:
@@ -183,6 +183,9 @@ phases:
         PY
 
       - |
+        # Never older than the Terraform that last wrote this state.
+        NEED=$(bash scripts/terraform_version_guard.sh s3 "${STATE_BUCKET}" "${STATE_KEY}" "${AWS_REGION}")
+        if [ -n "${NEED}" ]; then TERRAFORM_INSTALL_DIR=/usr/local/bin bash scripts/install_terraform.sh "${NEED}"; fi
         terraform init -input=false \
           -backend-config="bucket=${STATE_BUCKET}" \
           -backend-config="key=${STATE_KEY}" \

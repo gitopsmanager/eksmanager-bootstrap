@@ -85,7 +85,7 @@ encryption, no launch template.
 1. **Prerequisites**
    - The runner image, by digest, either on ghcr.io or in ECR (only with
      `CREATE_CLUSTER_CODEBUILD=1`).
-   - `terraform` 1.11.0 on the setup machine.
+   - `terraform` 1.17.1 on the setup machine.
    - `CREATE_CLUSTER=1` when running setup: the create-cluster features are
      opt-in.
    - The SCP detached from the demo shared services account only (step 1 of

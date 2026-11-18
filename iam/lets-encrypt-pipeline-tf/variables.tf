@@ -41,16 +41,19 @@ variable "renewal_schedule_expression" {
     four attempts before expiry. At 30-day intervals a single failed run would
     push the next attempt to expiry day itself.
 
-    Friday rather than Sunday, so a renewal that fails or produces a
-    certificate needing attention surfaces before the weekend rather than
-    during it -- leaving Saturday to act on it with several weeks of validity
-    still in hand.
+    Saturday, because a renewal does not stop at Secrets Manager: the agent
+    checks every namespace's dns-zone-certs about every two minutes and pushes
+    a new certificate into the clusters as soon as it appears. Running early on
+    Saturday puts that change inside the usual weekend maintenance window
+    rather than a working day. A failed run needs no weekend attention: it
+    reissues with 30 days left, so roughly four weekly attempts remain, and
+    EKS Manager alerts if the job stops succeeding.
 
     Times are UTC; EventBridge cron has no timezone. 03:00 UTC is 04:00 BST,
-    so a summer run still lands on Friday morning.
+    so a summer run still lands early on Saturday morning.
   EOT
   type        = string
-  default     = "cron(0 3 ? * FRI *)"
+  default     = "cron(0 3 ? * SAT *)"
 }
 
 # acme-email and acme-staging are NOT inputs here. They live at the top of

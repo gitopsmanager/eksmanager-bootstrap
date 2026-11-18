@@ -4,7 +4,7 @@ Terraform bootstrap for EKS Manager — provisions AWS infrastructure
 
 ## Prerequisites
 
-- Terraform 1.11.0 -- the version the CodeBuild builds pin; run the same locally, so the `iam/` states `setup-pipeline` writes stay in step. Plus `bash` (if using `setup-pipeline.sh`) or PowerShell 7.1+ (if using `setup-pipeline.ps1` — not Windows PowerShell 5.1, and not PowerShell 7.0 either; the GitHub App JWT signing needs .NET 5's `RSA.ImportFromPem`). The three `iam/` modules declare `required_version >= 1.10.0` (S3-native state locking); the root `aws/` module and the cluster modules need 1.11
+- Terraform 1.17.1 -- the version the CodeBuild builds pin; run the same locally, so the `iam/` states `setup-pipeline` writes stay in step. Plus `bash` (if using `setup-pipeline.sh`) or PowerShell 7.1+ (if using `setup-pipeline.ps1` — not Windows PowerShell 5.1, and not PowerShell 7.0 either; the GitHub App JWT signing needs .NET 5's `RSA.ImportFromPem`). The three `iam/` modules declare `required_version >= 1.10.0` (S3-native state locking); the root `aws/` module and the cluster modules need 1.11
 
 ### Customer-owned infrastructure
 
@@ -268,7 +268,7 @@ The create-cluster workflows commit through a pull request that is squash-merged
 at once (gitopsmanager/Auto-Commit-Squash-Merge), as a GitHub App: install one on
 this repository with **Contents** and **Pull requests** read and write, then set
 the repository variable `GOM_APP_CLIENT_ID` and the secret `GOM_APP_PRIVATE_KEY`.
-They install Terraform 1.11.0 on the runner themselves
+They install Terraform 1.17.1 on the runner themselves
 (`scripts/install_terraform.sh`). See `terraform/README.md` and
 `terraform/create-cluster/README.md`.
 
@@ -695,18 +695,20 @@ at the top, above the zone list:
 ```
 
 Each entry in `hosted-zones` needs a **`dns-zone-prefix`** — `dev`, `int`,
-`uat`, `we_prod` — which names that zone's secret:
+`uat`, `we-prod` (lower-case letters, digits and dashes only) — which names that zone's secret:
 `/EKSManagerZones/<dns-zone-prefix>-dns-zone-certs`. It is stated explicitly
-rather than derived from the DNS name, because a prefix like `we_prod` isn't a
+rather than derived from the DNS name, because a prefix like `we-prod` isn't a
 label of `prod.aws.example.com`, and because the prefix should survive a zone
 being renamed or moved between regions. It must be unique across the file —
 two zones sharing one would mean two certificates fighting over one secret, so
 the workflow rejects it.
 
-**`acme-email` — use a real, monitored address.** Let's Encrypt sends expiry
-warnings there, and that is the one alert which still arrives if this pipeline
-stops running altogether. Everything else that would tell you renewal has broken
-depends on the thing doing the renewing.
+**`acme-email` — use a real, monitored address.** It is the ACME account's
+contact, where Let's Encrypt sends notices about the account and its service.
+It is not an expiry warning: Let's Encrypt stopped sending certificate expiry
+emails in 2025. What tells you renewal has broken is the build log's
+`certificate_expiry` per zone, and EKS Manager's alert when the renewal job
+stops succeeding (and its alert when a certificate nears expiry).
 
 Change it only when you have a reason to, and **read the plan before applying**.
 Changing the registration contact can cause the ACME account to be recreated,
@@ -751,23 +753,32 @@ challenge record into the private zone produces a validation timeout that says
 nothing about the cause.
 
 The same split is why `terraform/lets-encrypt` sets public resolvers for lego's
-DNS-01 pre-check: CodeBuild is VPC-attached, and if that VPC is associated with
-the private zone, the build would resolve internally and never see the record it
-had just written to the public zone.
+DNS-01 pre-check, so it sees what Let's Encrypt sees. The certificate CodeBuild
+project is deliberately not VPC-attached (it talks only to Let's Encrypt, STS,
+Route 53 and Secrets Manager), but the public resolvers keep it right if that
+changes: in a VPC associated with the private zone, the build would resolve
+internally and never see the record it had just written to the public zone.
 
 ### Renewals
 
-Nothing to run. The EventBridge schedule — **Fridays at 03:00 UTC** — applies
+Nothing to run. The EventBridge schedule — **Saturdays at 03:00 UTC** — applies
 whatever artifact is in the bucket, and Terraform reissues only certificates
 inside `min_days_remaining` — 30 days of a 90-day certificate, so the first
 eligible run is around day 60 and there are roughly four attempts before expiry.
 Most weekly runs change nothing.
 
-Friday deliberately: a renewal that fails, or produces a certificate needing
-attention, surfaces before the weekend rather than during it, leaving Saturday
-to act on it with weeks of validity still in hand. Change it with
+Saturday deliberately: a renewed certificate does not wait in Secrets Manager.
+The agent checks every namespace's `dns-zone-certs` about every two minutes and
+pushes the new certificate into the clusters as soon as it appears, so an early
+Saturday run puts that change inside the usual weekend maintenance window
+rather than a working day. A failed run needs no weekend attention: with 30
+days left there are roughly four more weekly attempts, and EKS Manager alerts
+if the job stops succeeding. Change it with
 `renewal_schedule_expression` if that doesn't suit — EventBridge cron is UTC
 and has no timezone, so a summer run at 03:00 UTC lands at 04:00 BST.
+
+The new schedule reaches an existing install only when `setup-pipeline` is
+re-run, since the rule belongs to the Terraform it applies.
 
 Every run prints `certificate_expiry` per zone in the build log. That is the
 cheapest confirmation renewal is still working, and the only one that does not

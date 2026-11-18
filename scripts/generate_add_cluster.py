@@ -28,7 +28,7 @@ Usage:
 import argparse
 from pathlib import Path
 
-from common import load_json, stage_module, validate_account_id, write_json
+from common import load_json, stage_module, stage_terraform_scripts, validate_account_id, write_json
 
 BUILDSPEC_TEMPLATE = """version: 0.2
 
@@ -43,16 +43,16 @@ env:
 phases:
   install:
     commands:
-      - TERRAFORM_VERSION="1.11.0"
-      - |
-        wget -q -O terraform.zip \\
-          "https://releases.hashicorp.com/terraform/${{TERRAFORM_VERSION}}/terraform_${{TERRAFORM_VERSION}}_linux_amd64.zip"
-      - unzip -q terraform.zip && mv terraform /usr/local/bin/ && rm terraform.zip
+      # Pinned, checksum verified; moved up (never down) below if the state
+      # was written by a newer Terraform.
+      - TERRAFORM_INSTALL_DIR=/usr/local/bin bash scripts/install_terraform.sh 1.17.1
 
   build:
     commands:
       - cd add-cluster
       - |
+        NEED=$(bash "${{CODEBUILD_SRC_DIR}}/scripts/terraform_version_guard.sh" s3 "{state_bucket}" "accounts/${{TARGET_ACCOUNT}}/clusters/${{CLUSTER_NAME}}/terraform.tfstate" "{state_region}")
+        if [ -n "${{NEED}}" ]; then TERRAFORM_INSTALL_DIR=/usr/local/bin bash "${{CODEBUILD_SRC_DIR}}/scripts/install_terraform.sh" "${{NEED}}"; fi
         terraform init -input=false \\
           -backend-config="bucket={state_bucket}" \\
           -backend-config="region={state_region}" \\
@@ -205,6 +205,7 @@ def main():
     print(f"Wrote {output_dir / 'buildspec.yml'}")
 
     stage_module(args.module_src, output_dir, "add-cluster")
+    stage_terraform_scripts(output_dir)
     write_json(
         output_dir / "add-cluster" / "cluster.auto.tfvars.json",
         {

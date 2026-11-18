@@ -73,12 +73,9 @@ phases:
             echo "OK: internet egress confirmed, public IP ${EGRESS_IP}"
             ;;
         esac
-      - TERRAFORM_VERSION="1.11.0"
-      - |
-        wget -q -O terraform.zip \
-          "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
-      - unzip -q terraform.zip -d /tmp/terraform-install && mv /tmp/terraform-install/terraform /usr/local/bin/ && rm terraform.zip
-      - terraform version
+      # Pinned, checksum verified. pre_build moves it up (never down) if the
+      # state was written by a newer Terraform (scripts/terraform_version_guard.sh).
+      - TERRAFORM_INSTALL_DIR=/usr/local/bin bash scripts/install_terraform.sh 1.17.1
 
   pre_build:
     commands:
@@ -200,6 +197,10 @@ phases:
         SHARED_SERVICES_ACCOUNT_ID=$(python3 -c "import json; print(json.load(open('pinned.auto.tfvars.json'))['shared_services_account_id'])")
         SHARED_SERVICES_REGION=$(python3 -c "import json; print(json.load(open('pinned.auto.tfvars.json'))['shared_services_region'])")
         STATE_BUCKET="eksmanager-bootstrap-${SHARED_SERVICES_ACCOUNT_ID}"
+
+        # Never older than the Terraform that last wrote this state.
+        NEED=$(bash scripts/terraform_version_guard.sh s3 "${STATE_BUCKET}" "state/terraform.tfstate" "${SHARED_SERVICES_REGION}")
+        if [ -n "${NEED}" ]; then TERRAFORM_INSTALL_DIR=/usr/local/bin bash scripts/install_terraform.sh "${NEED}"; fi
 
         terraform -chdir=aws init -input=false \
           -backend-config="bucket=${STATE_BUCKET}" \

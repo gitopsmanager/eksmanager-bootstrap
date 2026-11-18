@@ -58,6 +58,18 @@ def stage_module(module_src, output_dir, module_name):
     shutil.copytree(src, dest)
 
 
+def stage_terraform_scripts(output_dir):
+    """Copies install_terraform.sh and terraform_version_guard.sh into
+    <output_dir>/scripts, beside the staged module: the generated buildspec
+    installs the pinned Terraform with them (checksum verified) and moves up,
+    never down, when the state was written by a newer one."""
+    here = Path(__file__).resolve().parent
+    dest = Path(output_dir) / "scripts"
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in ("install_terraform.sh", "terraform_version_guard.sh"):
+        shutil.copy2(here / name, dest / name)
+
+
 def write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

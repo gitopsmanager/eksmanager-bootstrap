@@ -79,7 +79,7 @@ resource "aws_secretsmanager_secret" "wildcard" {
   # <path><prefix>-dns-zone-certs, e.g. /EKSManagerZones/dev-dns-zone-certs.
   # Keyed on the zone's dns-zone-prefix rather than its DNS name: the prefix is
   # the environment identity the rest of the system already uses (dev, int,
-  # uat, we_prod), and it survives a zone being renamed or moved regions.
+  # uat, we-prod), and it survives a zone being renamed or moved regions.
   name        = "${var.secret_path}${each.value.dns_zone_prefix}-dns-zone-certs"
   description = "Let's Encrypt wildcard for *.${each.value.public_hosted_zone} (${each.value.dns_zone_prefix}, account ${each.value.account})"
 

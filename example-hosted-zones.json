@@ -13,7 +13,7 @@
       }
     },
     {
-      "dns-zone-prefix": "we_prod",
+      "dns-zone-prefix": "we-prod",
       "private-hosted-zone": "prod.aws.acme.com",
       "public-hosted-zone": "prod.aws.acme.com",
       "account": "210987654321",

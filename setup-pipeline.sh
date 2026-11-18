@@ -40,7 +40,7 @@
 # Idempotent — safe to re-run.
 #
 # PREREQUISITES
-#   - terraform >= 1.11.0 -- the version buildspec.yml pins; run the same
+#   - terraform >= 1.17.1 -- the version buildspec.yml pins; run the same
 #     locally so the iam/* states this script writes stay in step
 #   - Credentials for the MANAGEMENT account already active in your shell
 #   - aws CLI (required) -- used to detect a pre-existing GitHub Actions
@@ -657,6 +657,58 @@ import_log_group() {
   rm -f "$err"
 }
 
+# ── Terraform on this machine: never older than the state ─────────────────────
+# Setup runs the Terraform installed here, not a pinned one. An older Terraform
+# is not promised to read state a newer one wrote, and these states are also
+# written elsewhere (another admin's machine). So before each init: read which
+# Terraform last wrote the state, and stop if this one is older. Nothing has
+# changed at that point. The state is read into memory only.
+TF_PIN="1.17.1"   # the version the buildspecs and workflows pin; move them together
+
+tf_version_of() {   # JSON on stdin -> its terraform_version, or nothing
+  grep -o '"terraform_version": *"[0-9][0-9.]*' | head -1 | grep -o '[0-9][0-9.]*$' || true
+}
+
+tf_local_version() {
+  terraform version -json 2>/dev/null | tf_version_of
+}
+
+tf_older_than() {   # true when $1 is an older release than $2
+  [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]
+}
+
+tf_version_guard() {
+  local remote_key="$1" have state where
+  have=$(tf_local_version)
+  if [[ -f terraform.tfstate ]]; then
+    state=$(tf_version_of < terraform.tfstate); where="$(pwd)/terraform.tfstate"
+  else
+    state=$(aws s3 cp "s3://${STATE_BUCKET}/${remote_key}" - --region "$REGION" 2>/dev/null | tf_version_of)
+    where="s3://${STATE_BUCKET}/${remote_key}"
+  fi
+  [[ -n "$have" && -n "$state" ]] || return 0
+  if tf_older_than "$have" "$state"; then
+    cat >&2 <<EOF
+ERROR: this machine has Terraform ${have}, but ${where}
+was last written by Terraform ${state}.
+
+An older Terraform is not promised to read state a newer one wrote, so nothing
+has been changed. Install Terraform ${state} or newer (${TF_PIN} is the version
+GitOps Manager pins) and run setup again.
+EOF
+    exit 1
+  fi
+}
+
+tf_pin_warning() {
+  local have
+  have=$(tf_local_version)
+  if [[ -n "$have" ]] && tf_older_than "$have" "$TF_PIN"; then
+    echo "WARNING: this machine has Terraform ${have}; GitOps Manager pins ${TF_PIN}. Setup goes on, and stops" >&2
+    echo "         before touching any state a newer Terraform wrote. Installing ${TF_PIN} is recommended." >&2
+  fi
+}
+
 tf_init() {
   local module_name="$1"
   local remote_key="setup/${module_name}/terraform.tfstate"
@@ -689,6 +741,7 @@ EOF
     args+=( -migrate-state -force-copy )
   fi
 
+  tf_version_guard "$remote_key"
   terraform init "${args[@]}"
 
   # Refuse to apply from empty state onto an installation that already exists.
@@ -776,6 +829,7 @@ EOF
   fi
 }
 
+tf_pin_warning
 cd "${SCRIPT_DIR}/iam/codebuild-pipeline-tf"
 tf_init codebuild-pipeline
 
@@ -1246,6 +1300,7 @@ if $CREATE_CLUSTER_ENABLED; then
   echo ""
 
   cd "${SCRIPT_DIR}/terraform/create-cluster-pipeline"
+  tf_version_guard "setup/create-cluster-pipeline/terraform.tfstate"
   terraform init -input=false \
     -backend-config="bucket=${STATE_BUCKET}" \
     -backend-config="region=${REGION}"
